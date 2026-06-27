@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🏄 サーフチェック</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main>
+    <h1>🏄 サーフチェック</h1>
+    <form id="controls" onsubmit="return false;">
+      <label>エリア
+        <select id="region">
+          <option value="千葉北">千葉北</option>
+          <option value="千葉南">千葉南</option>
+          <option value="千葉">千葉（北+南）</option>
+          <option value="湘南">湘南</option>
+          <option value="茨城">茨城</option>
+          <option value="全域">全域</option>
+        </select>
+      </label>
+      <label>日付
+        <input type="date" id="date" />
+      </label>
+      <label>時間帯
+        <select id="slot">
+          <option value="morning">朝（07-10時）</option>
+          <option value="afternoon">昼（12-15時）</option>
+          <option value="evening">夕（16-19時）</option>
+        </select>
+      </label>
+      <button type="button" id="check">チェック</button>
+    </form>
+    <div id="results"></div>
+    <footer>データ提供: Open-Meteo（数値予報モデル）</footer>
+  </main>
+  <script src="scoring.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

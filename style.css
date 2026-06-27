@@ -1,0 +1,26 @@
+* { box-sizing: border-box; }
+body {
+  font-family: system-ui, -apple-system, "Hiragino Sans", sans-serif;
+  margin: 0; background: #f4f7f9; color: #1a2733;
+}
+main { max-width: 680px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 1.4rem; }
+#controls {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: end;
+  background: #fff; padding: 16px; border-radius: 12px; margin-bottom: 16px;
+}
+#controls label { display: flex; flex-direction: column; font-size: 0.8rem; gap: 4px; }
+#controls select, #controls input { padding: 8px; font-size: 1rem; border: 1px solid #ccd; border-radius: 8px; }
+#check {
+  padding: 10px 20px; font-size: 1rem; border: 0; border-radius: 8px;
+  background: #0077b6; color: #fff; cursor: pointer;
+}
+#check:disabled { opacity: 0.5; }
+table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; }
+th, td { padding: 8px 6px; text-align: left; font-size: 0.85rem; border-bottom: 1px solid #eef; }
+th { background: #eaf3f8; }
+.failed { color: #b00; font-size: 0.8rem; }
+footer { margin-top: 24px; font-size: 0.75rem; color: #889; text-align: center; }
+@media (max-width: 480px) {
+  th, td { font-size: 0.75rem; padding: 6px 4px; }
+}
