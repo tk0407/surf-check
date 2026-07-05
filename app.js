@@ -282,9 +282,24 @@ function reasonChips(result) {
 
 // Compass icon: fixed circle with an N reference mark, only the arrow
 // rotates (pointing where the flow is heading).
-function metricIcon(directionDeg) {
+// Ring gauge around the compass: arc length = speed (capped at 12 m/s,
+// where the wind score bottoms out), color = calm/mid/strong severity.
+const GAUGE_CIRCUMFERENCE = 2 * Math.PI * 19;
+
+function speedGauge(windSpeedMs) {
+  const frac = Math.min(Math.max(windSpeedMs / 12, 0), 1);
+  const arc = (frac * GAUGE_CIRCUMFERENCE).toFixed(1);
+  const tone = windSpeedMs <= 3 ? "" : windSpeedMs <= 7 ? " mid" : " strong";
+  return `<svg class="compass-gauge" viewBox="0 0 42 42" aria-hidden="true">
+    <circle class="gauge-track" cx="21" cy="21" r="19"/>
+    <circle class="gauge-fill${tone}" cx="21" cy="21" r="19" stroke-dasharray="${arc} ${GAUGE_CIRCUMFERENCE.toFixed(1)}"/>
+  </svg>`;
+}
+
+function metricIcon(directionDeg, windSpeedMs) {
   const rotate = ((directionDeg % 360) + 360) % 360;
   return `<span class="wind-compass" aria-hidden="true">
+    ${windSpeedMs != null ? speedGauge(windSpeedMs) : ""}
     <i class="compass-n">N</i>
     <span class="compass-arrow" style="--dir-rotate: ${rotate}deg;">↑</span>
   </span>`;
@@ -316,7 +331,7 @@ function resultCard(result, index) {
       </span>
       <span class="mini-metric">
         <b>風向き</b>
-        ${metricIcon(windFlowDeg)}
+        ${metricIcon(windFlowDeg, result.data.wind_speed)}
         <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(result.data.wind_dir))}風 ${result.data.wind_speed.toFixed(1)}m/s</span></span>
       </span>
       <span class="mini-metric">
