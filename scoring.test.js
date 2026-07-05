@@ -93,3 +93,55 @@ test("scoreSpot sums components", () => {
   assert.equal(s.wave_height, 15);
   assert.equal(s.total, 69);
 });
+
+// --- tideEvents ---
+
+// 3 days of hourly samples around the target date, like the app fetches.
+function tideSeries(heightFn) {
+  const days = ["2026-07-04", "2026-07-05", "2026-07-06"];
+  const times = [];
+  const heights = [];
+  days.forEach((day, di) => {
+    for (let h = 0; h < 24; h++) {
+      times.push(`${day}T${String(h).padStart(2, "0")}:00`);
+      heights.push(heightFn(di * 24 + h));
+    }
+  });
+  return { times, heights };
+}
+
+function toMinutes(hhmm) {
+  return parseInt(hhmm.slice(0, 2), 10) * 60 + parseInt(hhmm.slice(3, 5), 10);
+}
+
+// M2 tide: 12.4h period cosine peaking at t=27h (=2026-07-05 03:00).
+const m2 = (t) => 0.5 * Math.cos((2 * Math.PI * (t - 27)) / 12.4);
+
+test("tideEvents finds semidiurnal highs/lows on the target date with minute precision", () => {
+  const { times, heights } = tideSeries(m2);
+  const events = S.tideEvents(times, heights, "2026-07-05");
+  // analytic extremes on 07-05: highs 03:00 / 15:24, lows 09:12 / 21:36
+  assert.equal(events.length, 4);
+  assert.deepEqual(events.map((e) => e.type), ["high", "low", "high", "low"]);
+  const expected = ["03:00", "09:12", "15:24", "21:36"];
+  events.forEach((e, i) => {
+    const delta = Math.abs(toMinutes(e.time) - toMinutes(expected[i]));
+    assert.ok(delta <= 6, `event ${i}: ${e.time} vs ${expected[i]} (off by ${delta}min)`);
+  });
+  assert.ok(Math.abs(events[0].height - 0.5) < 0.02);
+  assert.ok(Math.abs(events[1].height + 0.5) < 0.02);
+});
+
+test("tideEvents skips extremes whose neighborhood contains nulls", () => {
+  const { times, heights } = tideSeries(m2);
+  for (let i = 36; i <= 42; i++) heights[i] = null; // kills the 15:24 high
+  const events = S.tideEvents(times, heights, "2026-07-05");
+  assert.deepEqual(events.map((e) => e.type), ["high", "low", "low"]);
+  assert.ok(Math.abs(toMinutes(events[0].time) - toMinutes("03:00")) <= 6);
+  assert.ok(Math.abs(toMinutes(events[2].time) - toMinutes("21:36")) <= 6);
+});
+
+test("tideEvents returns empty for monotonic data", () => {
+  const { times, heights } = tideSeries((t) => t * 0.01);
+  assert.deepEqual(S.tideEvents(times, heights, "2026-07-05"), []);
+});

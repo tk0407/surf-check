@@ -3,7 +3,7 @@ const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
 const MARINE_PARAMS = [
   "wave_height", "wave_period", "wave_direction",
   "swell_wave_height", "swell_wave_period", "swell_wave_direction",
-  "sea_surface_temperature",
+  "sea_surface_temperature", "sea_level_height_msl",
 ];
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] };
@@ -33,26 +33,37 @@ function pick(primary, fallback) {
   return primary !== null && primary !== undefined ? primary : fallback;
 }
 
-async function fetchSpotData(lat, lon, date) {
-  const base = { latitude: lat, longitude: lon, start_date: date, end_date: date, timezone: "Asia/Tokyo" };
-  const marineUrl = `${MARINE_URL}?${qs({ ...base, hourly: MARINE_PARAMS.join(",") })}`;
-  const forecastUrl = `${FORECAST_URL}?${qs({ ...base, hourly: FORECAST_PARAMS.join(","), wind_speed_unit: "ms" })}`;
-  const [m, f] = await Promise.all([fetch(marineUrl), fetch(forecastUrl)]);
-  if (!m.ok || !f.ok) throw new Error("API error");
-  const marine = (await m.json()).hourly;
-  const forecast = (await f.json()).hourly;
-  const merged = { ...marine };
-  for (const k of FORECAST_PARAMS) merged[k] = forecast[k];
-  return merged;
+function shiftDate(date, days) {
+  const d = new Date(`${date}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return fmtDate(d);
 }
 
-function averageForWindow(hourly, slot) {
+// Marine data spans date±1 so tide extremes near midnight are detected;
+// forecast stays single-day, so the two hourly series have different lengths
+// and must be kept separate (never merged index-wise).
+async function fetchSpotData(lat, lon, date) {
+  const base = { latitude: lat, longitude: lon, timezone: "Asia/Tokyo" };
+  const marineUrl = `${MARINE_URL}?${qs({
+    ...base, start_date: shiftDate(date, -1), end_date: shiftDate(date, 1),
+    hourly: MARINE_PARAMS.join(","),
+  })}`;
+  const forecastUrl = `${FORECAST_URL}?${qs({
+    ...base, start_date: date, end_date: date,
+    hourly: FORECAST_PARAMS.join(","), wind_speed_unit: "ms",
+  })}`;
+  const [m, f] = await Promise.all([fetch(marineUrl), fetch(forecastUrl)]);
+  if (!m.ok || !f.ok) throw new Error("API error");
+  return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
+}
+
+function averageForWindow(hourly, slot, date) {
   const [startH, endH] = TIME_SLOTS[slot];
   const times = hourly.time;
   const idx = [];
   for (let i = 0; i < times.length; i++) {
     const h = parseInt(times[i].slice(11, 13), 10);
-    if (h >= startH && h < endH) idx.push(i);
+    if (times[i].startsWith(date) && h >= startH && h < endH) idx.push(i);
   }
   if (idx.length === 0) throw new Error("時間帯のデータがありません");
   const result = {};
@@ -64,9 +75,25 @@ function averageForWindow(hourly, slot) {
   return result;
 }
 
+function tideTrendLabel(marine, slot, date) {
+  const levels = marine.sea_level_height_msl;
+  if (!levels) return "";
+  const [startH, endH] = TIME_SLOTS[slot];
+  const levelAt = (h) => {
+    const i = marine.time.indexOf(`${date}T${String(h).padStart(2, "0")}:00`);
+    return i >= 0 ? levels[i] : null;
+  };
+  const start = levelAt(startH);
+  const end = levelAt(endH);
+  if (start === null || end === null) return "";
+  if (end - start > 0.05) return "時間帯は上げ潮";
+  if (start - end > 0.05) return "時間帯は下げ潮";
+  return "時間帯は潮止まり前後";
+}
+
 async function rankSpot(spot, date, slot) {
-  const raw = await fetchSpotData(spot.lat, spot.lon, date);
-  const avg = averageForWindow(raw, slot);
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date);
+  const avg = { ...averageForWindow(marine, slot, date), ...averageForWindow(forecast, slot, date) };
   const data = {
     wind_dir: avg.winddirection_10m,
     wind_speed: avg.windspeed_10m,
@@ -74,8 +101,11 @@ async function rankSpot(spot, date, slot) {
     swell_period: pick(avg.swell_wave_period, avg.wave_period),
     wave_height: pick(avg.swell_wave_height, avg.wave_height),
   };
+  if (Object.values(data).some((v) => v == null)) throw new Error("予報データなし");
   const scores = Scoring.scoreSpot(data, spot.bearing);
-  return { spot, scores, data };
+  const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
+  const tideTrend = tideTrendLabel(marine, slot, date);
+  return { spot, scores, data, tide, tideTrend };
 }
 
 function escapeHtml(value) {
@@ -96,10 +126,6 @@ function jpDirection(deg) {
   const normalized = ((deg % 360) + 360) % 360;
   const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
   return found ? found[2] : "北";
-}
-
-function flowLabel(fromDeg) {
-  return `${jpDirection(fromDeg)}→${jpDirection(fromDeg + 180)}`;
 }
 
 function waveIconClass(height) {
@@ -123,6 +149,11 @@ function windConditionLabel(windDir, windSpeed, bearing) {
   if (diff <= 105) return "サイド";
   if (diff <= 135) return "サイドオン";
   return "オンショア";
+}
+
+function tideTimesLabel(events, type) {
+  const times = (events || []).filter((e) => e.type === type).map((e) => e.time);
+  return times.length ? times.join(" / ") : "--:--";
 }
 
 function chip(label, tone = "ok") {
@@ -181,25 +212,25 @@ function resultCard(result, index) {
         <span><strong>${result.data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${result.data.swell_period.toFixed(1)}s</span></span>
       </span>
       <span class="mini-metric">
-        <b>風</b>
+        <b>風向き</b>
         ${metricIcon(windFlowDeg, windLinesClass(result.data.wind_speed))}
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(flowLabel(result.data.wind_dir))} ${result.data.wind_speed.toFixed(1)}m/s</span></span>
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(result.data.wind_dir))}風 ${result.data.wind_speed.toFixed(1)}m/s</span></span>
       </span>
       <span class="mini-metric">
-        <b>うねり</b>
+        <b>うねりの向き</b>
         ${metricIcon(swellFlowDeg)}
-        <span><strong>${escapeHtml(jpDirection(result.data.swell_dir))}</strong><span class="metric-sub">${escapeHtml(flowLabel(result.data.swell_dir))}</span></span>
+        <span><strong>${escapeHtml(jpDirection(result.data.swell_dir))}うねり</strong></span>
       </span>
     </div>
 
     <div class="tide-panel">
       <div class="tide-head">
         <span class="tide-now">潮汐</span>
-        <span class="tide-percent">データ未接続</span>
+        <span class="tide-percent">${escapeHtml(result.tideTrend || "")}</span>
       </div>
       <div class="tide-times">
-        <span class="tide-time"><b>満潮</b><strong>--:--</strong></span>
-        <span class="tide-time"><b>干潮</b><strong>--:--</strong></span>
+        <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "high"))}</strong></span>
+        <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "low"))}</strong></span>
       </div>
     </div>
 
@@ -231,7 +262,7 @@ async function run() {
   const resultsEl = document.getElementById("results");
   const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
   buttons.forEach((btn) => { btn.disabled = true; });
-  resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・うねりデータを読み込んでいます。</span></div>`;
+  resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・潮汐データを読み込んでいます。</span></div>`;
   try {
     const spots = filterByRegion(region);
     const settled = await Promise.allSettled(spots.map((s) => rankSpot(s, date, slot)));
@@ -253,8 +284,10 @@ async function run() {
 function initDate() {
   const dateEl = document.getElementById("date");
   const today = new Date();
+  // Open-Meteo marine data (waves & sea level) only extends ~10 days out;
+  // +9 is the last date with full-day coverage.
   const max = new Date(today);
-  max.setDate(max.getDate() + 16);
+  max.setDate(max.getDate() + 9);
   dateEl.min = fmtDate(today);
   dateEl.max = fmtDate(max);
   dateEl.value = fmtDate(today);

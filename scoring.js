@@ -90,6 +90,37 @@
     return `${compass} ${windSpeed.toFixed(1)}m/s ${tag}`;
   }
 
+  // Hourly sea level (3 days around `date`) -> high/low tide events on `date`.
+  // Local extrema refined to minutes by fitting a parabola through the
+  // neighboring samples; hourly sampling alone would be ±30min off.
+  function tideEvents(times, heights, date) {
+    const events = [];
+    for (let i = 1; i < heights.length - 1; i++) {
+      const prev = heights[i - 1];
+      const cur = heights[i];
+      const next = heights[i + 1];
+      if (prev == null || cur == null || next == null) continue;
+      const isHigh = cur >= prev && cur > next;
+      const isLow = cur <= prev && cur < next;
+      if (!isHigh && !isLow) continue;
+      const denom = prev - 2 * cur + next;
+      let offset = denom === 0 ? 0 : (0.5 * (prev - next)) / denom;
+      offset = Math.max(-0.5, Math.min(0.5, offset));
+      const base = new Date(`${times[i]}:00`);
+      const t = new Date(Math.round((base.getTime() + offset * 3600000) / 60000) * 60000);
+      const y = t.getFullYear();
+      const mo = String(t.getMonth() + 1).padStart(2, "0");
+      const da = String(t.getDate()).padStart(2, "0");
+      if (`${y}-${mo}-${da}` !== date) continue;
+      events.push({
+        type: isHigh ? "high" : "low",
+        time: `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`,
+        height: cur - 0.25 * (prev - next) * offset,
+      });
+    }
+    return events;
+  }
+
   function scoreSpot(data, bearing) {
     const scores = {
       wind_direction: windDirectionScore(data.wind_dir, bearing),
@@ -106,6 +137,6 @@
   return {
     angleDiff, windDirectionScore, windSpeedScore, swellDirectionScore,
     swellPeriodScore, waveHeightScore, waveSizeLabel, degreesToCompass,
-    windLabel, scoreSpot,
+    windLabel, scoreSpot, tideEvents,
   };
 });
