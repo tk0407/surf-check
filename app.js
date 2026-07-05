@@ -91,6 +91,27 @@ function tideTrendLabel(marine, slot, date) {
   return "時間帯は潮止まり前後";
 }
 
+// Hourly sea level for `date`, closed at 24:00 with the next day's first
+// sample so the sparkline reaches the right edge.
+function daySeries(marine, date) {
+  const levels = marine.sea_level_height_msl;
+  if (!levels) return null;
+  const minutes = [];
+  const heights = [];
+  for (let i = 0; i < marine.time.length; i++) {
+    if (marine.time[i].startsWith(date)) {
+      minutes.push(parseInt(marine.time[i].slice(11, 13), 10) * 60);
+      heights.push(levels[i]);
+    } else if (minutes.length && minutes[minutes.length - 1] < 1440) {
+      minutes.push(1440);
+      heights.push(levels[i]);
+      break;
+    }
+  }
+  if (!heights.some((v) => v != null)) return null;
+  return { minutes, heights };
+}
+
 async function rankSpot(spot, date, slot) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date);
   const avg = { ...averageForWindow(marine, slot, date), ...averageForWindow(forecast, slot, date) };
@@ -105,7 +126,8 @@ async function rankSpot(spot, date, slot) {
   const scores = Scoring.scoreSpot(data, spot.bearing);
   const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
   const tideTrend = tideTrendLabel(marine, slot, date);
-  return { spot, scores, data, tide, tideTrend };
+  const tideSeries = daySeries(marine, date);
+  return { spot, scores, data, tide, tideTrend, tideSeries };
 }
 
 function escapeHtml(value) {
@@ -154,6 +176,91 @@ function windConditionLabel(windDir, windSpeed, bearing) {
 function tideTimesLabel(events, type) {
   const times = (events || []).filter((e) => e.type === type).map((e) => e.time);
   return times.length ? times.join(" / ") : "--:--";
+}
+
+function tideAriaLabel(events) {
+  const high = tideTimesLabel(events, "high").replace(" / ", "・");
+  const low = tideTimesLabel(events, "low").replace(" / ", "・");
+  return `潮位の推移: 満潮 ${high} / 干潮 ${low}`;
+}
+
+function hhmmToMinutes(hhmm) {
+  return parseInt(hhmm.slice(0, 2), 10) * 60 + parseInt(hhmm.slice(3, 5), 10);
+}
+
+function minutesToHhmm(min) {
+  if (min >= 1440) return "24:00";
+  return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+}
+
+const CURVE_H = 72;
+const CURVE_PAD = 8;
+
+// Shared x/y scales so the static render and the hover layer agree.
+// The extent includes the refined extrema heights, which can poke past
+// the hourly samples.
+function tideScale(series, events, width) {
+  const values = series.heights.filter((v) => v != null).concat(events.map((e) => e.height));
+  let lo = Math.min(...values);
+  let hi = Math.max(...values);
+  if (hi - lo < 0.2) { const mid = (hi + lo) / 2; lo = mid - 0.1; hi = mid + 0.1; }
+  const pad = (hi - lo) * 0.15;
+  lo -= pad;
+  hi += pad;
+  return {
+    x: (min) => (min / 1440) * width,
+    y: (h) => CURVE_H - CURVE_PAD - ((h - lo) / (hi - lo)) * (CURVE_H - 2 * CURVE_PAD),
+    lo,
+    hi,
+  };
+}
+
+// Catmull-Rom through the sample points, emitted as cubic beziers.
+function smoothPath(pts) {
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += ` C ${c1[0].toFixed(1)} ${c1[1].toFixed(1)}, ${c2[0].toFixed(1)} ${c2[1].toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+function tideCurveSvg(series, events, slot, date, width, nowMinutes) {
+  const scale = tideScale(series, events, width);
+  const pts = [];
+  for (let i = 0; i < series.minutes.length; i++) {
+    if (series.heights[i] == null) continue;
+    pts.push([scale.x(series.minutes[i]), scale.y(series.heights[i])]);
+  }
+  if (pts.length < 2) return "";
+  const curve = smoothPath(pts);
+  const area = `${curve} L ${pts[pts.length - 1][0].toFixed(1)} ${CURVE_H} L ${pts[0][0].toFixed(1)} ${CURVE_H} Z`;
+
+  const [startH, endH] = TIME_SLOTS[slot];
+  const parts = [];
+  parts.push(`<rect x="${scale.x(startH * 60).toFixed(1)}" y="0" width="${(scale.x(endH * 60) - scale.x(startH * 60)).toFixed(1)}" height="${CURVE_H}" fill="rgba(18, 69, 89, 0.05)"/>`);
+  if (scale.lo < 0 && scale.hi > 0) {
+    const y0 = scale.y(0).toFixed(1);
+    parts.push(`<line x1="0" x2="${width}" y1="${y0}" y2="${y0}" stroke="#dce5eb" stroke-width="1"/>`);
+  }
+  parts.push(`<path d="${area}" fill="#007f8f" fill-opacity="0.1"/>`);
+  parts.push(`<path d="${curve}" fill="none" stroke="#007f8f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`);
+  if (nowMinutes != null && nowMinutes >= 0 && nowMinutes <= 1440) {
+    const xn = scale.x(nowMinutes).toFixed(1);
+    parts.push(`<line x1="${xn}" x2="${xn}" y1="0" y2="${CURVE_H}" stroke="rgba(23, 33, 43, 0.3)" stroke-width="1"/>`);
+  }
+  for (const e of events) {
+    parts.push(`<circle cx="${scale.x(hhmmToMinutes(e.time)).toFixed(1)}" cy="${scale.y(e.height).toFixed(1)}" r="4" fill="#007f8f" stroke="#eef8f7" stroke-width="2"/>`);
+  }
+  parts.push(`<line class="tc-cross" x1="0" x2="0" y1="0" y2="${CURVE_H}" stroke="rgba(23, 33, 43, 0.35)" stroke-width="1" visibility="hidden"/>`);
+  parts.push(`<circle class="tc-dot" cx="0" cy="0" r="4" fill="#124559" stroke="#eef8f7" stroke-width="2" visibility="hidden"/>`);
+  return parts.join("");
 }
 
 function chip(label, tone = "ok") {
@@ -228,6 +335,7 @@ function resultCard(result, index) {
         <span class="tide-now">潮汐</span>
         <span class="tide-percent">${escapeHtml(result.tideTrend || "")}</span>
       </div>
+      ${result.tideSeries ? `<svg class="tide-curve" data-index="${index}" role="img" aria-label="${escapeHtml(tideAriaLabel(result.tide))}"></svg>` : ""}
       <div class="tide-times">
         <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "high"))}</strong></span>
         <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "low"))}</strong></span>
@@ -238,7 +346,22 @@ function resultCard(result, index) {
   </article>`;
 }
 
+let LAST_RESULTS = [];
+
+function drawTideCurves(el, results, date, slot) {
+  const now = new Date();
+  const nowMinutes = fmtDate(now) === date ? now.getHours() * 60 + now.getMinutes() : null;
+  el.querySelectorAll("svg.tide-curve").forEach((svg) => {
+    const r = results[parseInt(svg.dataset.index, 10)];
+    if (!r || !r.tideSeries) { svg.remove(); return; }
+    const width = Math.max(Math.round(svg.getBoundingClientRect().width) || 300, 100);
+    svg.setAttribute("viewBox", `0 0 ${width} ${CURVE_H}`);
+    svg.innerHTML = tideCurveSvg(r.tideSeries, r.tide, slot, date, width, nowMinutes);
+  });
+}
+
 function renderResults(el, region, date, slot, results, failed) {
+  LAST_RESULTS = results;
   if (results.length === 0) {
     el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
@@ -253,6 +376,7 @@ function renderResults(el, region, date, slot, results, failed) {
       ${results.map(resultCard).join("")}
     </div>
     ${failedNote}`;
+  drawTideCurves(el, results, date, slot);
 }
 
 async function run() {
@@ -293,8 +417,74 @@ function initDate() {
   dateEl.value = fmtDate(today);
 }
 
+// Hover layer: crosshair + dot inside the hovered sparkline, one shared
+// tooltip (textContent only) positioned above the snapped sample.
+let tideTip = null;
+let hoveredSvg = null;
+
+function hideTideHover() {
+  if (hoveredSvg) {
+    const cross = hoveredSvg.querySelector(".tc-cross");
+    const dot = hoveredSvg.querySelector(".tc-dot");
+    if (cross) cross.setAttribute("visibility", "hidden");
+    if (dot) dot.setAttribute("visibility", "hidden");
+    hoveredSvg = null;
+  }
+  if (tideTip) tideTip.style.display = "none";
+}
+
+function onTideHover(e) {
+  const svg = e.target.closest ? e.target.closest("svg.tide-curve") : null;
+  if (!svg) { hideTideHover(); return; }
+  const r = LAST_RESULTS[parseInt(svg.dataset.index, 10)];
+  if (!r || !r.tideSeries) { hideTideHover(); return; }
+  const rect = svg.getBoundingClientRect();
+  if (rect.width === 0) return;
+  const s = r.tideSeries;
+  const targetMin = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1) * 1440;
+  let best = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < s.minutes.length; i++) {
+    if (s.heights[i] == null) continue;
+    const dist = Math.abs(s.minutes[i] - targetMin);
+    if (dist < bestDist) { bestDist = dist; best = i; }
+  }
+  if (best < 0) { hideTideHover(); return; }
+  if (hoveredSvg && hoveredSvg !== svg) hideTideHover();
+  hoveredSvg = svg;
+  const scale = tideScale(s, r.tide, rect.width);
+  const cx = scale.x(s.minutes[best]);
+  const cy = scale.y(s.heights[best]);
+  const cross = svg.querySelector(".tc-cross");
+  const dot = svg.querySelector(".tc-dot");
+  if (cross) {
+    cross.setAttribute("x1", cx);
+    cross.setAttribute("x2", cx);
+    cross.setAttribute("visibility", "visible");
+  }
+  if (dot) {
+    dot.setAttribute("cx", cx);
+    dot.setAttribute("cy", cy);
+    dot.setAttribute("visibility", "visible");
+  }
+  const h = s.heights[best];
+  tideTip.firstChild.textContent = `${h >= 0 ? "+" : ""}${h.toFixed(2)}m`;
+  tideTip.lastChild.textContent = minutesToHhmm(s.minutes[best]);
+  tideTip.style.display = "block";
+  tideTip.style.left = `${rect.left + cx}px`;
+  tideTip.style.top = `${rect.top + cy}px`;
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   initDate();
+  tideTip = document.createElement("div");
+  tideTip.className = "tide-tooltip";
+  tideTip.appendChild(document.createElement("b"));
+  tideTip.appendChild(document.createElement("span"));
+  document.body.appendChild(tideTip);
+  const resultsEl = document.getElementById("results");
+  resultsEl.addEventListener("pointermove", onTideHover);
+  resultsEl.addEventListener("pointerleave", hideTideHover);
   const r = await fetch("spots.json");
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", run);
