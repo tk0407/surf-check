@@ -121,6 +121,23 @@ h1 {
   font-size: 0.9rem;
 }
 
+/* iOS Safari renders date inputs as a centered button with its own
+   sizing; strip the native appearance so it matches the selects. */
+.controls input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  min-width: 0;
+  height: 39px;
+  text-align: left;
+}
+
+.controls input[type="date"]::-webkit-date-and-time-value {
+  margin: 0;
+  text-align: left;
+  line-height: 1.2;
+}
+
 #check {
   align-self: end;
   min-height: 39px;
@@ -327,14 +344,6 @@ h1 {
   --wave-low: 22px;
 }
 
-.wind-icon {
-  display: grid;
-  grid-template-columns: 42px 1fr;
-  gap: 8px;
-  align-items: center;
-  min-height: 42px;
-}
-
 .wind-compass {
   position: relative;
   display: grid;
@@ -344,51 +353,25 @@ h1 {
   border: 1px solid rgba(18, 69, 89, 0.16);
   border-radius: 999px;
   background: #fff;
+}
+
+.compass-n {
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: 0.5rem;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.compass-arrow {
   color: var(--deep);
-  font-size: 1.25rem;
+  font-size: 1.2rem;
   font-weight: 900;
   transform: rotate(var(--dir-rotate, 0deg));
-}
-
-.wind-compass::after {
-  content: "";
-  position: absolute;
-  inset: 6px;
-  border: 1px dashed rgba(18, 69, 89, 0.16);
-  border-radius: inherit;
-}
-
-.wind-lines {
-  display: grid;
-  gap: 3px;
-}
-
-.wind-lines i {
-  display: block;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--sea);
-  opacity: 0.72;
-}
-
-.wind-lines i:nth-child(1) {
-  width: 70%;
-}
-
-.wind-lines i:nth-child(2) {
-  width: 100%;
-}
-
-.wind-lines i:nth-child(3) {
-  width: 48%;
-}
-
-.wind-lines.soft i {
-  opacity: 0.42;
-}
-
-.wind-lines.strong i {
-  background: var(--ok);
 }
 
 .tide-panel {

@@ -156,12 +156,6 @@ function waveIconClass(height) {
   return "large";
 }
 
-function windLinesClass(speed) {
-  if (speed <= 2) return "soft";
-  if (speed >= 5) return "strong";
-  return "";
-}
-
 function windConditionLabel(windDir, windSpeed, bearing) {
   const offshoreFrom = (bearing + 180) % 360;
   let diff = Math.abs(windDir - offshoreFrom) % 360;
@@ -286,11 +280,13 @@ function reasonChips(result) {
   return chips.join("");
 }
 
-function metricIcon(directionDeg, lineClass = "") {
+// Compass icon: fixed circle with an N reference mark, only the arrow
+// rotates (pointing where the flow is heading).
+function metricIcon(directionDeg) {
   const rotate = ((directionDeg % 360) + 360) % 360;
-  return `<span class="wind-icon" aria-hidden="true">
-    <span class="wind-compass" style="--dir-rotate: ${rotate}deg;">↑</span>
-    <span class="wind-lines ${lineClass}"><i></i><i></i><i></i></span>
+  return `<span class="wind-compass" aria-hidden="true">
+    <i class="compass-n">N</i>
+    <span class="compass-arrow" style="--dir-rotate: ${rotate}deg;">↑</span>
   </span>`;
 }
 
@@ -320,7 +316,7 @@ function resultCard(result, index) {
       </span>
       <span class="mini-metric">
         <b>風向き</b>
-        ${metricIcon(windFlowDeg, windLinesClass(result.data.wind_speed))}
+        ${metricIcon(windFlowDeg)}
         <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(result.data.wind_dir))}風 ${result.data.wind_speed.toFixed(1)}m/s</span></span>
       </span>
       <span class="mini-metric">
