@@ -8,7 +8,6 @@ const MARINE_PARAMS = [
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] };
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
-const MEDALS = ["🥇", "🥈", "🥉"];
 
 let SPOTS = [];
 
@@ -55,7 +54,7 @@ function averageForWindow(hourly, slot) {
     const h = parseInt(times[i].slice(11, 13), 10);
     if (h >= startH && h < endH) idx.push(i);
   }
-  if (idx.length === 0) throw new Error(`時間帯のデータがありません`);
+  if (idx.length === 0) throw new Error("時間帯のデータがありません");
   const result = {};
   for (const key of Object.keys(hourly)) {
     if (key === "time") continue;
@@ -79,33 +78,149 @@ async function rankSpot(spot, date, slot) {
   return { spot, scores, data };
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function jpDirection(deg) {
+  const names = [
+    [0, 22.5, "北"], [22.5, 67.5, "北東"], [67.5, 112.5, "東"],
+    [112.5, 157.5, "南東"], [157.5, 202.5, "南"], [202.5, 247.5, "南西"],
+    [247.5, 292.5, "西"], [292.5, 337.5, "北西"], [337.5, 360, "北"],
+  ];
+  const normalized = ((deg % 360) + 360) % 360;
+  const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
+  return found ? found[2] : "北";
+}
+
+function flowLabel(fromDeg) {
+  return `${jpDirection(fromDeg)}→${jpDirection(fromDeg + 180)}`;
+}
+
+function waveIconClass(height) {
+  if (height < 0.8) return "small";
+  if (height < 1.2) return "medium";
+  return "large";
+}
+
+function windLinesClass(speed) {
+  if (speed <= 2) return "soft";
+  if (speed >= 5) return "strong";
+  return "";
+}
+
+function windConditionLabel(windDir, windSpeed, bearing) {
+  const offshoreFrom = (bearing + 180) % 360;
+  let diff = Math.abs(windDir - offshoreFrom) % 360;
+  if (diff > 180) diff = 360 - diff;
+  if (diff < 45) return windSpeed <= 3 ? "オフ弱" : "オフショア";
+  if (diff <= 75) return "サイドオフ";
+  if (diff <= 105) return "サイド";
+  if (diff <= 135) return "サイドオン";
+  return "オンショア";
+}
+
+function chip(label, tone = "ok") {
+  return `<span class="chip ${tone}">${escapeHtml(label)}</span>`;
+}
+
+function reasonChips(result) {
+  const chips = [];
+  if (result.scores.swell_direction >= 14) chips.push(chip("うねり向き良好", "good"));
+  else chips.push(chip("うねり向き注意", "bad"));
+
+  if (result.scores.wind_direction >= 20) chips.push(chip("風が合う", "good"));
+  else if (result.scores.wind_direction >= 14) chips.push(chip("風は少し横", "ok"));
+  else chips.push(chip("風向き注意", "bad"));
+
+  if (result.scores.wave_height >= 10) chips.push(chip("サイズ良好", "good"));
+  else if (result.scores.wave_height >= 5) chips.push(chip("サイズ控えめ", "ok"));
+  else chips.push(chip("サイズ不足", "bad"));
+
+  if (result.scores.swell_period >= 10) chips.push(chip("周期あり", "good"));
+  else chips.push(chip("周期短め", "ok"));
+
+  return chips.join("");
+}
+
+function metricIcon(directionDeg, lineClass = "") {
+  const rotate = ((directionDeg % 360) + 360) % 360;
+  return `<span class="wind-icon" aria-hidden="true">
+    <span class="wind-compass" style="--dir-rotate: ${rotate}deg;">↑</span>
+    <span class="wind-lines ${lineClass}"><i></i><i></i><i></i></span>
+  </span>`;
+}
+
+function resultCard(result, index) {
+  const rank = index + 1;
+  const waveSize = Scoring.waveSizeLabel(result.data.wave_height);
+  const windCondition = windConditionLabel(result.data.wind_dir, result.data.wind_speed, result.spot.bearing);
+  const windFlowDeg = result.data.wind_dir + 180;
+  const swellFlowDeg = result.data.swell_dir + 180;
+  const featured = index === 0 ? " featured" : "";
+
+  return `<article class="ranking-card${featured}">
+    <div class="ranking-card-head">
+      <span class="medal">${rank}</span>
+      <span class="ranking-card-title">
+        <b>${escapeHtml(result.spot.name)}</b>
+        <span>${escapeHtml(result.spot.region)} / ${rank === 1 ? "BEST" : "候補"}</span>
+      </span>
+      <span class="ranking-score">${result.scores.total}<span>/85</span></span>
+    </div>
+
+    <div class="card-metrics">
+      <span class="mini-metric">
+        <b>波サイズ</b>
+        <span class="wave-icon ${waveIconClass(result.data.wave_height)}" aria-hidden="true"></span>
+        <span><strong>${result.data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${result.data.swell_period.toFixed(1)}s</span></span>
+      </span>
+      <span class="mini-metric">
+        <b>風</b>
+        ${metricIcon(windFlowDeg, windLinesClass(result.data.wind_speed))}
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(flowLabel(result.data.wind_dir))} ${result.data.wind_speed.toFixed(1)}m/s</span></span>
+      </span>
+      <span class="mini-metric">
+        <b>うねり</b>
+        ${metricIcon(swellFlowDeg)}
+        <span><strong>${escapeHtml(jpDirection(result.data.swell_dir))}</strong><span class="metric-sub">${escapeHtml(flowLabel(result.data.swell_dir))}</span></span>
+      </span>
+    </div>
+
+    <div class="tide-panel">
+      <div class="tide-head">
+        <span class="tide-now">潮汐</span>
+        <span class="tide-percent">データ未接続</span>
+      </div>
+      <div class="tide-times">
+        <span class="tide-time"><b>満潮</b><strong>--:--</strong></span>
+        <span class="tide-time"><b>干潮</b><strong>--:--</strong></span>
+      </div>
+    </div>
+
+    <div class="reason-row">${reasonChips(result)}</div>
+  </article>`;
+}
+
 function renderResults(el, region, date, slot, results, failed) {
   if (results.length === 0) {
-    el.innerHTML = `<p>データを取得できませんでした。</p>`;
+    el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
   }
-  const rows = results
-    .map((r, i) => {
-      const rank = MEDALS[i] || `#${i + 1}`;
-      const wlabel = Scoring.windLabel(r.data.wind_dir, r.data.wind_speed, r.spot.bearing);
-      const size = Scoring.waveSizeLabel(r.data.wave_height);
-      return `<tr>
-        <td>${rank}</td>
-        <td>${r.spot.name}</td>
-        <td>${r.scores.total}/85</td>
-        <td>${r.data.wave_height.toFixed(1)}m (${size})</td>
-        <td>${r.data.swell_period.toFixed(1)}s</td>
-        <td>${wlabel}</td>
-      </tr>`;
-    })
-    .join("");
-  const failedNote = failed.length ? `<p class="failed">取得失敗: ${failed.join(", ")}</p>` : "";
+  const failedNote = failed.length ? `<p class="failed">取得失敗: ${escapeHtml(failed.join(", "))}</p>` : "";
   el.innerHTML = `
-    <h2>${date} ${SLOT_LABELS[slot]} ${region}</h2>
-    <table>
-      <thead><tr><th>順位</th><th>スポット</th><th>スコア</th><th>波</th><th>周期</th><th>風</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
+    <div class="results-head">
+      <h2>${escapeHtml(region)}の${escapeHtml(SLOT_LABELS[slot])}ランキング</h2>
+      <span>${escapeHtml(date)} / ${results.length}件</span>
+    </div>
+    <div class="ranking-cards">
+      ${results.map(resultCard).join("")}
+    </div>
     ${failedNote}`;
 }
 
@@ -114,9 +229,9 @@ async function run() {
   const date = document.getElementById("date").value;
   const slot = document.getElementById("slot").value;
   const resultsEl = document.getElementById("results");
-  const btn = document.getElementById("check");
-  btn.disabled = true;
-  resultsEl.innerHTML = `<p>取得中…</p>`;
+  const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
+  buttons.forEach((btn) => { btn.disabled = true; });
+  resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・うねりデータを読み込んでいます。</span></div>`;
   try {
     const spots = filterByRegion(region);
     const settled = await Promise.allSettled(spots.map((s) => rankSpot(s, date, slot)));
@@ -129,9 +244,9 @@ async function run() {
     ok.sort((a, b) => b.scores.total - a.scores.total);
     renderResults(resultsEl, region, date, slot, ok, failed);
   } catch (e) {
-    resultsEl.innerHTML = `<p class="failed">エラー: ${e.message}</p>`;
+    resultsEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
   } finally {
-    btn.disabled = false;
+    buttons.forEach((btn) => { btn.disabled = false; });
   }
 }
 
@@ -150,4 +265,5 @@ window.addEventListener("DOMContentLoaded", async () => {
   const r = await fetch("spots.json");
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", run);
+  document.getElementById("checkTop").addEventListener("click", run);
 });

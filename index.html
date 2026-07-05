@@ -3,13 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>🏄 サーフチェック</title>
+  <title>サーフチェック</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main>
-    <h1>🏄 サーフチェック</h1>
-    <form id="controls" onsubmit="return false;">
+  <main class="app-shell">
+    <header class="app-header">
+      <p class="app-kicker">Surf Check</p>
+      <div class="app-title-row">
+        <div>
+          <h1>サーフチェック</h1>
+          <p>エリア・日付・時間帯から、入りやすいポイントをランキングします。</p>
+        </div>
+        <button type="button" id="checkTop" class="refresh" aria-label="チェックを実行">↻</button>
+      </div>
+    </header>
+
+    <form id="controls" class="controls" onsubmit="return false;">
       <label>エリア
         <select id="region">
           <option value="千葉北">千葉北</option>
@@ -32,7 +42,14 @@
       </label>
       <button type="button" id="check">チェック</button>
     </form>
-    <div id="results"></div>
+
+    <section id="results" class="results" aria-live="polite">
+      <div class="empty-state">
+        <b>条件を選んでチェック</b>
+        <span>波サイズ、風、うねり、潮情報をカードで比較できます。</span>
+      </div>
+    </section>
+
     <footer>データ提供: Open-Meteo（数値予報モデル）</footer>
   </main>
   <script src="scoring.js"></script>
