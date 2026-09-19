@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <main class="app-shell">
+  <main class="app-shell" data-mode="ranking">
     <header class="app-header">
       <p class="app-kicker">Surf Check</p>
       <div class="app-title-row">
@@ -18,6 +18,11 @@
         <button type="button" id="checkTop" class="refresh" aria-label="チェックを実行">↻</button>
       </div>
     </header>
+
+    <nav class="mode-tabs" role="tablist" aria-label="表示モード">
+      <button type="button" class="mode-tab" role="tab" data-mode="ranking" aria-controls="results" aria-selected="true">ランキング</button>
+      <button type="button" class="mode-tab" role="tab" data-mode="weekly" aria-controls="weekly" aria-selected="false">週間予報</button>
+    </nav>
 
     <form id="controls" class="controls" onsubmit="return false;">
       <label>エリア
@@ -30,10 +35,10 @@
           <option value="全域">全域</option>
         </select>
       </label>
-      <label>日付
+      <label class="ranking-only">日付
         <input type="date" id="date" />
       </label>
-      <label>時間帯
+      <label class="ranking-only">時間帯
         <select id="slot">
           <option value="morning">朝（07-10時）</option>
           <option value="afternoon">昼（12-15時）</option>
@@ -43,10 +48,17 @@
       <button type="button" id="check">チェック</button>
     </form>
 
-    <section id="results" class="results" aria-live="polite">
+    <section id="results" class="results ranking-only" aria-live="polite">
       <div class="empty-state">
         <b>条件を選んでチェック</b>
         <span>波サイズ、風、うねり、潮情報をカードで比較できます。</span>
+      </div>
+    </section>
+
+    <section id="weekly" class="results weekly-only" aria-live="polite">
+      <div class="empty-state">
+        <b>エリアを選んでチェック</b>
+        <span>各ポイントの7日分のスコアを、朝・昼・夕で比較できます。</span>
       </div>
     </section>
 

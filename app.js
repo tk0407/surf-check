@@ -8,6 +8,9 @@ const MARINE_PARAMS = [
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
+const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
+const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
+const WEEK_DAYS = 7;
 
 let SPOTS = [];
 
@@ -33,6 +36,23 @@ function shiftDate(date, days) {
   const d = new Date(`${date}T00:00:00`);
   d.setDate(d.getDate() + days);
   return fmtDate(d);
+}
+
+function dateParts(date) {
+  const d = new Date(`${date}T00:00:00`);
+  return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
+}
+
+// "9/19(土)"
+function mdLabel(date) {
+  const p = dateParts(date);
+  return `${p.month}/${p.day}(${p.weekday})`;
+}
+
+// "土19" — weekly grid column header
+function dayColumnLabel(date) {
+  const p = dateParts(date);
+  return `${p.weekday}${p.day}`;
 }
 
 // Marine data spans start-1..end+1 so tide extremes near midnight are
@@ -361,27 +381,128 @@ function renderResults(el, region, date, slot, results, failed) {
   drawTideCurves(el, results, date, slot);
 }
 
-async function run() {
+// Runs fn for every spot in parallel; spots whose promise rejects are
+// reported by name so the rest can still render.
+async function settleBySpot(spots, fn) {
+  const settled = await Promise.allSettled(spots.map(fn));
+  const ok = [];
+  const failed = [];
+  settled.forEach((res, i) => {
+    if (res.status === "fulfilled") ok.push(res.value);
+    else failed.push(spots[i].name);
+  });
+  return { ok, failed };
+}
+
+async function runRanking() {
   const region = document.getElementById("region").value;
   const date = document.getElementById("date").value;
   const slot = document.getElementById("slot").value;
   const resultsEl = document.getElementById("results");
-  const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
-  buttons.forEach((btn) => { btn.disabled = true; });
   resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・潮汐データを読み込んでいます。</span></div>`;
   try {
-    const spots = filterByRegion(region);
-    const settled = await Promise.allSettled(spots.map((s) => rankSpot(s, date, slot)));
-    const ok = [];
-    const failed = [];
-    settled.forEach((res, i) => {
-      if (res.status === "fulfilled") ok.push(res.value);
-      else failed.push(spots[i].name);
-    });
+    const { ok, failed } = await settleBySpot(filterByRegion(region), (s) => rankSpot(s, date, slot));
     ok.sort((a, b) => b.scores.total - a.scores.total);
     renderResults(resultsEl, region, date, slot, ok, failed);
   } catch (e) {
     resultsEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function weeklySpot(spot, dates) {
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, dates[0], dates[dates.length - 1]);
+  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing);
+  const best = Forecast.bestSlot(days);
+  if (!best) throw new Error("予報データなし");
+  return { spot, days, best };
+}
+
+function weeklyCell(day, slot, dayIndex) {
+  const cell = day.slots[slot];
+  if (!cell) return `<td><span class="wk-cell empty" aria-label="データなし">–</span></td>`;
+  const total = cell.scores.total;
+  const label = `${mdLabel(day.date)} ${SLOT_SHORT[slot]} ${total}点`;
+  return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
+}
+
+function weeklyCard(result, index) {
+  const best = result.best;
+  const head = result.days.map((day) => `<th scope="col">${escapeHtml(dayColumnLabel(day.date))}</th>`).join("");
+  const rows = Forecast.SLOT_ORDER.map((slot) => {
+    const cells = result.days.map((day, di) => weeklyCell(day, slot, di)).join("");
+    return `<tr><th scope="row">${SLOT_SHORT[slot]}</th>${cells}</tr>`;
+  }).join("");
+  const waves = result.days.map((day) =>
+    `<td class="wk-wave">${day.maxWaveHeight == null ? "–" : day.maxWaveHeight.toFixed(1)}</td>`).join("");
+
+  return `<article class="ranking-card wk-card" data-index="${index}">
+    <div class="wk-card-head">
+      <span class="ranking-card-title">
+        <b>${escapeHtml(result.spot.name)}</b>
+        <span>${escapeHtml(result.spot.region)}</span>
+      </span>
+      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${SLOT_SHORT[best.slot]} ${best.total}点</b></span>
+    </div>
+    <table class="wk-grid">
+      <thead><tr><th></th>${head}</tr></thead>
+      <tbody>${rows}<tr><th scope="row">波</th>${waves}</tr></tbody>
+    </table>
+    <div class="wk-detail-slot"></div>
+  </article>`;
+}
+
+let WEEKLY_RESULTS = [];
+
+function renderWeekly(el, region, dates, results, failed) {
+  WEEKLY_RESULTS = results;
+  if (results.length === 0) {
+    el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
+    return;
+  }
+  const failedNote = failed.length ? `<p class="failed">取得失敗: ${escapeHtml(failed.join(", "))}</p>` : "";
+  el.innerHTML = `
+    <div class="results-head">
+      <h2>${escapeHtml(region)}の週間予報</h2>
+      <span>${escapeHtml(mdLabel(dates[0]))}〜${escapeHtml(mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
+    </div>
+    <div class="ranking-cards">
+      ${results.map(weeklyCard).join("")}
+    </div>
+    ${failedNote}`;
+}
+
+async function runWeekly() {
+  const region = document.getElementById("region").value;
+  const weeklyEl = document.getElementById("weekly");
+  weeklyEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから7日分の波・風・潮汐データを読み込んでいます。</span></div>`;
+  try {
+    const today = fmtDate(new Date());
+    const dates = Array.from({ length: WEEK_DAYS }, (_, i) => shiftDate(today, i));
+    const { ok, failed } = await settleBySpot(filterByRegion(region), (s) => weeklySpot(s, dates));
+    renderWeekly(weeklyEl, region, dates, ok, failed);
+  } catch (e) {
+    weeklyEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+function currentMode() {
+  return document.querySelector(".app-shell").dataset.mode;
+}
+
+function setMode(mode) {
+  document.querySelector(".app-shell").dataset.mode = mode;
+  document.querySelectorAll(".mode-tab").forEach((tab) => {
+    tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
+  });
+}
+
+// Both check buttons run whichever view is active; disabled while loading.
+async function check() {
+  const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
+  buttons.forEach((btn) => { btn.disabled = true; });
+  try {
+    if (currentMode() === "weekly") await runWeekly();
+    else await runRanking();
   } finally {
     buttons.forEach((btn) => { btn.disabled = false; });
   }
@@ -467,8 +588,11 @@ window.addEventListener("DOMContentLoaded", async () => {
   const resultsEl = document.getElementById("results");
   resultsEl.addEventListener("pointermove", onTideHover);
   resultsEl.addEventListener("pointerleave", hideTideHover);
+  document.querySelectorAll(".mode-tab").forEach((tab) => {
+    tab.addEventListener("click", () => setMode(tab.dataset.mode));
+  });
   const r = await fetch("spots.json");
   SPOTS = await r.json();
-  document.getElementById("check").addEventListener("click", run);
-  document.getElementById("checkTop").addEventListener("click", run);
+  document.getElementById("check").addEventListener("click", check);
+  document.getElementById("checkTop").addEventListener("click", check);
 });
