@@ -296,12 +296,32 @@ function metricIcon(directionDeg, windSpeedMs) {
   </span>`;
 }
 
+function conditionMetrics(data, bearing) {
+  const waveSize = Scoring.waveSizeLabel(data.wave_height);
+  const windCondition = windConditionLabel(data.wind_dir, data.wind_speed, bearing);
+  const windFlowDeg = data.wind_dir + 180;
+  const swellFlowDeg = data.swell_dir + 180;
+  return `<div class="card-metrics">
+      <span class="mini-metric">
+        <b>波サイズ</b>
+        <span class="wave-icon ${waveIconClass(data.wave_height)}" aria-hidden="true"></span>
+        <span><strong>${data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${data.swell_period.toFixed(1)}s</span></span>
+      </span>
+      <span class="mini-metric">
+        <b>風向き</b>
+        ${metricIcon(windFlowDeg, data.wind_speed)}
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
+      </span>
+      <span class="mini-metric">
+        <b>うねりの向き</b>
+        ${metricIcon(swellFlowDeg)}
+        <span><strong>${escapeHtml(jpDirection(data.swell_dir))}うねり</strong></span>
+      </span>
+    </div>`;
+}
+
 function resultCard(result, index) {
   const rank = index + 1;
-  const waveSize = Scoring.waveSizeLabel(result.data.wave_height);
-  const windCondition = windConditionLabel(result.data.wind_dir, result.data.wind_speed, result.spot.bearing);
-  const windFlowDeg = result.data.wind_dir + 180;
-  const swellFlowDeg = result.data.swell_dir + 180;
   const featured = index === 0 ? " featured" : "";
 
   return `<article class="ranking-card${featured}">
@@ -314,23 +334,7 @@ function resultCard(result, index) {
       <span class="ranking-score">${result.scores.total}<span>/85</span></span>
     </div>
 
-    <div class="card-metrics">
-      <span class="mini-metric">
-        <b>波サイズ</b>
-        <span class="wave-icon ${waveIconClass(result.data.wave_height)}" aria-hidden="true"></span>
-        <span><strong>${result.data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${result.data.swell_period.toFixed(1)}s</span></span>
-      </span>
-      <span class="mini-metric">
-        <b>風向き</b>
-        ${metricIcon(windFlowDeg, result.data.wind_speed)}
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(result.data.wind_dir))}風 ${result.data.wind_speed.toFixed(1)}m/s</span></span>
-      </span>
-      <span class="mini-metric">
-        <b>うねりの向き</b>
-        ${metricIcon(swellFlowDeg)}
-        <span><strong>${escapeHtml(jpDirection(result.data.swell_dir))}うねり</strong></span>
-      </span>
-    </div>
+    ${conditionMetrics(result.data, result.spot.bearing)}
 
     <div class="tide-panel">
       <div class="tide-head">
@@ -471,6 +475,41 @@ function renderWeekly(el, region, dates, results, failed) {
     ${failedNote}`;
 }
 
+function weeklyDetail(spot, day, slot) {
+  const { data, scores } = day.slots[slot];
+  return `<div class="wk-detail">
+    <div class="wk-detail-head">
+      <b>${escapeHtml(mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
+      <span class="ranking-score">${scores.total}<span>/85</span></span>
+    </div>
+    ${conditionMetrics(data, spot.bearing)}
+    <div class="tide-times">
+      <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "high"))}</strong></span>
+      <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "low"))}</strong></span>
+    </div>
+    <div class="reason-row">${reasonChips({ scores })}</div>
+  </div>`;
+}
+
+// One open detail per card: tapping the open cell closes it, tapping another
+// cell in the same card switches to it.
+function onWeeklyClick(e) {
+  const btn = e.target.closest ? e.target.closest("button.wk-cell") : null;
+  if (!btn) return;
+  const card = btn.closest(".wk-card");
+  const detailSlot = card.querySelector(".wk-detail-slot");
+  const wasOpen = btn.getAttribute("aria-pressed") === "true";
+  card.querySelectorAll('button.wk-cell[aria-pressed="true"]').forEach((b) => b.setAttribute("aria-pressed", "false"));
+  if (wasOpen) {
+    detailSlot.innerHTML = "";
+    return;
+  }
+  const result = WEEKLY_RESULTS[parseInt(card.dataset.index, 10)];
+  const day = result.days[parseInt(btn.dataset.day, 10)];
+  btn.setAttribute("aria-pressed", "true");
+  detailSlot.innerHTML = weeklyDetail(result.spot, day, btn.dataset.slot);
+}
+
 async function runWeekly() {
   const region = document.getElementById("region").value;
   const weeklyEl = document.getElementById("weekly");
@@ -591,6 +630,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });
+  document.getElementById("weekly").addEventListener("click", onWeeklyClick);
   const r = await fetch("spots.json");
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", check);

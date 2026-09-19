@@ -743,3 +743,32 @@ footer {
   font-weight: 800;
   text-align: center;
 }
+
+.wk-cell[aria-pressed="true"] {
+  border-color: var(--deep);
+  box-shadow: 0 0 0 1px var(--deep);
+}
+
+.wk-detail {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.wk-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.wk-detail-head b {
+  color: var(--deep);
+  font-size: 0.9rem;
+}
+
+.wk-detail .card-metrics {
+  margin-bottom: 0;
+}
