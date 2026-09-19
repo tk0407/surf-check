@@ -6,7 +6,7 @@ const MARINE_PARAMS = [
   "sea_surface_temperature", "sea_level_height_msl",
 ];
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
-const TIME_SLOTS = { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] };
+const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
 
 let SPOTS = [];
@@ -29,50 +29,28 @@ function filterByRegion(region) {
   return SPOTS.filter((s) => s.region.includes(region) || s.region === region);
 }
 
-function pick(primary, fallback) {
-  return primary !== null && primary !== undefined ? primary : fallback;
-}
-
 function shiftDate(date, days) {
   const d = new Date(`${date}T00:00:00`);
   d.setDate(d.getDate() + days);
   return fmtDate(d);
 }
 
-// Marine data spans date±1 so tide extremes near midnight are detected;
-// forecast stays single-day, so the two hourly series have different lengths
-// and must be kept separate (never merged index-wise).
-async function fetchSpotData(lat, lon, date) {
+// Marine data spans start-1..end+1 so tide extremes near midnight are
+// detected; forecast covers only start..end, so the two hourly series have
+// different lengths and must be kept separate (never merged index-wise).
+async function fetchSpotData(lat, lon, startDate, endDate) {
   const base = { latitude: lat, longitude: lon, timezone: "Asia/Tokyo" };
   const marineUrl = `${MARINE_URL}?${qs({
-    ...base, start_date: shiftDate(date, -1), end_date: shiftDate(date, 1),
+    ...base, start_date: shiftDate(startDate, -1), end_date: shiftDate(endDate, 1),
     hourly: MARINE_PARAMS.join(","),
   })}`;
   const forecastUrl = `${FORECAST_URL}?${qs({
-    ...base, start_date: date, end_date: date,
+    ...base, start_date: startDate, end_date: endDate,
     hourly: FORECAST_PARAMS.join(","), wind_speed_unit: "ms",
   })}`;
   const [m, f] = await Promise.all([fetch(marineUrl), fetch(forecastUrl)]);
   if (!m.ok || !f.ok) throw new Error("API error");
   return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
-}
-
-function averageForWindow(hourly, slot, date) {
-  const [startH, endH] = TIME_SLOTS[slot];
-  const times = hourly.time;
-  const idx = [];
-  for (let i = 0; i < times.length; i++) {
-    const h = parseInt(times[i].slice(11, 13), 10);
-    if (times[i].startsWith(date) && h >= startH && h < endH) idx.push(i);
-  }
-  if (idx.length === 0) throw new Error("時間帯のデータがありません");
-  const result = {};
-  for (const key of Object.keys(hourly)) {
-    if (key === "time") continue;
-    const vals = idx.map((i) => hourly[key][i]).filter((v) => v !== null && v !== undefined);
-    result[key] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
-  }
-  return result;
 }
 
 function tideTrendLabel(marine, slot, date) {
@@ -113,16 +91,9 @@ function daySeries(marine, date) {
 }
 
 async function rankSpot(spot, date, slot) {
-  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date);
-  const avg = { ...averageForWindow(marine, slot, date), ...averageForWindow(forecast, slot, date) };
-  const data = {
-    wind_dir: avg.winddirection_10m,
-    wind_speed: avg.windspeed_10m,
-    swell_dir: pick(avg.swell_wave_direction, avg.wave_direction),
-    swell_period: pick(avg.swell_wave_period, avg.wave_period),
-    wave_height: pick(avg.swell_wave_height, avg.wave_height),
-  };
-  if (Object.values(data).some((v) => v == null)) throw new Error("予報データなし");
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
+  const data = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!data) throw new Error("予報データなし");
   const scores = Scoring.scoreSpot(data, spot.bearing);
   const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
   const tideTrend = tideTrendLabel(marine, slot, date);
