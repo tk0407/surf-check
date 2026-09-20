@@ -8,8 +8,6 @@ const MARINE_PARAMS = [
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
-const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
-const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 const WEEK_DAYS = 7;
 
 let SPOTS = [];
@@ -38,20 +36,9 @@ function shiftDate(date, days) {
   return fmtDate(d);
 }
 
-function dateParts(date) {
-  const d = new Date(`${date}T00:00:00`);
-  return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
-}
-
-// "9/19(土)"
-function mdLabel(date) {
-  const p = dateParts(date);
-  return `${p.month}/${p.day}(${p.weekday})`;
-}
-
 // "土19" — weekly grid column header
 function dayColumnLabel(date) {
-  const p = dateParts(date);
+  const p = Share.dateParts(date);
   return `${p.weekday}${p.day}`;
 }
 
@@ -130,32 +117,10 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function jpDirection(deg) {
-  const names = [
-    [0, 22.5, "北"], [22.5, 67.5, "北東"], [67.5, 112.5, "東"],
-    [112.5, 157.5, "南東"], [157.5, 202.5, "南"], [202.5, 247.5, "南西"],
-    [247.5, 292.5, "西"], [292.5, 337.5, "北西"], [337.5, 360, "北"],
-  ];
-  const normalized = ((deg % 360) + 360) % 360;
-  const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
-  return found ? found[2] : "北";
-}
-
 function waveIconClass(height) {
   if (height < 0.8) return "small";
   if (height < 1.2) return "medium";
   return "large";
-}
-
-function windConditionLabel(windDir, windSpeed, bearing) {
-  const offshoreFrom = (bearing + 180) % 360;
-  let diff = Math.abs(windDir - offshoreFrom) % 360;
-  if (diff > 180) diff = 360 - diff;
-  if (diff < 45) return windSpeed <= 3 ? "オフ弱" : "オフショア";
-  if (diff <= 75) return "サイドオフ";
-  if (diff <= 105) return "サイド";
-  if (diff <= 135) return "サイドオン";
-  return "オンショア";
 }
 
 function tideTimesLabel(events, type) {
@@ -298,7 +263,7 @@ function metricIcon(directionDeg, windSpeedMs) {
 
 function conditionMetrics(data, bearing) {
   const waveSize = Scoring.waveSizeLabel(data.wave_height);
-  const windCondition = windConditionLabel(data.wind_dir, data.wind_speed, bearing);
+  const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
   const windFlowDeg = data.wind_dir + 180;
   const swellFlowDeg = data.swell_dir + 180;
   return `<div class="card-metrics">
@@ -310,12 +275,12 @@ function conditionMetrics(data, bearing) {
       <span class="mini-metric">
         <b>風向き</b>
         ${metricIcon(windFlowDeg, data.wind_speed)}
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(Share.jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
       </span>
       <span class="mini-metric">
         <b>うねりの向き</b>
         ${metricIcon(swellFlowDeg)}
-        <span><strong>${escapeHtml(jpDirection(data.swell_dir))}うねり</strong></span>
+        <span><strong>${escapeHtml(Share.jpDirection(data.swell_dir))}うねり</strong></span>
       </span>
     </div>`;
 }
@@ -430,7 +395,7 @@ function weeklyCell(day, slot, dayIndex) {
   const cell = day.slots[slot];
   if (!cell) return `<td><span class="wk-cell empty" role="img" aria-label="データなし">–</span></td>`;
   const total = cell.scores.total;
-  const label = `${mdLabel(day.date)} ${SLOT_SHORT[slot]} ${total}点`;
+  const label = `${Share.mdLabel(day.date)} ${Share.SLOT_SHORT[slot]} ${total}点`;
   return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
 }
 
@@ -439,7 +404,7 @@ function weeklyCard(result, index) {
   const head = result.days.map((day) => `<th scope="col">${escapeHtml(dayColumnLabel(day.date))}</th>`).join("");
   const rows = Forecast.SLOT_ORDER.map((slot) => {
     const cells = result.days.map((day, di) => weeklyCell(day, slot, di)).join("");
-    return `<tr><th scope="row">${SLOT_SHORT[slot]}</th>${cells}</tr>`;
+    return `<tr><th scope="row">${Share.SLOT_SHORT[slot]}</th>${cells}</tr>`;
   }).join("");
   const waves = result.days.map((day) =>
     `<td class="wk-wave">${day.maxWaveHeight == null ? "–" : day.maxWaveHeight.toFixed(1)}</td>`).join("");
@@ -450,7 +415,7 @@ function weeklyCard(result, index) {
         <b>${escapeHtml(result.spot.name)}</b>
         <span>${escapeHtml(result.spot.region)}</span>
       </span>
-      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${SLOT_SHORT[best.slot]} ${best.total}点</b></span>
+      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${Share.SLOT_SHORT[best.slot]} ${best.total}点</b></span>
     </div>
     <table class="wk-grid">
       <thead><tr><th></th>${head}</tr></thead>
@@ -472,7 +437,7 @@ function renderWeekly(el, region, dates, results, failed) {
   el.innerHTML = `
     <div class="results-head">
       <h2>${escapeHtml(region)}の週間予報</h2>
-      <span>${escapeHtml(mdLabel(dates[0]))}〜${escapeHtml(mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
+      <span>${escapeHtml(Share.mdLabel(dates[0]))}〜${escapeHtml(Share.mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
     </div>
     <div class="ranking-cards">
       ${results.map(weeklyCard).join("")}
@@ -484,7 +449,7 @@ function weeklyDetail(spot, day, slot) {
   const { data, scores } = day.slots[slot];
   return `<div class="wk-detail">
     <div class="wk-detail-head">
-      <b>${escapeHtml(mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
+      <b>${escapeHtml(Share.mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
       <span class="ranking-score">${scores.total}<span>/85</span></span>
     </div>
     ${conditionMetrics(data, spot.bearing)}
