@@ -57,7 +57,7 @@
   - `bestSlot(days) -> { date, slot, total } | null`
   - `scoreBand(total) -> "good" | "ok" | "bad"`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `forecast.test.js`:
 
@@ -266,12 +266,12 @@ test("scoreBand boundaries (good >= 50, ok >= 30)", () => {
 
 テスト値は 0.5 / 1.25 / 1.5 など2進数で正確に表せる値にしている（0.8 や 1.4 は3点平均で誤差が出て `deepEqual` が不安定になるため）。
 
-- [ ] **Step 2: テストが失敗することを確認する**
+- [x] **Step 2: テストが失敗することを確認する**
 
 Run: `node --test forecast.test.js`
 Expected: FAIL（`Cannot find module './forecast.js'`）
 
-- [ ] **Step 3: `forecast.js` を実装する**
+- [x] **Step 3: `forecast.js` を実装する**
 
 ```js
 // Hourly Open-Meteo series -> per-slot conditions and the 7-day grid.
@@ -369,12 +369,12 @@ Expected: FAIL（`Cannot find module './forecast.js'`）
 });
 ```
 
-- [ ] **Step 4: テストが通ることを確認する**
+- [x] **Step 4: テストが通ることを確認する**
 
 Run: `node --test`
 Expected: PASS。末尾の集計が `ℹ tests 29`（`scoring.test.js` 12件 + `forecast.test.js` 17件）、`ℹ fail 0`
 
-- [ ] **Step 5: コミット**
+- [x] **Step 5: コミット**
 
 ```bash
 git add forecast.js forecast.test.js
@@ -393,7 +393,7 @@ git commit -m "feat: add forecast.js slot/weekly conversion with tests"
 - Consumes: `Forecast.TIME_SLOTS`、`Forecast.slotConditions`
 - Produces: `fetchSpotData(lat, lon, startDate, endDate) -> Promise<{ marine, forecast }>`（marine は `startDate-1`〜`endDate+1`、forecast は `startDate`〜`endDate`）
 
-- [ ] **Step 1: 比較用に `main` の worktree とハーネス用サーバーを用意する**
+- [x] **Step 1: 比較用に `main` の worktree とハーネス用サーバーを用意する**
 
 ```bash
 SP=/private/tmp/claude-501/-Users-tkasai-Projects-surf-check-deploy/5b275d7a-6c68-4a61-87e3-d43e9355d31f/scratchpad
@@ -407,7 +407,7 @@ chmod +x "$SP/drive.sh"
 
 Expected: `http://localhost:8001/base/harness.html` と `http://localhost:8001/site/harness.html` が 200 を返す。
 
-- [ ] **Step 2: `app.js` を書き換える**
+- [x] **Step 2: `app.js` を書き換える**
 
 `TIME_SLOTS` の定義（9行目）を置き換える:
 
@@ -456,7 +456,7 @@ async function rankSpot(spot, date, slot) {
 }
 ```
 
-- [ ] **Step 3: `index.html` で `forecast.js` を読み込む**
+- [x] **Step 3: `index.html` で `forecast.js` を読み込む**
 
 ```html
   <script src="scoring.js"></script>
@@ -464,12 +464,12 @@ async function rankSpot(spot, date, slot) {
   <script src="app.js"></script>
 ```
 
-- [ ] **Step 4: 単体テストを流す**
+- [x] **Step 4: 単体テストを流す**
 
 Run: `node --test`
 Expected: PASS（fail 0）
 
-- [ ] **Step 5: `main` と送信 URL・描画 HTML を比較する**
+- [x] **Step 5: `main` と送信 URL・描画 HTML を比較する**
 
 明日の日付を使う（今日だと「現在時刻」の縦線の位置が実行のたびに変わるため）。
 
@@ -485,7 +485,7 @@ done
 
 Expected: 3回とも `DONE` と `SAME: ...`。差分が出た場合は、Open-Meteo のデータ更新の可能性を除くためもう一度実行し、それでも出るなら `diff` の中身を調べて直す。
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```bash
 git add app.js index.html
@@ -508,7 +508,7 @@ git commit -m "refactor: route ranking through forecast.js"
   - `mdLabel(date) -> "9/19(土)"`、`dayColumnLabel(date) -> "土19"`、`SLOT_SHORT`
   - DOM: `article.wk-card[data-index]` の中に `button.wk-cell[data-day][data-slot][aria-pressed]`（データなしは `span.wk-cell.empty`）、`td.wk-wave`、空の `div.wk-detail-slot`
 
-- [ ] **Step 1: ハーネスが失敗することを確認する（Red）**
+- [x] **Step 1: ハーネスが失敗することを確認する（Red）**
 
 ```bash
 "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly"
@@ -516,7 +516,7 @@ git commit -m "refactor: route ranking through forecast.js"
 
 Expected: `pending`（週間予報タブのボタンがまだないため）
 
-- [ ] **Step 2: `index.html` を書き換える**
+- [x] **Step 2: `index.html` を書き換える**
 
 `<main class="app-shell">` を `<main class="app-shell" data-mode="ranking">` にする。
 
@@ -542,7 +542,7 @@ Expected: `pending`（週間予報タブのボタンがまだないため）
     </section>
 ```
 
-- [ ] **Step 3: `app.js` に週間予報を追加する**
+- [x] **Step 3: `app.js` に週間予報を追加する**
 
 `SLOT_LABELS` の直後に定数を追加する:
 
@@ -719,7 +719,7 @@ async function check() {
 });
 ```
 
-- [ ] **Step 4: `style.css` の末尾に追加する**
+- [x] **Step 4: `style.css` の末尾に追加する**
 
 ```css
 /* --- Mode tabs --- */
@@ -853,7 +853,7 @@ async function check() {
 }
 ```
 
-- [ ] **Step 5: 単体テストとハーネスで確認する（Green）**
+- [x] **Step 5: 単体テストとハーネスで確認する（Green）**
 
 ```bash
 node --test
@@ -869,11 +869,11 @@ Expected:
 - 全域: 32件（失敗があれば `failed=取得失敗: …` に名前が出る）、`overflowX=false`。
 - 900px 幅: `overflowX=false`。
 
-- [ ] **Step 6: ランキングが `main` と同一のままか確認する**
+- [x] **Step 6: ランキングが `main` と同一のままか確認する**
 
 Task 2 Step 5 のループをもう一度実行する。Expected: 3回とも `SAME`。
 
-- [ ] **Step 7: スクリーンショットで見た目を確認する**
+- [x] **Step 7: スクリーンショットで見た目を確認する**
 
 ```bash
 "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly" "$SP/weekly-375.png" 375
@@ -882,7 +882,7 @@ Task 2 Step 5 のループをもう一度実行する。Expected: 3回とも `SA
 
 両方の画像を開いて見る。確認すること: タブの選択状態、日付・時間帯の入力が隠れていること、表が枠からはみ出していないこと、色分けが読めること、「ベスト」表示が名前と重ならないこと。
 
-- [ ] **Step 8: コミット**
+- [x] **Step 8: コミット**
 
 ```bash
 git add index.html app.js style.css
@@ -901,7 +901,7 @@ git commit -m "feat: add weekly forecast tab with per-spot 7-day score grid"
 - Consumes: `WEEKLY_RESULTS`、`mdLabel`、`SLOT_LABELS`、`tideTimesLabel`、`reasonChips`、`metricIcon`、`jpDirection`、`windConditionLabel`、`waveIconClass`
 - Produces: `conditionMetrics(data, bearing) -> HTML`（ランキングカードと詳細の両方が使う `card-metrics` ブロック）
 
-- [ ] **Step 1: ハーネスが失敗することを確認する（Red）**
+- [x] **Step 1: ハーネスが失敗することを確認する（Red）**
 
 ```bash
 "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1"
@@ -909,7 +909,7 @@ git commit -m "feat: add weekly forecast tab with per-spot 7-day score grid"
 
 Expected: `details=0 pressed=0`（クリックしても何も起きない）
 
-- [ ] **Step 2: `conditionMetrics` を切り出し、`resultCard` から使う**
+- [x] **Step 2: `conditionMetrics` を切り出し、`resultCard` から使う**
 
 `resultCard` の直前に追加する。返す文字列は、変更前の `resultCard` の `card-metrics` ブロックと1文字も違わないようにする（インデントも含む）:
 
@@ -975,7 +975,7 @@ function resultCard(result, index) {
 }
 ```
 
-- [ ] **Step 3: 詳細の描画とタップ処理を追加する**
+- [x] **Step 3: 詳細の描画とタップ処理を追加する**
 
 `runWeekly` の直前に追加する:
 
@@ -1022,7 +1022,7 @@ function onWeeklyClick(e) {
   document.getElementById("weekly").addEventListener("click", onWeeklyClick);
 ```
 
-- [ ] **Step 4: `style.css` の末尾に追加する**
+- [x] **Step 4: `style.css` の末尾に追加する**
 
 ```css
 .wk-cell[aria-pressed="true"] {
@@ -1055,7 +1055,7 @@ function onWeeklyClick(e) {
 }
 ```
 
-- [ ] **Step 5: ハーネスで確認する（Green）**
+- [x] **Step 5: ハーネスで確認する（Green）**
 
 ```bash
 "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1"
@@ -1068,11 +1068,11 @@ Expected:
 - `tap=2`（同じセルを2回）: `details=0 pressed=0`。
 - `tap=3`（別のセルへ切替）: `details=1 pressed=1`。見出しが2番目のセル（明日の朝）の日付になっている。
 
-- [ ] **Step 6: ランキングが `main` と同一のままか確認する**
+- [x] **Step 6: ランキングが `main` と同一のままか確認する**
 
 Task 2 Step 5 のループをもう一度実行する（`resultCard` を書き換えたため）。Expected: 3回とも `SAME`。
 
-- [ ] **Step 7: 詳細を開いた状態のスクリーンショットを確認する**
+- [x] **Step 7: 詳細を開いた状態のスクリーンショットを確認する**
 
 ```bash
 "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1" "$SP/weekly-detail-375.png" 375
@@ -1080,7 +1080,7 @@ Task 2 Step 5 のループをもう一度実行する（`resultCard` を書き�
 
 画像を開いて、詳細パネルがカード内に収まり、コンパスと風速リング、満潮・干潮、理由チップが崩れずに出ていることを見る。
 
-- [ ] **Step 8: コミット**
+- [x] **Step 8: コミット**
 
 ```bash
 git add app.js style.css
@@ -1095,7 +1095,7 @@ git commit -m "feat: expand slot details when a weekly grid cell is tapped"
 - Modify: `README.md`
 - Modify: `tasks/todo.md`（レビュー欄）
 
-- [ ] **Step 1: README を更新する**
+- [x] **Step 1: README を更新する**
 
 冒頭の説明文を置き換える:
 
@@ -1122,7 +1122,7 @@ forecast.test.js  テスト（時間帯平均・週間予報）
 
 「テスト」のコマンドを `node --test`（全テストファイルを実行）に変える。
 
-- [ ] **Step 2: 最終確認**
+- [x] **Step 2: 最終確認**
 
 ```bash
 node --test
@@ -1136,11 +1136,11 @@ done
 
 Expected: テストは fail 0、ランキングは `SAME`、週間予報は全エリアで `failed=none`（通信失敗があれば名前が出る）と `overflowX=false`。
 
-- [ ] **Step 3: この `tasks/todo.md` の末尾にレビュー欄を書く**
+- [x] **Step 3: この `tasks/todo.md` の末尾にレビュー欄を書く**
 
 実施した確認と結果、残っている懸念（あれば）を書く。秘密情報は書かない。
 
-- [ ] **Step 4: コミット**
+- [x] **Step 4: コミット**
 
 ```bash
 git add README.md tasks/todo.md
@@ -1154,3 +1154,18 @@ git -C /Users/tkasai/Projects/surf-check-deploy worktree remove "$SP/base"
 ```
 
 8001 番のサーバーを止める。ユーザーに `http://localhost:8000/` で両タブとセルのタップを手元のブラウザで確認してもらう。`snapshot.html` は `forecast.js` を読み込んでいないため動かなくなっていることを伝える（`scoring.js` と `app.js` の間に `<script src="forecast.js"></script>` を足せば直る）。
+
+## レビュー
+
+### 実施した確認
+
+- **単体テスト**: `node --test` を実行。`scoring.test.js`（12件）+ `forecast.test.js`（17件）で合計 `tests 29` / `pass 29` / `fail 0`。
+- **ランキングの main との比較**（Task 2 Step 5 のループを再実行）: 茨城/morning、湘南/evening、千葉南/afternoon の3クエリすべてで送信 URL・`#results` の描画 HTML が `main` と `SAME`。湘南/evening は1回目に `diff` が出たが、Open-Meteo のデータが2回のリクエストの間で更新されたことが原因と判断し再実行したところ `SAME` になった（コード差分ではないことを、同じクエリを続けて再実行して確認）。
+- **週間予報ハーネス（全4エリア）**: `mode=weekly` で 茨城・湘南・千葉南・全域 を確認。最終的に4エリアとも `failed=none` / `overflowX=false`。
+  - 件数: 茨城 4件、湘南 10件、千葉南 8件、全域 32件。
+  - 初回実行時、湘南と千葉南でそれぞれ1スポットが `取得失敗` になったが、再実行のたびに失敗するスポット名が変わり（パイプライン（茅ヶ崎）→鵠沼、部原→失敗なし）、3回連続で成功もしたことから、コードの不具合ではなく Open-Meteo 側の一時的な応答遅延・失敗と判断した（`Promise.allSettled` による失敗スポットの個別レポートは仕様どおり動作）。
+
+### 残っている懸念
+
+- 週間予報は1エリアあたり最大32件のスポットに並列でリクエストするため、Open-Meteo 側が混雑していると一部スポットが `取得失敗` として表示されることがある（コードの不具合ではなく、UI は失敗したスポット名を表示して残りは正常に描画する設計どおりの挙動）。
+- `snapshot.html`（未追跡ファイル）は本タスクでも変更していないため、`forecast.js` を読み込んでおらず動作しない状態のまま。`scoring.js` と `app.js` の間に `<script src="forecast.js"></script>` を追加すれば直る。
