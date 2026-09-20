@@ -775,3 +775,35 @@ footer {
 .wk-detail .card-metrics {
   margin-bottom: 0;
 }
+
+/* --- Share buttons --- */
+
+.share-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.share-btn {
+  min-height: 44px;
+  border: 1px solid rgba(18, 69, 89, 0.16);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--deep);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.share-btn.line {
+  border-color: transparent;
+  background: #06c755;
+  color: #fff;
+}
+
+.share-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}

@@ -335,6 +335,35 @@ function drawTideCurves(el, results, date, slot) {
   });
 }
 
+// 共有ボタンの行。結果が1件以上あるときだけ描く。
+function shareRow() {
+  return `<div class="share-row">
+      <button type="button" id="shareLine" class="share-btn line">LINEで送る</button>
+      <button type="button" id="shareImage" class="share-btn">画像で共有</button>
+    </div>`;
+}
+
+// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
+function openLineShare(region, date, slot, results) {
+  const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+  const text = Share.shareText(region, date, slot, results, url);
+  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, "_blank", "noopener");
+  if (!win) shareError("LINEを開けませんでした");
+}
+
+// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
+function shareError(message) {
+  const row = document.querySelector(".share-row");
+  if (!row) return;
+  let note = row.querySelector(".share-note");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "failed share-note";
+    row.appendChild(note);
+  }
+  note.textContent = message;
+}
+
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
@@ -348,10 +377,13 @@ function renderResults(el, region, date, slot, results, failed) {
       <h2>${escapeHtml(region)}の${escapeHtml(SLOT_LABELS[slot])}ランキング</h2>
       <span>${escapeHtml(date)} / ${results.length}件</span>
     </div>
+    ${shareRow()}
     <div class="ranking-cards">
       ${results.map(resultCard).join("")}
     </div>
     ${failedNote}`;
+  const lineBtn = el.querySelector("#shareLine");
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
   drawTideCurves(el, results, date, slot);
 }
 

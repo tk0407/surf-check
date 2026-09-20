@@ -84,3 +84,48 @@ test("cardRows は小数を1桁に丸める", () => {
   assert.equal(rows[0].wave, "2.1m オーバーヘッド");
   assert.equal(rows[0].wind, "南西 5.0m/s サイドオフ");
 });
+
+test("shareLines の1行目はエリア・日付・時間帯", () => {
+  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [result("飯岡", 54)]);
+  assert.equal(lines[0], "千葉北 9/20(日) 朝のサーフチェック");
+});
+
+test("shareLines は時間帯を朝・昼・夕で書き分ける", () => {
+  const r = [result("飯岡", 54)];
+  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "afternoon", r)[0].includes("昼のサーフチェック"));
+  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "evening", r)[0].includes("夕のサーフチェック"));
+});
+
+test("shareLines は上位3件を順位付きで並べる", () => {
+  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [
+    result("飯岡", 54), result("一宮", 51), result("木戸", 47), result("太東", 44),
+  ]);
+  assert.equal(lines.length, 4);
+  assert.equal(lines[1], "1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）");
+  assert.equal(lines[3], "3位 木戸 47点（1.4m / 南西5.5m/s サイドオフ）");
+});
+
+test("shareLines は1件だけでも成立する", () => {
+  const lines = Sh.shareLines("茨城", "2026-09-20", "morning", [result("飯岡", 54)]);
+  assert.equal(lines.length, 2);
+});
+
+test("shareText は本文とURLを空行で挟んでつなぐ", () => {
+  const text = Sh.shareText("千葉北", "2026-09-20", "morning", [result("飯岡", 54)], "https://example.test/?x=1");
+  assert.equal(
+    text,
+    "千葉北 9/20(日) 朝のサーフチェック\n1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）\n\nhttps://example.test/?x=1"
+  );
+});
+
+test("shareUrl は3つの条件をクエリにする", () => {
+  const url = Sh.shareUrl("https://example.test/surf/", "千葉北", "2026-09-20", "morning");
+  assert.equal(url, "https://example.test/surf/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
+});
+
+test("shareUrl は base に付いていた既存のクエリを捨てる", () => {
+  const url = Sh.shareUrl("https://example.test/surf/?old=1", "茨城", "2026-09-21", "evening");
+  assert.ok(!url.includes("old=1"));
+  assert.ok(url.includes("region=%E8%8C%A8%E5%9F%8E"));
+  assert.ok(url.includes("slot=evening"));
+});

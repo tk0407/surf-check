@@ -54,7 +54,26 @@
     }));
   }
 
+  function shareLines(region, date, slot, results) {
+    const head = `${region} ${mdLabel(date)} ${SLOT_SHORT[slot]}のサーフチェック`;
+    const rows = cardRows(results).map(
+      (r) => `${r.rank}位 ${r.name} ${r.score}点（${r.wave.split(" ")[0]} / ${r.wind.replace(" ", "")}）`
+    );
+    return [head, ...rows];
+  }
+
+  function shareText(region, date, slot, results, url) {
+    return `${shareLines(region, date, slot, results).join("\n")}\n\n${url}`;
+  }
+
+  function shareUrl(base, region, date, slot) {
+    const u = new URL(base);
+    u.search = new URLSearchParams({ region, date, slot }).toString();
+    return u.toString();
+  }
+
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    shareLines, shareText, shareUrl,
   };
 });
