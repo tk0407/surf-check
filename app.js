@@ -8,8 +8,6 @@ const MARINE_PARAMS = [
 const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
-const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
-const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 const WEEK_DAYS = 7;
 
 let SPOTS = [];
@@ -38,20 +36,9 @@ function shiftDate(date, days) {
   return fmtDate(d);
 }
 
-function dateParts(date) {
-  const d = new Date(`${date}T00:00:00`);
-  return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
-}
-
-// "9/19(土)"
-function mdLabel(date) {
-  const p = dateParts(date);
-  return `${p.month}/${p.day}(${p.weekday})`;
-}
-
 // "土19" — weekly grid column header
 function dayColumnLabel(date) {
-  const p = dateParts(date);
+  const p = Share.dateParts(date);
   return `${p.weekday}${p.day}`;
 }
 
@@ -130,32 +117,10 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function jpDirection(deg) {
-  const names = [
-    [0, 22.5, "北"], [22.5, 67.5, "北東"], [67.5, 112.5, "東"],
-    [112.5, 157.5, "南東"], [157.5, 202.5, "南"], [202.5, 247.5, "南西"],
-    [247.5, 292.5, "西"], [292.5, 337.5, "北西"], [337.5, 360, "北"],
-  ];
-  const normalized = ((deg % 360) + 360) % 360;
-  const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
-  return found ? found[2] : "北";
-}
-
 function waveIconClass(height) {
   if (height < 0.8) return "small";
   if (height < 1.2) return "medium";
   return "large";
-}
-
-function windConditionLabel(windDir, windSpeed, bearing) {
-  const offshoreFrom = (bearing + 180) % 360;
-  let diff = Math.abs(windDir - offshoreFrom) % 360;
-  if (diff > 180) diff = 360 - diff;
-  if (diff < 45) return windSpeed <= 3 ? "オフ弱" : "オフショア";
-  if (diff <= 75) return "サイドオフ";
-  if (diff <= 105) return "サイド";
-  if (diff <= 135) return "サイドオン";
-  return "オンショア";
 }
 
 function tideTimesLabel(events, type) {
@@ -298,7 +263,7 @@ function metricIcon(directionDeg, windSpeedMs) {
 
 function conditionMetrics(data, bearing) {
   const waveSize = Scoring.waveSizeLabel(data.wave_height);
-  const windCondition = windConditionLabel(data.wind_dir, data.wind_speed, bearing);
+  const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
   const windFlowDeg = data.wind_dir + 180;
   const swellFlowDeg = data.swell_dir + 180;
   return `<div class="card-metrics">
@@ -310,12 +275,12 @@ function conditionMetrics(data, bearing) {
       <span class="mini-metric">
         <b>風向き</b>
         ${metricIcon(windFlowDeg, data.wind_speed)}
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(Share.jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
       </span>
       <span class="mini-metric">
         <b>うねりの向き</b>
         ${metricIcon(swellFlowDeg)}
-        <span><strong>${escapeHtml(jpDirection(data.swell_dir))}うねり</strong></span>
+        <span><strong>${escapeHtml(Share.jpDirection(data.swell_dir))}うねり</strong></span>
       </span>
     </div>`;
 }
@@ -370,6 +335,77 @@ function drawTideCurves(el, results, date, slot) {
   });
 }
 
+// 共有ボタンの行。結果が1件以上あるときだけ描く。
+function shareRow() {
+  return `<div class="share-row">
+      <button type="button" id="shareLine" class="share-btn line">LINEで送る</button>
+      <button type="button" id="shareImage" class="share-btn">画像で共有</button>
+    </div>`;
+}
+
+// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
+function openLineShare(region, date, slot, results) {
+  const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+  const text = Share.shareText(region, date, slot, results, url);
+  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, "_blank", "noopener");
+  if (!win) shareError("LINEを開けませんでした");
+}
+
+// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
+function shareError(message) {
+  const row = document.querySelector(".share-row");
+  if (!row) return;
+  let note = row.querySelector(".share-note");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "failed share-note";
+    row.appendChild(note);
+  }
+  note.textContent = message;
+}
+
+// 押す前にラベルを決めたいので、同じ形のダミーPNGで共有可否を先に聞く。
+// navigator.canShare の有無だけでは足りない（PCのChromeは関数を持っているが
+// ファイル共有はできないので、「画像で共有」と出して保存が走ってしまう）。
+function canShareImageFile() {
+  if (!navigator.canShare) return false;
+  try {
+    return navigator.canShare({ files: [new File([], "surf-check.png", { type: "image/png" })] });
+  } catch (e) {
+    return false;
+  }
+}
+
+// canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
+async function shareImage(region, date, slot, results) {
+  const canvas = document.createElement("canvas");
+  Share.drawShareCard(canvas, {
+    region, date, slot,
+    rows: Share.cardRows(results),
+    count: results.length,
+  });
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) { shareError("画像を作れませんでした"); return; }
+  const file = new File([blob], `surf-check-${region}-${date}-${slot}.png`, { type: "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+    const lines = Share.shareLines(region, date, slot, results);
+    try {
+      await navigator.share({ files: [file], text: `${lines[0]}\n${url}` });
+    } catch (e) {
+      // 共有シートを閉じただけなので何も出さない。
+      if (e.name !== "AbortError") shareError("画像を共有できませんでした");
+    }
+    return;
+  }
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = file.name;
+  a.click();
+  URL.revokeObjectURL(href);
+}
+
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
@@ -383,11 +419,21 @@ function renderResults(el, region, date, slot, results, failed) {
       <h2>${escapeHtml(region)}の${escapeHtml(SLOT_LABELS[slot])}ランキング</h2>
       <span>${escapeHtml(date)} / ${results.length}件</span>
     </div>
+    ${shareRow()}
     <div class="ranking-cards">
       ${results.map(resultCard).join("")}
     </div>
     ${failedNote}`;
+  const lineBtn = el.querySelector("#shareLine");
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
+  const imageBtn = el.querySelector("#shareImage");
+  if (imageBtn) {
+    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
+    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
+    imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
+  }
   drawTideCurves(el, results, date, slot);
+  history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
 }
 
 // Runs fn for every spot in parallel; spots whose promise rejects are
@@ -430,7 +476,7 @@ function weeklyCell(day, slot, dayIndex) {
   const cell = day.slots[slot];
   if (!cell) return `<td><span class="wk-cell empty" role="img" aria-label="データなし">–</span></td>`;
   const total = cell.scores.total;
-  const label = `${mdLabel(day.date)} ${SLOT_SHORT[slot]} ${total}点`;
+  const label = `${Share.mdLabel(day.date)} ${Share.SLOT_SHORT[slot]} ${total}点`;
   return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
 }
 
@@ -439,7 +485,7 @@ function weeklyCard(result, index) {
   const head = result.days.map((day) => `<th scope="col">${escapeHtml(dayColumnLabel(day.date))}</th>`).join("");
   const rows = Forecast.SLOT_ORDER.map((slot) => {
     const cells = result.days.map((day, di) => weeklyCell(day, slot, di)).join("");
-    return `<tr><th scope="row">${SLOT_SHORT[slot]}</th>${cells}</tr>`;
+    return `<tr><th scope="row">${Share.SLOT_SHORT[slot]}</th>${cells}</tr>`;
   }).join("");
   const waves = result.days.map((day) =>
     `<td class="wk-wave">${day.maxWaveHeight == null ? "–" : day.maxWaveHeight.toFixed(1)}</td>`).join("");
@@ -450,7 +496,7 @@ function weeklyCard(result, index) {
         <b>${escapeHtml(result.spot.name)}</b>
         <span>${escapeHtml(result.spot.region)}</span>
       </span>
-      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${SLOT_SHORT[best.slot]} ${best.total}点</b></span>
+      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${Share.SLOT_SHORT[best.slot]} ${best.total}点</b></span>
     </div>
     <table class="wk-grid">
       <thead><tr><th></th>${head}</tr></thead>
@@ -472,7 +518,7 @@ function renderWeekly(el, region, dates, results, failed) {
   el.innerHTML = `
     <div class="results-head">
       <h2>${escapeHtml(region)}の週間予報</h2>
-      <span>${escapeHtml(mdLabel(dates[0]))}〜${escapeHtml(mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
+      <span>${escapeHtml(Share.mdLabel(dates[0]))}〜${escapeHtml(Share.mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
     </div>
     <div class="ranking-cards">
       ${results.map(weeklyCard).join("")}
@@ -484,7 +530,7 @@ function weeklyDetail(spot, day, slot) {
   const { data, scores } = day.slots[slot];
   return `<div class="wk-detail">
     <div class="wk-detail-head">
-      <b>${escapeHtml(mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
+      <b>${escapeHtml(Share.mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
       <span class="ranking-score">${scores.total}<span>/85</span></span>
     </div>
     ${conditionMetrics(data, spot.bearing)}
@@ -570,6 +616,26 @@ function initDate() {
   dateEl.value = fmtDate(today);
 }
 
+// 共有リンクから来た条件を選択欄に入れる。1つでも入ったら true。
+// 日付が min/max の外なら、入力欄の表示と制約が食い違わないよう制約を広げる。
+function applyParams() {
+  const regionEl = document.getElementById("region");
+  const dateEl = document.getElementById("date");
+  const slotEl = document.getElementById("slot");
+  const params = Share.parseParams(location.search, {
+    regions: Array.from(regionEl.options).map((o) => o.value),
+    slots: Object.keys(TIME_SLOTS),
+  });
+  if (params.region) regionEl.value = params.region;
+  if (params.slot) slotEl.value = params.slot;
+  if (params.date) {
+    if (params.date < dateEl.min) dateEl.min = params.date;
+    if (params.date > dateEl.max) dateEl.max = params.date;
+    dateEl.value = params.date;
+  }
+  return Boolean(params.region || params.date || params.slot);
+}
+
 // Hover layer: crosshair + dot inside the hovered sparkline, one shared
 // tooltip (textContent only) positioned above the snapped sample.
 let tideTip = null;
@@ -646,4 +712,5 @@ window.addEventListener("DOMContentLoaded", async () => {
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", check);
   document.getElementById("checkTop").addEventListener("click", check);
+  if (applyParams()) check();
 });

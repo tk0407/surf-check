@@ -1,1190 +1,1037 @@
-# 週間予報タブ 実装計画
+# 検索結果の共有（LINE / 画像）実装計画
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
-**Goal:** エリアを選ぶと、そのエリアの各サーフポイントの7日分（朝・昼・夕）の波質スコアをカードで一覧でき、セルをタップすると詳細が開く「週間予報」タブを追加する。
+**Goal:** ランキングの上位3件を、LINEに送れるテキストと1枚の画像として共有できるようにし、共有リンクから同じ検索結果を再現できるようにする。
 
-**Architecture:** 1時間ごとの Open-Meteo データを時間帯の平均・採点用の値・7日分の表に変換する処理を、テストできる新しいファイル `forecast.js`（`scoring.js` と同じ UMD 形式）に置く。ランキングと週間予報の両方がこれを使う。画面側（タブ、取得、描画、タップ処理）は `app.js` に追加し、既存の表示部品を使い回す。
+**Architecture:** 共有用の文字列組み立てとカード描画を `share.js` に新設する。共有テキスト・共有画像・画面のカードが必ず同じ文字列を出すよう、ラベルの整形（方位・風・波・日付・時間帯）を `share.js` に集め、`app.js` はそこから借りる。画像は外部ライブラリを使わず `<canvas>` の2Dコンテキストに直接描く。検索条件は `?region=&date=&slot=` で持ち回り、読み込み時に復元する。
 
-**Tech Stack:** 素の HTML / CSS / ブラウザ JavaScript（ビルドなし）、Open-Meteo Marine + Forecast API、`node --test`（Node v23）、確認用にヘッドレス Chrome。
+**Tech Stack:** 素のHTML / CSS / JavaScript（ビルド手順なし）、Canvas 2D API、Web Share API、`node --test`
 
-**Spec:** [docs/superpowers/specs/2026-09-19-weekly-forecast-design.md](../docs/superpowers/specs/2026-09-19-weekly-forecast-design.md)
+**Spec:** `docs/superpowers/specs/2026-09-20-share-results-design.md`
 
 ## Global Constraints
 
 - 新しいパッケージは入れない。外部スクリプトも読み込まない。
-- ランキングタブは、送信 URL と `#results` の描画 HTML が変更前（`main`）と同一であること。
-- 点数帯: 50点以上 `good`、30〜49点 `ok`、30点未満 `bad`（満点85）。
-- 週間予報の期間: 今日〜今日+6（7日）。marine の取得は 今日-1〜今日+7、forecast は 今日〜今日+6。
-- 時間帯: `morning [7,10)`、`afternoon [12,15)`、`evening [16,19)`（開始時刻以上・終了時刻未満）。
-- スマホ幅 375px でページが横スクロールしないこと。
-- 画面に出す文字列は `escapeHtml` を通す。
+- ランキングの取得・採点・カード描画の挙動は変更しない。共有ボタンの行以外、`#results` と `#weekly` の描画HTMLに差が出ないこと。
+- 画面に出す文字列は `escapeHtml` を通す。canvas に描く文字列はHTMLではないためエスケープ不要。
 - 本番コードにテスト用の分岐を入れない。
+- スマホ幅 375px でページが横スクロールしないこと。
+- 共有カードは 1080 × 1080 px、PNG。
+- 色は既存の CSS 変数と同じ値を使う: `--ink #17212b` / `--muted #687481` / `--line #dce5eb` / `--bg #edf3f5` / `--panel #ffffff` / `--sea #007f8f` / `--deep #124559`。
+- フォント指定は画面と同じ `system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif`。
+- CSS / JS を変更したら `index.html` の `?v=` の日付を上げる。
 - コミットメッセージの末尾に `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` を付ける。
 
+## ファイル構成
+
+| ファイル | 役割 | 変更 |
+| --- | --- | --- |
+| `share.js` | 表示ラベルの整形・共有テキスト・共有URL・URLパラメータ検証・カード描画。`forecast.js` と同じ UMD 形式 | 新規 |
+| `share.test.js` | `share.js` の純粋関数のテスト | 新規 |
+| `app.js` | 共有ボタンの描画とイベント、URLの復元と反映。ラベル整形は `share.js` に委譲 | 変更 |
+| `index.html` | `share.js` の読み込み、`?v=` の更新 | 変更 |
+| `style.css` | 共有ボタンの見た目 | 変更 |
+| `README.md` | 共有機能の説明 | 変更 |
+
+責任の線引き: `share.js` は「値を人が読む文字列にする」ところまで。データ取得・採点は `forecast.js` / `scoring.js`、画面の組み立ては `app.js` のままにする。同じラベルを2か所で定義しない（定義が2つあると、画面の文言を直したときに共有テキストだけ古いまま残る）。
+
+**開始前のベースライン**: `node --test` は現在 29件すべて成功する。
+
 ---
 
-## 確認用ハーネス（リポジトリには入れない）
+### Task 1: share.js にラベル整形を集める
 
-画面の確認には、スクラッチパッドに置いたハーネスを使う。本物の `index.html` を iframe（既定 375px 幅）に読み込み、タブの切替・エリアの設定・チェックボタンのクリックを行い、描画結果を `<pre id="out">` に書き出す。ヘッドレス Chrome の `--dump-dom` でそれを読み取る。
-
-- スクラッチパッド: `SP=/private/tmp/claude-501/-Users-tkasai-Projects-surf-check-deploy/5b275d7a-6c68-4a61-87e3-d43e9355d31f/scratchpad`
-- `$SP/site/` : 作業ツリーのファイルへのシンボリックリンク（`index.html` `app.js` `scoring.js` `forecast.js` `style.css` `spots.json`）と `harness.html`
-- `$SP/base/` : `main` を切り出した worktree と `harness.html` のコピー（変更前との比較用）
-- `$SP/drive.sh <url>` : レポートを表示。`$SP/drive.sh <url> <out.png> [幅]` : スクリーンショットを保存。
-- ハーネスのクエリ: `mode=ranking|weekly`、`region=`（URL エンコード。既定は茨城）、`slot=`、`date=`、`w=`（iframe 幅）、`tap=1|2|3`（1: 最初のセル、2: 最初のセルを2回、3: 最初のセルの次に2番目のセル）、`urls=1`（Open-Meteo の送信 URL を列挙）、`dump=1`（結果の innerHTML を出力）
-- エリアの URL エンコード: 茨城 `%E8%8C%A8%E5%9F%8E`、湘南 `%E6%B9%98%E5%8D%97`、千葉南 `%E5%8D%83%E8%91%89%E5%8D%97`、全域 `%E5%85%A8%E5%9F%9F`
-- シェルは毎回新しく起動するので、以下のコマンドはすべて先頭で `SP=...`（上記のパス）を設定してから実行する。
-
-ユーザーの未追跡ファイル `snapshot.html` は変更しない（Task 2 以降、`forecast.js` を読み込んでいないため動かなくなる。完了時にユーザーへ伝える）。
-
----
-
-### Task 1: `forecast.js`（変換ロジック）とテスト
+`jpDirection` / `windConditionLabel` / `WEEKDAYS_JA` / `dateParts` / `mdLabel` / `SLOT_SHORT` は現在 `app.js` にあり、画面のカードと週間表が使っている。共有テキストと共有画像も同じ文字列を出す必要があるため、`share.js` に移して両方から使えるようにする。この時点では画面の表示は1文字も変わらない。
 
 **Files:**
-- Create: `forecast.js`
-- Test: `forecast.test.js`（新規）
+- Create: `share.js`
+- Create: `share.test.js`
+- Modify: `app.js:11-12`（`SLOT_SHORT` と `WEEKDAYS_JA` を削除）、`app.js:41-50`（`dateParts` と `mdLabel` を削除）、`app.js:52-56`（`dayColumnLabel` を `Share.dateParts` 経由に）、`app.js:133-142`（`jpDirection` を削除）、`app.js:150-159`（`windConditionLabel` を削除）、`app.js:299-320`（`conditionMetrics` の3か所）、`app.js:433` / `app.js:442` / `app.js:453` / `app.js:475` / `app.js:487`（呼び出しを `Share.` 付きに）
+- Modify: `index.html:71-73`（`share.js` の読み込みを追加）
 
 **Interfaces:**
-- Consumes: `Scoring.scoreSpot(data, bearing) -> { wind_direction, wind_speed, swell_direction, swell_period, wave_height, total }`、`Scoring.tideEvents(times, heights, date) -> [{ type: "high"|"low", time: "HH:MM", height }]`
-- Produces（ブラウザでは `window.Forecast`、Node では `require("./forecast.js")`）:
-  - `TIME_SLOTS: { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] }`
-  - `SLOT_ORDER: ["morning", "afternoon", "evening"]`
-  - `averageForWindow(hourly, slot, date) -> { [key]: number|null } | null`
-  - `slotConditions(marine, forecast, slot, date) -> { wind_dir, wind_speed, swell_dir, swell_period, wave_height } | null`
-  - `weeklyForecast(marine, forecast, dates, bearing) -> [{ date, slots: { morning, afternoon, evening }, maxWaveHeight, tide }]`（各 slot は `{ data, scores }` または `null`）
-  - `bestSlot(days) -> { date, slot, total } | null`
-  - `scoreBand(total) -> "good" | "ok" | "bad"`
+- Consumes: `Scoring.waveSizeLabel(heightM) -> string`（`scoring.js`）
+- Produces:
+  - `Share.SLOT_SHORT` — `{ morning: "朝", afternoon: "昼", evening: "夕" }`
+  - `Share.dateParts(date) -> { month, day, weekday }`
+  - `Share.mdLabel(date) -> string` — `"2026-09-20"` → `"9/20(日)"`
+  - `Share.jpDirection(deg) -> string` — `0` → `"北"`、`45` → `"北東"`
+  - `Share.windConditionLabel(windDir, windSpeed, bearing) -> string` — `"オフ弱" | "オフショア" | "サイドオフ" | "サイド" | "サイドオン" | "オンショア"`
+  - `Share.cardRows(results) -> { rank, name, score, wave, wind }[]` — 先頭3件まで
 
 - [x] **Step 1: 失敗するテストを書く**
 
-`forecast.test.js`:
+`share.test.js` を新規作成する。
 
 ```js
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const F = require("./forecast.js");
-const S = require("./scoring.js");
+const Sh = require("./share.js");
 
-// Open-Meteo-style hourly series: one sample per hour for each day,
-// value = fn(dayIndex, hour).
-function hourly(days, fields) {
-  const out = { time: [] };
-  for (const key of Object.keys(fields)) out[key] = [];
-  days.forEach((day, di) => {
-    for (let h = 0; h < 24; h++) {
-      out.time.push(`${day}T${String(h).padStart(2, "0")}:00`);
-      for (const [key, fn] of Object.entries(fields)) out[key].push(fn(di, h));
-    }
-  });
-  return out;
+// ランキング1件分。app.js の rankSpot が返す形のうち、共有に使う部分だけ。
+// bearing 90 (東向きの浜) に対し wind_dir 225 (南西) はサイドオフになる。
+function result(name, total, over) {
+  return {
+    spot: { name, region: "千葉北", bearing: 90, ...(over && over.spot) },
+    scores: { total },
+    data: {
+      wave_height: 1.4, swell_period: 8.0, wind_dir: 225,
+      wind_speed: 5.5, swell_dir: 135, ...(over && over.data),
+    },
+  };
 }
 
-// The app fetches marine one day wider on each side than the forecast.
-const WEEK = ["2026-09-19", "2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25"];
-const MARINE_DAYS = ["2026-09-18", ...WEEK, "2026-09-26"];
-
-// M2 tide: 12.4h period cosine.
-const m2 = (di, h) => 0.5 * Math.cos((2 * Math.PI * (di * 24 + h - 27)) / 12.4);
-
-function marineSeries(overrides = {}) {
-  return hourly(MARINE_DAYS, {
-    wave_height: () => 1.0,
-    wave_period: () => 7,
-    wave_direction: () => 100,
-    swell_wave_height: () => 1.25,
-    swell_wave_period: () => 11,
-    swell_wave_direction: () => 90,
-    sea_level_height_msl: m2,
-    ...overrides,
-  });
-}
-
-function forecastSeries(overrides = {}) {
-  return hourly(WEEK, {
-    windspeed_10m: () => 3,
-    winddirection_10m: () => 270,
-    ...overrides,
-  });
-}
-
-const BASE_DATA = { wind_dir: 270, wind_speed: 3, swell_dir: 90, swell_period: 11, wave_height: 1.25 };
-
-// --- averageForWindow ---
-
-test("averageForWindow averages the slot hours [start, end) of the given date only", () => {
-  const h = hourly(["2026-09-19", "2026-09-20"], { v: (di, hr) => di * 100 + hr });
-  // morning on 09-20 = 07,08,09 -> 107,108,109 (10:00 excluded, which would give 108.5)
-  assert.deepEqual(F.averageForWindow(h, "morning", "2026-09-20"), { v: 108 });
-  // evening on 09-19 = 16,17,18
-  assert.deepEqual(F.averageForWindow(h, "evening", "2026-09-19"), { v: 17 });
+test("jpDirection は8方位の日本語を返す", () => {
+  assert.equal(Sh.jpDirection(0), "北");
+  assert.equal(Sh.jpDirection(45), "北東");
+  assert.equal(Sh.jpDirection(180), "南");
+  assert.equal(Sh.jpDirection(315), "北西");
 });
 
-test("averageForWindow skips null samples and yields null for an all-null key", () => {
-  const h = hourly(["2026-09-19"], {
-    v: (di, hr) => (hr === 8 ? null : hr),
-    gone: () => null,
-  });
-  assert.deepEqual(F.averageForWindow(h, "morning", "2026-09-19"), { v: 8, gone: null });
+test("jpDirection は境界の角度を次の方位に入れる", () => {
+  assert.equal(Sh.jpDirection(22.4), "北");
+  assert.equal(Sh.jpDirection(22.5), "北東");
+  assert.equal(Sh.jpDirection(337.5), "北");
 });
 
-test("averageForWindow returns null when the date has no samples", () => {
-  const h = hourly(["2026-09-19"], { v: () => 1 });
-  assert.equal(F.averageForWindow(h, "morning", "2026-09-20"), null);
+test("jpDirection は360度を超える値と負の値を正規化する", () => {
+  assert.equal(Sh.jpDirection(405), "北東");
+  assert.equal(Sh.jpDirection(-45), "北西");
 });
 
-// --- slotConditions ---
-
-test("slotConditions prefers swell components and reads wind from the forecast series", () => {
-  assert.deepEqual(F.slotConditions(marineSeries(), forecastSeries(), "morning", "2026-09-19"), BASE_DATA);
+test("windConditionLabel は岸の向きに対する風の角度で決まる", () => {
+  // bearing 90 (東向きの浜) の沖向きは西風 (270)
+  assert.equal(Sh.windConditionLabel(270, 5, 90), "オフショア");
+  assert.equal(Sh.windConditionLabel(225, 5, 90), "サイドオフ");
+  assert.equal(Sh.windConditionLabel(180, 5, 90), "サイド");
+  assert.equal(Sh.windConditionLabel(135, 5, 90), "サイドオン");
+  assert.equal(Sh.windConditionLabel(90, 5, 90), "オンショア");
 });
 
-test("slotConditions falls back to combined-wave values when swell is missing", () => {
-  const marine = marineSeries({
-    swell_wave_height: () => null,
-    swell_wave_period: () => null,
-    swell_wave_direction: () => null,
-  });
-  assert.deepEqual(F.slotConditions(marine, forecastSeries(), "afternoon", "2026-09-19"), {
-    wind_dir: 270, wind_speed: 3, swell_dir: 100, swell_period: 7, wave_height: 1.0,
-  });
+test("windConditionLabel は弱いオフショアを区別する", () => {
+  assert.equal(Sh.windConditionLabel(270, 3, 90), "オフ弱");
+  assert.equal(Sh.windConditionLabel(270, 3.1, 90), "オフショア");
 });
 
-test("slotConditions returns null when wind is missing", () => {
-  const forecast = forecastSeries({ winddirection_10m: () => null });
-  assert.equal(F.slotConditions(marineSeries(), forecast, "morning", "2026-09-19"), null);
+test("mdLabel は月日と曜日を返す", () => {
+  assert.equal(Sh.mdLabel("2026-09-20"), "9/20(日)");
+  assert.equal(Sh.mdLabel("2026-01-01"), "1/1(木)");
 });
 
-test("slotConditions returns null when the forecast has no samples for the date", () => {
-  // marine covers 09-26 but the forecast series stops at 09-25
-  assert.equal(F.slotConditions(marineSeries(), forecastSeries(), "morning", "2026-09-26"), null);
+test("dateParts は月・日・曜日に分ける", () => {
+  assert.deepEqual(Sh.dateParts("2026-09-20"), { month: 9, day: 20, weekday: "日" });
 });
 
-// --- weeklyForecast ---
-
-test("weeklyForecast builds one entry per date with scored morning/afternoon/evening slots", () => {
-  const days = F.weeklyForecast(marineSeries(), forecastSeries(), WEEK, 90);
-  assert.deepEqual(days.map((d) => d.date), WEEK);
-  for (const day of days) {
-    assert.deepEqual(Object.keys(day.slots), ["morning", "afternoon", "evening"]);
-    for (const slot of Object.values(day.slots)) {
-      assert.deepEqual(slot.data, BASE_DATA);
-      assert.deepEqual(slot.scores, S.scoreSpot(BASE_DATA, 90));
-    }
-  }
-  // bearing 90: offshore wind from 270 -> 20, 3m/s -> 8, swell from 90 -> 20, 11s -> 10, 1.25m -> 10
-  assert.equal(days[0].slots.morning.scores.total, 68);
+test("cardRows は上位3件までに切る", () => {
+  const rows = Sh.cardRows([
+    result("飯岡", 54), result("一宮", 51), result("木戸", 47), result("太東", 44),
+  ]);
+  assert.equal(rows.length, 3);
+  assert.deepEqual(rows.map((r) => r.name), ["飯岡", "一宮", "木戸"]);
+  assert.deepEqual(rows.map((r) => r.rank), [1, 2, 3]);
 });
 
-test("weeklyForecast nulls only the slot whose hours are missing", () => {
-  // forecast day index 2 = 09-21: no wind speed 12:00-14:59
-  const forecast = forecastSeries({
-    windspeed_10m: (di, h) => (di === 2 && h >= 12 && h < 15 ? null : 3),
-  });
-  const days = F.weeklyForecast(marineSeries(), forecast, WEEK, 90);
-  assert.equal(days[2].slots.afternoon, null);
-  assert.notEqual(days[2].slots.morning, null);
-  assert.notEqual(days[2].slots.evening, null);
-  assert.notEqual(days[1].slots.afternoon, null);
+test("cardRows は件数が3件未満ならその数だけ返す", () => {
+  assert.equal(Sh.cardRows([result("飯岡", 54)]).length, 1);
+  assert.equal(Sh.cardRows([]).length, 0);
 });
 
-test("weeklyForecast maxWaveHeight is the largest slot wave height of the day", () => {
-  const marine = marineSeries({
-    swell_wave_height: (di, h) => (h < 11 ? 0.5 : h < 16 ? 1.5 : 1.25),
-  });
-  const days = F.weeklyForecast(marine, forecastSeries(), WEEK, 90);
-  assert.equal(days[0].slots.morning.data.wave_height, 0.5);
-  assert.equal(days[0].slots.afternoon.data.wave_height, 1.5);
-  assert.equal(days[0].slots.evening.data.wave_height, 1.25);
-  for (const day of days) assert.equal(day.maxWaveHeight, 1.5);
+test("cardRows は波と風を画面と同じ文字列に整える", () => {
+  const rows = Sh.cardRows([result("飯岡", 54)]);
+  assert.equal(rows[0].score, 54);
+  assert.equal(rows[0].wave, "1.4m カタ〜アタマ");
+  assert.equal(rows[0].wind, "南西 5.5m/s サイドオフ");
 });
 
-test("weeklyForecast maxWaveHeight is null when every slot of the day is missing", () => {
-  const days = F.weeklyForecast(marineSeries(), forecastSeries(), ["2026-09-25", "2026-09-26"], 90);
-  assert.equal(days[0].maxWaveHeight, 1.25);
-  assert.deepEqual(days[1].slots, { morning: null, afternoon: null, evening: null });
-  assert.equal(days[1].maxWaveHeight, null);
-});
-
-test("weeklyForecast attaches each day's own tide events", () => {
-  const marine = marineSeries();
-  const days = F.weeklyForecast(marine, forecastSeries(), WEEK, 90);
-  for (const day of days) {
-    assert.deepEqual(day.tide, S.tideEvents(marine.time, marine.sea_level_height_msl, day.date));
-    assert.ok(day.tide.length >= 3, `${day.date}: ${day.tide.length} events`);
-  }
-  assert.notDeepEqual(days[0].tide, days[1].tide);
-});
-
-test("weeklyForecast returns empty tide lists when sea level is not provided", () => {
-  const marine = marineSeries();
-  delete marine.sea_level_height_msl;
-  const days = F.weeklyForecast(marine, forecastSeries(), WEEK, 90);
-  for (const day of days) assert.deepEqual(day.tide, []);
-});
-
-// --- bestSlot ---
-
-function cell(total) {
-  return { data: {}, scores: { total } };
-}
-
-test("bestSlot returns the highest-scoring cell", () => {
-  const days = [
-    { date: "2026-09-19", slots: { morning: cell(40), afternoon: cell(55), evening: null } },
-    { date: "2026-09-20", slots: { morning: cell(10), afternoon: null, evening: cell(72) } },
-  ];
-  assert.deepEqual(F.bestSlot(days), { date: "2026-09-20", slot: "evening", total: 72 });
-});
-
-test("bestSlot breaks ties by earlier date, then morning -> afternoon -> evening", () => {
-  const days = [
-    { date: "2026-09-19", slots: { morning: cell(30), afternoon: cell(60), evening: cell(60) } },
-    { date: "2026-09-20", slots: { morning: cell(60), afternoon: null, evening: null } },
-  ];
-  assert.deepEqual(F.bestSlot(days), { date: "2026-09-19", slot: "afternoon", total: 60 });
-});
-
-test("bestSlot returns null when every cell is missing", () => {
-  const empty = { morning: null, afternoon: null, evening: null };
-  assert.equal(F.bestSlot([{ date: "2026-09-19", slots: empty }]), null);
-  assert.equal(F.bestSlot([]), null);
-});
-
-// --- scoreBand ---
-
-test("scoreBand boundaries (good >= 50, ok >= 30)", () => {
-  assert.equal(F.scoreBand(85), "good");
-  assert.equal(F.scoreBand(50), "good");
-  assert.equal(F.scoreBand(49), "ok");
-  assert.equal(F.scoreBand(30), "ok");
-  assert.equal(F.scoreBand(29), "bad");
-  assert.equal(F.scoreBand(0), "bad");
+test("cardRows は小数を1桁に丸める", () => {
+  const rows = Sh.cardRows([
+    result("飯岡", 54, { data: { wave_height: 2.06, wind_speed: 4.98 } }),
+  ]);
+  assert.equal(rows[0].wave, "2.1m オーバーヘッド");
+  assert.equal(rows[0].wind, "南西 5.0m/s サイドオフ");
 });
 ```
 
-テスト値は 0.5 / 1.25 / 1.5 など2進数で正確に表せる値にしている（0.8 や 1.4 は3点平均で誤差が出て `deepEqual` が不安定になるため）。
-
 - [x] **Step 2: テストが失敗することを確認する**
 
-Run: `node --test forecast.test.js`
-Expected: FAIL（`Cannot find module './forecast.js'`）
+Run: `node --test share.test.js`
+Expected: FAIL（`Cannot find module './share.js'`）
 
-- [x] **Step 3: `forecast.js` を実装する**
+- [x] **Step 3: share.js を作る**
+
+`forecast.js` と同じ UMD の書き方に合わせる。`jpDirection` と `windConditionLabel` の中身は `app.js` から一字一句そのまま持ってくる（挙動を変えないため）。
 
 ```js
-// Hourly Open-Meteo series -> per-slot conditions and the 7-day grid.
-// Shared by the ranking and weekly views; pure so it runs under node --test.
+// 表示ラベルの整形と、共有用のテキスト・カード。画面・共有テキスト・共有
+// 画像が同じ文字列を出せるよう、ラベルはここにだけ置く。pure な部分は
+// node --test で動く。
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./scoring.js"));
-  else root.Forecast = factory(root.Scoring);
+  else root.Share = factory(root.Scoring);
 })(typeof self !== "undefined" ? self : this, function (Scoring) {
-  // Hours are [start, end): morning covers 07:00, 08:00 and 09:00.
-  const TIME_SLOTS = { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] };
-  const SLOT_ORDER = ["morning", "afternoon", "evening"];
+  const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
+  const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 
-  // Per-key mean over the slot's hours on `date`; null when no sample falls
-  // in the window at all.
-  function averageForWindow(hourly, slot, date) {
-    const [startH, endH] = TIME_SLOTS[slot];
-    const times = hourly.time;
-    const idx = [];
-    for (let i = 0; i < times.length; i++) {
-      const h = parseInt(times[i].slice(11, 13), 10);
-      if (times[i].startsWith(date) && h >= startH && h < endH) idx.push(i);
-    }
-    if (idx.length === 0) return null;
-    const result = {};
-    for (const key of Object.keys(hourly)) {
-      if (key === "time") continue;
-      const vals = idx.map((i) => hourly[key][i]).filter((v) => v !== null && v !== undefined);
-      result[key] = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
-    }
-    return result;
+  function dateParts(date) {
+    const d = new Date(`${date}T00:00:00`);
+    return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
   }
 
-  function pick(primary, fallback) {
-    return primary !== null && primary !== undefined ? primary : fallback;
+  // "9/19(土)"
+  function mdLabel(date) {
+    const p = dateParts(date);
+    return `${p.month}/${p.day}(${p.weekday})`;
   }
 
-  // Scoring inputs for one slot. Swell components fall back to the combined
-  // wave when the model has no swell partition.
-  function slotConditions(marine, forecast, slot, date) {
-    const m = averageForWindow(marine, slot, date);
-    const f = averageForWindow(forecast, slot, date);
-    if (!m || !f) return null;
-    const data = {
-      wind_dir: f.winddirection_10m,
-      wind_speed: f.windspeed_10m,
-      swell_dir: pick(m.swell_wave_direction, m.wave_direction),
-      swell_period: pick(m.swell_wave_period, m.wave_period),
-      wave_height: pick(m.swell_wave_height, m.wave_height),
-    };
-    return Object.values(data).some((v) => v == null) ? null : data;
+  function jpDirection(deg) {
+    const names = [
+      [0, 22.5, "北"], [22.5, 67.5, "北東"], [67.5, 112.5, "東"],
+      [112.5, 157.5, "南東"], [157.5, 202.5, "南"], [202.5, 247.5, "南西"],
+      [247.5, 292.5, "西"], [292.5, 337.5, "北西"], [337.5, 360, "北"],
+    ];
+    const normalized = ((deg % 360) + 360) % 360;
+    const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
+    return found ? found[2] : "北";
   }
 
-  function weeklyForecast(marine, forecast, dates, bearing) {
-    return dates.map((date) => {
-      const slots = {};
-      const heights = [];
-      for (const slot of SLOT_ORDER) {
-        const data = slotConditions(marine, forecast, slot, date);
-        slots[slot] = data ? { data, scores: Scoring.scoreSpot(data, bearing) } : null;
-        if (data) heights.push(data.wave_height);
-      }
-      return {
-        date,
-        slots,
-        maxWaveHeight: heights.length ? Math.max(...heights) : null,
-        tide: Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date),
-      };
-    });
+  function windConditionLabel(windDir, windSpeed, bearing) {
+    const offshoreFrom = (bearing + 180) % 360;
+    let diff = Math.abs(windDir - offshoreFrom) % 360;
+    if (diff > 180) diff = 360 - diff;
+    if (diff < 45) return windSpeed <= 3 ? "オフ弱" : "オフショア";
+    if (diff <= 75) return "サイドオフ";
+    if (diff <= 105) return "サイド";
+    if (diff <= 135) return "サイドオン";
+    return "オンショア";
   }
 
-  // Highest total; strict ">" keeps the first cell in date then slot order on ties.
-  function bestSlot(days) {
-    let best = null;
-    for (const day of days) {
-      for (const slot of SLOT_ORDER) {
-        const cell = day.slots[slot];
-        if (cell && (!best || cell.scores.total > best.total)) {
-          best = { date: day.date, slot, total: cell.scores.total };
-        }
-      }
-    }
-    return best;
-  }
-
-  function scoreBand(total) {
-    if (total >= 50) return "good";
-    if (total >= 30) return "ok";
-    return "bad";
+  // 共有テキストと共有カードが参照する唯一の整形。results は
+  // scores.total の降順に並んでいる前提。
+  function cardRows(results) {
+    return results.slice(0, 3).map((r, i) => ({
+      rank: i + 1,
+      name: r.spot.name,
+      score: r.scores.total,
+      wave: `${r.data.wave_height.toFixed(1)}m ${Scoring.waveSizeLabel(r.data.wave_height)}`,
+      wind: `${jpDirection(r.data.wind_dir)} ${r.data.wind_speed.toFixed(1)}m/s `
+        + `${windConditionLabel(r.data.wind_dir, r.data.wind_speed, r.spot.bearing)}`,
+    }));
   }
 
   return {
-    TIME_SLOTS, SLOT_ORDER, averageForWindow, slotConditions,
-    weeklyForecast, bestSlot, scoreBand,
+    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
   };
 });
 ```
 
 - [x] **Step 4: テストが通ることを確認する**
 
-Run: `node --test`
-Expected: PASS。末尾の集計が `ℹ tests 29`（`scoring.test.js` 12件 + `forecast.test.js` 17件）、`ℹ fail 0`
+Run: `node --test share.test.js`
+Expected: PASS（11件）
 
-- [x] **Step 5: コミット**
+- [x] **Step 5: app.js から移設した定義を削除する**
 
-```bash
-git add forecast.js forecast.test.js
-git commit -m "feat: add forecast.js slot/weekly conversion with tests"
-```
+次の6つを `app.js` からまるごと削除する。関数の本体は Step 3 で `share.js` に入っている。
 
----
+- `const SLOT_SHORT = ...`（11行目）
+- `const WEEKDAYS_JA = ...`（12行目）
+- `function dateParts(date) { ... }`（41-44行目）
+- `// "9/19(土)"` のコメントと `function mdLabel(date) { ... }`（46-50行目）
+- `function jpDirection(deg) { ... }`（133-142行目）
+- `function windConditionLabel(...) { ... }`（150-159行目）
 
-### Task 2: ランキングを `forecast.js` 経由に切り替える（見た目は変えない）
+- [x] **Step 6: app.js の呼び出しを Share. 付きに直す**
 
-**Files:**
-- Modify: `app.js`（`TIME_SLOTS` 定義、`pick`、`fetchSpotData`、`averageForWindow`、`rankSpot`）
-- Modify: `index.html`（`forecast.js` の読み込み）
-
-**Interfaces:**
-- Consumes: `Forecast.TIME_SLOTS`、`Forecast.slotConditions`
-- Produces: `fetchSpotData(lat, lon, startDate, endDate) -> Promise<{ marine, forecast }>`（marine は `startDate-1`〜`endDate+1`、forecast は `startDate`〜`endDate`）
-
-- [x] **Step 1: 比較用に `main` の worktree とハーネス用サーバーを用意する**
-
-```bash
-SP=/private/tmp/claude-501/-Users-tkasai-Projects-surf-check-deploy/5b275d7a-6c68-4a61-87e3-d43e9355d31f/scratchpad
-git -C /Users/tkasai/Projects/surf-check-deploy worktree add --detach "$SP/base" main
-cp "$SP/site/harness.html" "$SP/base/harness.html"
-chmod +x "$SP/drive.sh"
-# 8001 番で $SP/site を配信中のサーバーがあれば先に止める。
-# $SP をルートに 8001 番で配信し直す（バックグラウンド）。site/ と base/ の両方を出す
-(cd "$SP" && python3 -m http.server 8001)
-```
-
-Expected: `http://localhost:8001/base/harness.html` と `http://localhost:8001/site/harness.html` が 200 を返す。
-
-- [x] **Step 2: `app.js` を書き換える**
-
-`TIME_SLOTS` の定義（9行目）を置き換える:
+`dayColumnLabel`（52-56行目付近）:
 
 ```js
-const TIME_SLOTS = Forecast.TIME_SLOTS;
-```
-
-`pick`（32〜34行目）を削除する。
-
-`fetchSpotData`（42〜58行目、直前のコメントを含む）を置き換える:
-
-```js
-// Marine data spans start-1..end+1 so tide extremes near midnight are
-// detected; forecast covers only start..end, so the two hourly series have
-// different lengths and must be kept separate (never merged index-wise).
-async function fetchSpotData(lat, lon, startDate, endDate) {
-  const base = { latitude: lat, longitude: lon, timezone: "Asia/Tokyo" };
-  const marineUrl = `${MARINE_URL}?${qs({
-    ...base, start_date: shiftDate(startDate, -1), end_date: shiftDate(endDate, 1),
-    hourly: MARINE_PARAMS.join(","),
-  })}`;
-  const forecastUrl = `${FORECAST_URL}?${qs({
-    ...base, start_date: startDate, end_date: endDate,
-    hourly: FORECAST_PARAMS.join(","), wind_speed_unit: "ms",
-  })}`;
-  const [m, f] = await Promise.all([fetch(marineUrl), fetch(forecastUrl)]);
-  if (!m.ok || !f.ok) throw new Error("API error");
-  return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
-}
-```
-
-`averageForWindow`（60〜76行目）を削除する。
-
-`rankSpot` の冒頭〜`scores` までを置き換える（`tide` 以降はそのまま）:
-
-```js
-async function rankSpot(spot, date, slot) {
-  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
-  const data = Forecast.slotConditions(marine, forecast, slot, date);
-  if (!data) throw new Error("予報データなし");
-  const scores = Scoring.scoreSpot(data, spot.bearing);
-  const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
-  const tideTrend = tideTrendLabel(marine, slot, date);
-  const tideSeries = daySeries(marine, date);
-  return { spot, scores, data, tide, tideTrend, tideSeries };
-}
-```
-
-- [x] **Step 3: `index.html` で `forecast.js` を読み込む**
-
-```html
-  <script src="scoring.js"></script>
-  <script src="forecast.js"></script>
-  <script src="app.js"></script>
-```
-
-- [x] **Step 4: 単体テストを流す**
-
-Run: `node --test`
-Expected: PASS（fail 0）
-
-- [x] **Step 5: `main` と送信 URL・描画 HTML を比較する**
-
-明日の日付を使う（今日だと「現在時刻」の縦線の位置が実行のたびに変わるため）。
-
-```bash
-SP=/private/tmp/claude-501/-Users-tkasai-Projects-surf-check-deploy/5b275d7a-6c68-4a61-87e3-d43e9355d31f/scratchpad
-TOMORROW=$(date -v+1d +%F)
-for q in "region=%E8%8C%A8%E5%9F%8E&slot=morning" "region=%E6%B9%98%E5%8D%97&slot=evening" "region=%E5%8D%83%E8%91%89%E5%8D%97&slot=afternoon"; do
-  "$SP/drive.sh" "http://localhost:8001/base/harness.html?$q&date=$TOMORROW&urls=1&dump=1" > "$SP/base.txt"
-  "$SP/drive.sh" "http://localhost:8001/site/harness.html?$q&date=$TOMORROW&urls=1&dump=1" > "$SP/site.txt"
-  head -1 "$SP/site.txt"; diff -q "$SP/base.txt" "$SP/site.txt" && echo "SAME: $q"
-done
-```
-
-Expected: 3回とも `DONE` と `SAME: ...`。差分が出た場合は、Open-Meteo のデータ更新の可能性を除くためもう一度実行し、それでも出るなら `diff` の中身を調べて直す。
-
-- [x] **Step 6: コミット**
-
-```bash
-git add app.js index.html
-git commit -m "refactor: route ranking through forecast.js"
-```
-
----
-
-### Task 3: 週間予報タブ（タブ切替・7日分の取得・スコア表）
-
-**Files:**
-- Modify: `index.html`（タブ、`data-mode`、`ranking-only` / `weekly-only`、`#weekly`）
-- Modify: `app.js`（定数、日付ラベル、`check`、`runRanking`、週間予報の取得と描画、タブ切替）
-- Modify: `style.css`（末尾に追加）
-
-**Interfaces:**
-- Consumes: `fetchSpotData(lat, lon, startDate, endDate)`、`Forecast.weeklyForecast`、`Forecast.bestSlot`、`Forecast.scoreBand`、`Forecast.SLOT_ORDER`、既存の `fmtDate`、`shiftDate`、`filterByRegion`、`escapeHtml`
-- Produces:
-  - `WEEKLY_RESULTS: [{ spot, days, best }]`（`days` は `weeklyForecast` の戻り値、`best` は `bestSlot` の戻り値）
-  - `mdLabel(date) -> "9/19(土)"`、`dayColumnLabel(date) -> "土19"`、`SLOT_SHORT`
-  - DOM: `article.wk-card[data-index]` の中に `button.wk-cell[data-day][data-slot][aria-pressed]`（データなしは `span.wk-cell.empty`）、`td.wk-wave`、空の `div.wk-detail-slot`
-
-- [x] **Step 1: ハーネスが失敗することを確認する（Red）**
-
-```bash
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly"
-```
-
-Expected: `pending`（週間予報タブのボタンがまだないため）
-
-- [x] **Step 2: `index.html` を書き換える**
-
-`<main class="app-shell">` を `<main class="app-shell" data-mode="ranking">` にする。
-
-`</header>` の直後にタブを追加する:
-
-```html
-    <nav class="mode-tabs" role="tablist" aria-label="表示モード">
-      <button type="button" class="mode-tab" role="tab" data-mode="ranking" aria-controls="results" aria-selected="true">ランキング</button>
-      <button type="button" class="mode-tab" role="tab" data-mode="weekly" aria-controls="weekly" aria-selected="false">週間予報</button>
-    </nav>
-```
-
-「日付」と「時間帯」の `<label>` を `<label class="ranking-only">` にする。
-
-`#results` を `<section id="results" class="results ranking-only" aria-live="polite">` にし、その直後に追加する:
-
-```html
-    <section id="weekly" class="results weekly-only" aria-live="polite">
-      <div class="empty-state">
-        <b>エリアを選んでチェック</b>
-        <span>各ポイントの7日分のスコアを、朝・昼・夕で比較できます。</span>
-      </div>
-    </section>
-```
-
-- [x] **Step 3: `app.js` に週間予報を追加する**
-
-`SLOT_LABELS` の直後に定数を追加する:
-
-```js
-const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
-const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
-const WEEK_DAYS = 7;
-```
-
-`shiftDate` の直後に日付ラベルを追加する:
-
-```js
-function dateParts(date) {
-  const d = new Date(`${date}T00:00:00`);
-  return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
-}
-
-// "9/19(土)"
-function mdLabel(date) {
-  const p = dateParts(date);
-  return `${p.month}/${p.day}(${p.weekday})`;
-}
-
 // "土19" — weekly grid column header
 function dayColumnLabel(date) {
-  const p = dateParts(date);
+  const p = Share.dateParts(date);
   return `${p.weekday}${p.day}`;
 }
 ```
 
-`run` を `runRanking` に改名し、ボタンの無効化を `check` に移す（`run` 全体をこれに置き換える）:
+`conditionMetrics` の3か所:
 
 ```js
-async function runRanking() {
-  const region = document.getElementById("region").value;
-  const date = document.getElementById("date").value;
-  const slot = document.getElementById("slot").value;
-  const resultsEl = document.getElementById("results");
-  resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・潮汐データを読み込んでいます。</span></div>`;
-  try {
-    const spots = filterByRegion(region);
-    const settled = await Promise.allSettled(spots.map((s) => rankSpot(s, date, slot)));
-    const ok = [];
-    const failed = [];
-    settled.forEach((res, i) => {
-      if (res.status === "fulfilled") ok.push(res.value);
-      else failed.push(spots[i].name);
-    });
-    ok.sort((a, b) => b.scores.total - a.scores.total);
-    renderResults(resultsEl, region, date, slot, ok, failed);
-  } catch (e) {
-    resultsEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-async function weeklySpot(spot, dates) {
-  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, dates[0], dates[dates.length - 1]);
-  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing);
-  const best = Forecast.bestSlot(days);
-  if (!best) throw new Error("予報データなし");
-  return { spot, days, best };
-}
-
-function weeklyCell(day, slot, dayIndex) {
-  const cell = day.slots[slot];
-  if (!cell) return `<td><span class="wk-cell empty" aria-label="データなし">–</span></td>`;
-  const total = cell.scores.total;
-  const label = `${mdLabel(day.date)} ${SLOT_SHORT[slot]} ${total}点`;
-  return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
-}
-
-function weeklyCard(result, index) {
-  const best = result.best;
-  const head = result.days.map((day) => `<th scope="col">${escapeHtml(dayColumnLabel(day.date))}</th>`).join("");
-  const rows = Forecast.SLOT_ORDER.map((slot) => {
-    const cells = result.days.map((day, di) => weeklyCell(day, slot, di)).join("");
-    return `<tr><th scope="row">${SLOT_SHORT[slot]}</th>${cells}</tr>`;
-  }).join("");
-  const waves = result.days.map((day) =>
-    `<td class="wk-wave">${day.maxWaveHeight == null ? "–" : day.maxWaveHeight.toFixed(1)}</td>`).join("");
-
-  return `<article class="ranking-card wk-card" data-index="${index}">
-    <div class="wk-card-head">
-      <span class="ranking-card-title">
-        <b>${escapeHtml(result.spot.name)}</b>
-        <span>${escapeHtml(result.spot.region)}</span>
-      </span>
-      <span class="wk-best">ベスト <b>${escapeHtml(dayColumnLabel(best.date))} ${SLOT_SHORT[best.slot]} ${best.total}点</b></span>
-    </div>
-    <table class="wk-grid">
-      <thead><tr><th></th>${head}</tr></thead>
-      <tbody>${rows}<tr><th scope="row">波</th>${waves}</tr></tbody>
-    </table>
-    <div class="wk-detail-slot"></div>
-  </article>`;
-}
-
-let WEEKLY_RESULTS = [];
-
-function renderWeekly(el, region, dates, results, failed) {
-  WEEKLY_RESULTS = results;
-  if (results.length === 0) {
-    el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
-    return;
-  }
-  const failedNote = failed.length ? `<p class="failed">取得失敗: ${escapeHtml(failed.join(", "))}</p>` : "";
-  el.innerHTML = `
-    <div class="results-head">
-      <h2>${escapeHtml(region)}の週間予報</h2>
-      <span>${escapeHtml(mdLabel(dates[0]))}〜${escapeHtml(mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
-    </div>
-    <div class="ranking-cards">
-      ${results.map(weeklyCard).join("")}
-    </div>
-    ${failedNote}`;
-}
-
-async function runWeekly() {
-  const region = document.getElementById("region").value;
-  const weeklyEl = document.getElementById("weekly");
-  weeklyEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから7日分の波・風・潮汐データを読み込んでいます。</span></div>`;
-  try {
-    const today = fmtDate(new Date());
-    const dates = Array.from({ length: WEEK_DAYS }, (_, i) => shiftDate(today, i));
-    const spots = filterByRegion(region);
-    const settled = await Promise.allSettled(spots.map((s) => weeklySpot(s, dates)));
-    const ok = [];
-    const failed = [];
-    settled.forEach((res, i) => {
-      if (res.status === "fulfilled") ok.push(res.value);
-      else failed.push(spots[i].name);
-    });
-    renderWeekly(weeklyEl, region, dates, ok, failed);
-  } catch (e) {
-    weeklyEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-function currentMode() {
-  return document.querySelector(".app-shell").dataset.mode;
-}
-
-function setMode(mode) {
-  document.querySelector(".app-shell").dataset.mode = mode;
-  document.querySelectorAll(".mode-tab").forEach((tab) => {
-    tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
-  });
-}
-
-// Both check buttons run whichever view is active; disabled while loading.
-async function check() {
-  const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
-  buttons.forEach((btn) => { btn.disabled = true; });
-  try {
-    if (currentMode() === "weekly") await runWeekly();
-    else await runRanking();
-  } finally {
-    buttons.forEach((btn) => { btn.disabled = false; });
-  }
-}
+  const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
 ```
 
-`DOMContentLoaded` の中を次のように変える（タブの配線を追加し、チェックボタンを `check` につなぐ）:
+```js
+        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(Share.jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
+```
 
 ```js
-  resultsEl.addEventListener("pointerleave", hideTideHover);
-  document.querySelectorAll(".mode-tab").forEach((tab) => {
-    tab.addEventListener("click", () => setMode(tab.dataset.mode));
-  });
-  const r = await fetch("spots.json");
-  SPOTS = await r.json();
-  document.getElementById("check").addEventListener("click", check);
-  document.getElementById("checkTop").addEventListener("click", check);
+        <span><strong>${escapeHtml(Share.jpDirection(data.swell_dir))}うねり</strong></span>
+```
+
+週間予報側の5か所（433 / 442 / 453 / 475 / 487行目付近）は `mdLabel(` → `Share.mdLabel(`、`SLOT_SHORT[` → `Share.SLOT_SHORT[` に置き換える。
+
+Run: `grep -n "jpDirection\|windConditionLabel\|mdLabel\|SLOT_SHORT\|dateParts\|WEEKDAYS_JA" app.js`
+Expected: 表示されるすべての行に `Share.` が付いている（定義の残りが無い）
+
+- [x] **Step 7: index.html に share.js を足す**
+
+`app.js` より前、`forecast.js` の次に読み込む。
+
+```html
+  <script src="scoring.js?v=20260920"></script>
+  <script src="forecast.js?v=20260920"></script>
+  <script src="share.js?v=20260920"></script>
+  <script src="app.js?v=20260920"></script>
+```
+
+- [x] **Step 8: テスト全体を流す**
+
+Run: `node --test`
+Expected: `tests 40` / `pass 40` / `fail 0`（既存29件 + 新規11件）
+
+- [x] **Step 9: 画面が変わっていないことを確認する**
+
+ローカルサーバー（`python3 -m http.server 8000`）でランキングと週間予報の両方を表示し、方位・風・日付・時間帯の文字列が移設前と同じであることを確認する。
+
+- [x] **Step 10: コミット**
+
+```bash
+git add share.js share.test.js app.js index.html
+git commit -m "$(printf 'refactor: move display labels into share.js\n\nThe share text and the share card have to render the same strings as the\nranking card, so the label formatters move to a module both sides can\nreach. Keeping one definition each stops the share output from drifting\nwhen the on-screen wording changes. No visible change.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+
+### Task 2: LINEで送るボタン
+
+共有テキストと共有URLを組み立て、結果ヘッダーの下に「LINEで送る」ボタンを出す。
+
+**Files:**
+- Modify: `share.js`（`shareLines` / `shareText` / `shareUrl` を追加）
+- Modify: `share.test.js`（テストを追加）
+- Modify: `app.js`（`shareRow` / `openLineShare` / `shareError` を追加し、`renderResults` から呼ぶ）
+- Modify: `style.css`（末尾に共有ボタンのスタイル）
+
+**Interfaces:**
+- Consumes: `Share.cardRows(results)`、`Share.mdLabel(date)`、`Share.SLOT_SHORT`（Task 1）
+- Produces:
+  - `Share.shareLines(region, date, slot, results) -> string[]`
+  - `Share.shareText(region, date, slot, results, url) -> string`
+  - `Share.shareUrl(base, region, date, slot) -> string`
+  - `app.js` の `shareRow() -> string`（HTML断片）、`shareError(message) -> void`
+
+- [x] **Step 1: 失敗するテストを書く**
+
+`share.test.js` の末尾に追加する。`result` ヘルパーは Task 1 で定義済みのものを使う。
+
+```js
+test("shareLines の1行目はエリア・日付・時間帯", () => {
+  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [result("飯岡", 54)]);
+  assert.equal(lines[0], "千葉北 9/20(日) 朝のサーフチェック");
+});
+
+test("shareLines は時間帯を朝・昼・夕で書き分ける", () => {
+  const r = [result("飯岡", 54)];
+  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "afternoon", r)[0].includes("昼のサーフチェック"));
+  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "evening", r)[0].includes("夕のサーフチェック"));
+});
+
+test("shareLines は上位3件を順位付きで並べる", () => {
+  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [
+    result("飯岡", 54), result("一宮", 51), result("木戸", 47), result("太東", 44),
+  ]);
+  assert.equal(lines.length, 4);
+  assert.equal(lines[1], "1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）");
+  assert.equal(lines[3], "3位 木戸 47点（1.4m / 南西5.5m/s サイドオフ）");
+});
+
+test("shareLines は1件だけでも成立する", () => {
+  const lines = Sh.shareLines("茨城", "2026-09-20", "morning", [result("飯岡", 54)]);
+  assert.equal(lines.length, 2);
+});
+
+test("shareText は本文とURLを空行で挟んでつなぐ", () => {
+  const text = Sh.shareText("千葉北", "2026-09-20", "morning", [result("飯岡", 54)], "https://example.test/?x=1");
+  assert.equal(
+    text,
+    "千葉北 9/20(日) 朝のサーフチェック\n1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）\n\nhttps://example.test/?x=1"
+  );
+});
+
+test("shareUrl は3つの条件をクエリにする", () => {
+  const url = Sh.shareUrl("https://example.test/surf/", "千葉北", "2026-09-20", "morning");
+  assert.equal(url, "https://example.test/surf/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
+});
+
+test("shareUrl は base に付いていた既存のクエリを捨てる", () => {
+  const url = Sh.shareUrl("https://example.test/surf/?old=1", "茨城", "2026-09-21", "evening");
+  assert.ok(!url.includes("old=1"));
+  assert.ok(url.includes("region=%E8%8C%A8%E5%9F%8E"));
+  assert.ok(url.includes("slot=evening"));
 });
 ```
 
-- [x] **Step 4: `style.css` の末尾に追加する**
+- [x] **Step 2: テストが失敗することを確認する**
 
-```css
-/* --- Mode tabs --- */
+Run: `node --test share.test.js`
+Expected: FAIL（`Sh.shareLines is not a function`）
 
-.mode-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-bottom: 10px;
-  padding: 4px;
-  border: 1px solid rgba(18, 69, 89, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.9);
+- [x] **Step 3: share.js に3つの関数を足す**
+
+`cardRows` の下、`return` の前に置く。`wave` は `"1.4m カタ〜アタマ"` なので先頭の数値だけを取り、`wind` は `"南西 5.5m/s サイドオフ"` の最初の空白1つだけを詰めて `"南西5.5m/s サイドオフ"` にする（`replace` は第1引数が文字列なら最初の1つしか置き換えない）。
+
+```js
+  function shareLines(region, date, slot, results) {
+    const head = `${region} ${mdLabel(date)} ${SLOT_SHORT[slot]}のサーフチェック`;
+    const rows = cardRows(results).map(
+      (r) => `${r.rank}位 ${r.name} ${r.score}点（${r.wave.split(" ")[0]} / ${r.wind.replace(" ", "")}）`
+    );
+    return [head, ...rows];
+  }
+
+  function shareText(region, date, slot, results, url) {
+    return `${shareLines(region, date, slot, results).join("\n")}\n\n${url}`;
+  }
+
+  function shareUrl(base, region, date, slot) {
+    const u = new URL(base);
+    u.search = new URLSearchParams({ region, date, slot }).toString();
+    return u.toString();
+  }
+```
+
+`return` に3つを足す。
+
+```js
+  return {
+    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    shareLines, shareText, shareUrl,
+  };
+```
+
+- [x] **Step 4: テストが通ることを確認する**
+
+Run: `node --test share.test.js`
+Expected: PASS（18件）
+
+- [x] **Step 5: app.js に共有ボタンの行と処理を足す**
+
+`renderResults`（373行目付近）のすぐ上に置く。
+
+```js
+// 共有ボタンの行。結果が1件以上あるときだけ描く。
+function shareRow() {
+  return `<div class="share-row">
+      <button type="button" id="shareLine" class="share-btn line">LINEで送る</button>
+      <button type="button" id="shareImage" class="share-btn">画像で共有</button>
+    </div>`;
 }
 
-.mode-tab {
-  min-height: 36px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
+// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
+function openLineShare(region, date, slot, results) {
+  const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+  const text = Share.shareText(region, date, slot, results, url);
+  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, "_blank", "noopener");
+  if (!win) shareError("LINEを開けませんでした");
+}
+
+// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
+function shareError(message) {
+  const row = document.querySelector(".share-row");
+  if (!row) return;
+  let note = row.querySelector(".share-note");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "failed share-note";
+    row.appendChild(note);
+  }
+  note.textContent = message;
+}
+```
+
+- [x] **Step 6: renderResults にボタンを差し込む**
+
+`.results-head` の直後に `shareRow()` を置く。
+
+```js
+  el.innerHTML = `
+    <div class="results-head">
+      <h2>${escapeHtml(region)}の${escapeHtml(SLOT_LABELS[slot])}ランキング</h2>
+      <span>${escapeHtml(date)} / ${results.length}件</span>
+    </div>
+    ${shareRow()}
+    <div class="ranking-cards">
+      ${results.map(resultCard).join("")}
+    </div>
+    ${failedNote}`;
+```
+
+`drawTideCurves(el, results, date, slot);` の直前にクリックを配線する。`innerHTML` を入れ替えた直後なのでボタンは毎回新しく、リスナーの重複は起きない。
+
+```js
+  const lineBtn = el.querySelector("#shareLine");
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
+```
+
+- [x] **Step 7: style.css に見た目を足す**
+
+ファイル末尾に追加する。
+
+```css
+/* --- Share buttons --- */
+
+.share-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.share-btn {
+  min-height: 44px;
+  border: 1px solid rgba(18, 69, 89, 0.16);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--deep);
   font: inherit;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   font-weight: 800;
   cursor: pointer;
 }
 
-.mode-tab[aria-selected="true"] {
-  background: var(--deep);
+.share-btn.line {
+  border-color: transparent;
+  background: #06c755;
   color: #fff;
 }
 
-.app-shell[data-mode="weekly"] .ranking-only,
-.app-shell[data-mode="ranking"] .weekly-only {
-  display: none;
-}
-
-.app-shell[data-mode="weekly"] .controls {
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-/* --- Weekly forecast --- */
-
-.wk-card-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-
-.wk-best {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.wk-best b {
-  color: var(--deep);
-  font-size: 0.84rem;
-  font-weight: 900;
-}
-
-.wk-grid {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 3px;
-  table-layout: fixed;
-  font-variant-numeric: tabular-nums;
-}
-
-.wk-grid th {
-  padding: 0;
-  color: var(--muted);
-  font-size: 0.66rem;
-  font-weight: 800;
-  text-align: center;
-  white-space: nowrap;
-}
-
-.wk-grid thead th:first-child {
-  width: 22px;
-}
-
-.wk-grid td {
-  padding: 0;
-}
-
-.wk-cell {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  min-height: 36px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  font: inherit;
-  font-size: 0.84rem;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.wk-cell.good {
-  background: rgba(29, 154, 114, 0.14);
-  color: var(--good);
-}
-
-.wk-cell.ok {
-  background: rgba(244, 201, 107, 0.24);
-  color: var(--ok);
-}
-
-.wk-cell.bad {
-  background: rgba(239, 111, 94, 0.1);
-  color: #b84a3c;
-}
-
-.wk-cell.empty {
-  background: #f1f4f6;
-  color: var(--muted);
-  cursor: default;
-}
-
-.wk-wave {
-  color: var(--deep);
-  font-size: 0.74rem;
-  font-weight: 800;
-  text-align: center;
+.share-note {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 ```
 
-- [x] **Step 5: 単体テストとハーネスで確認する（Green）**
+- [x] **Step 8: 画面で確認する**
+
+ローカルサーバーでランキングを実行し、次を確認する。
+
+- ヘッダーの下に2つのボタンが横に並ぶ
+- 375px 幅で横スクロールが出ない、ボタンの高さが44px以上ある
+- 「LINEで送る」を押すと `line.me` が新しいタブで開き、本文に3件と URL が入っている
+- 結果が0件のとき（例: 対応範囲外の日付）はボタンが出ない
+
+- [x] **Step 9: テスト全体を流してコミット**
+
+Run: `node --test`
+Expected: `tests 47` / `pass 47` / `fail 0`
 
 ```bash
-node --test
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&urls=1"
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&region=%E5%85%A8%E5%9F%9F"
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&w=900"
-```
-
-Expected:
-- `node --test` は fail 0。
-- 茨城: `head=茨城の週間予報 {今日}〜{今日+6} / 4件`。各カードの行にセルが21個、波の値が7個。`details=0 pressed=0`、`failed=none`、`overflowX=false`。
-- `urls=1`: marine は `start_date=今日-1&end_date=今日+7`、forecast は `start_date=今日&end_date=今日+6` が茨城の4スポット分。
-- 全域: 32件（失敗があれば `failed=取得失敗: …` に名前が出る）、`overflowX=false`。
-- 900px 幅: `overflowX=false`。
-
-- [x] **Step 6: ランキングが `main` と同一のままか確認する**
-
-Task 2 Step 5 のループをもう一度実行する。Expected: 3回とも `SAME`。
-
-- [x] **Step 7: スクリーンショットで見た目を確認する**
-
-```bash
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly" "$SP/weekly-375.png" 375
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&w=900" "$SP/weekly-900.png" 900
-```
-
-両方の画像を開いて見る。確認すること: タブの選択状態、日付・時間帯の入力が隠れていること、表が枠からはみ出していないこと、色分けが読めること、「ベスト」表示が名前と重ならないこと。
-
-- [x] **Step 8: コミット**
-
-```bash
-git add index.html app.js style.css
-git commit -m "feat: add weekly forecast tab with per-spot 7-day score grid"
+git add share.js share.test.js app.js style.css
+git commit -m "$(printf 'feat: add a LINE share button to the ranking\n\nThe button hands LINE a plain-text summary of the top three spots plus a\nlink that restores the search. LINE URL schemes only carry text, so the\nimage gets its own button in the next commit.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
 ---
 
-### Task 4: セルをタップして詳細を展開する
+### Task 3: 共有カードの画像
+
+1080×1080 のPNGを作り、スマホでは共有シート、PCではダウンロードに渡す。
 
 **Files:**
-- Modify: `app.js`（`conditionMetrics` の切り出し、`resultCard`、`weeklyDetail`、`onWeeklyClick`、配線）
-- Modify: `style.css`（末尾に追加）
+- Modify: `share.js`（`drawShareCard` を追加）
+- Modify: `app.js`（`shareImage` を追加し、ボタンに配線）
 
 **Interfaces:**
-- Consumes: `WEEKLY_RESULTS`、`mdLabel`、`SLOT_LABELS`、`tideTimesLabel`、`reasonChips`、`metricIcon`、`jpDirection`、`windConditionLabel`、`waveIconClass`
-- Produces: `conditionMetrics(data, bearing) -> HTML`（ランキングカードと詳細の両方が使う `card-metrics` ブロック）
+- Consumes: `Share.cardRows(results)`、`Share.shareLines(...)`、`Share.shareUrl(...)`、`Share.dateParts(date)`（Task 1・2）
+- Produces: `Share.drawShareCard(canvas, { region, date, slot, rows, count }) -> void`
 
-- [x] **Step 1: ハーネスが失敗することを確認する（Red）**
+- [x] **Step 1: share.js に描画関数を足す**
 
-```bash
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1"
-```
-
-Expected: `details=0 pressed=0`（クリックしても何も起きない）
-
-- [x] **Step 2: `conditionMetrics` を切り出し、`resultCard` から使う**
-
-`resultCard` の直前に追加する。返す文字列は、変更前の `resultCard` の `card-metrics` ブロックと1文字も違わないようにする（インデントも含む）:
+DOM（canvas）に触るため Node のテスト対象にはしない。目視で確認する。`shareUrl` の下に置く。
 
 ```js
-function conditionMetrics(data, bearing) {
-  const waveSize = Scoring.waveSizeLabel(data.wave_height);
-  const windCondition = windConditionLabel(data.wind_dir, data.wind_speed, bearing);
-  const windFlowDeg = data.wind_dir + 180;
-  const swellFlowDeg = data.swell_dir + 180;
-  return `<div class="card-metrics">
-      <span class="mini-metric">
-        <b>波サイズ</b>
-        <span class="wave-icon ${waveIconClass(data.wave_height)}" aria-hidden="true"></span>
-        <span><strong>${data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${data.swell_period.toFixed(1)}s</span></span>
-      </span>
-      <span class="mini-metric">
-        <b>風向き</b>
-        ${metricIcon(windFlowDeg, data.wind_speed)}
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
-      </span>
-      <span class="mini-metric">
-        <b>うねりの向き</b>
-        ${metricIcon(swellFlowDeg)}
-        <span><strong>${escapeHtml(jpDirection(data.swell_dir))}うねり</strong></span>
-      </span>
-    </div>`;
-}
+  const CARD_SIZE = 1080;
+  const CARD_PAD = 64;
+  const CARD_FONT = 'system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif';
+  const SLOT_LONG = { morning: "朝 07-10時", afternoon: "昼 12-15時", evening: "夕 16-19時" };
+
+  // "9月20日(日)"
+  function longDateLabel(date) {
+    const p = dateParts(date);
+    return `${p.month}月${p.day}日(${p.weekday})`;
+  }
+
+  // 幅に収まらない名前は末尾を … にする。
+  function fitText(ctx, text, maxWidth) {
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let cut = text;
+    while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) cut = cut.slice(0, -1);
+    return `${cut}…`;
+  }
+
+  function drawShareCard(canvas, info) {
+    canvas.width = CARD_SIZE;
+    canvas.height = CARD_SIZE;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#edf3f5";
+    ctx.fillRect(0, 0, CARD_SIZE, CARD_SIZE);
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+
+    ctx.fillStyle = "#007f8f";
+    ctx.font = `800 30px ${CARD_FONT}`;
+    ctx.fillText("SURF CHECK", CARD_PAD, CARD_PAD + 30);
+
+    ctx.fillStyle = "#124559";
+    ctx.font = `800 54px ${CARD_FONT}`;
+    ctx.fillText(`${info.region} / ${longDateLabel(info.date)}`, CARD_PAD, CARD_PAD + 104);
+    ctx.fillStyle = "#687481";
+    ctx.font = `700 38px ${CARD_FONT}`;
+    ctx.fillText(SLOT_LONG[info.slot], CARD_PAD, CARD_PAD + 160);
+
+    ctx.strokeStyle = "#dce5eb";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(CARD_PAD, CARD_PAD + 200);
+    ctx.lineTo(CARD_SIZE - CARD_PAD, CARD_PAD + 200);
+    ctx.stroke();
+
+    info.rows.forEach((row, i) => {
+      const top = CARD_PAD + 250 + i * 200;
+
+      // 順位バッジ
+      ctx.beginPath();
+      ctx.arc(CARD_PAD + 34, top + 24, 34, 0, Math.PI * 2);
+      ctx.fillStyle = row.rank === 1 ? "#124559" : "#ffffff";
+      ctx.fill();
+      if (row.rank !== 1) {
+        ctx.strokeStyle = "#124559";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+      ctx.fillStyle = row.rank === 1 ? "#ffffff" : "#124559";
+      ctx.font = `900 38px ${CARD_FONT}`;
+      ctx.textAlign = "center";
+      ctx.fillText(String(row.rank), CARD_PAD + 34, top + 38);
+      ctx.textAlign = "left";
+
+      // 点数は右端から逆算して置く
+      ctx.font = `900 56px ${CARD_FONT}`;
+      const scoreText = String(row.score);
+      const scoreWidth = ctx.measureText(scoreText).width;
+      ctx.font = `700 30px ${CARD_FONT}`;
+      const suffixWidth = ctx.measureText("/85").width;
+      const scoreLeft = CARD_SIZE - CARD_PAD - scoreWidth - suffixWidth;
+      ctx.fillStyle = "#007f8f";
+      ctx.font = `900 56px ${CARD_FONT}`;
+      ctx.fillText(scoreText, scoreLeft, top + 44);
+      ctx.fillStyle = "#687481";
+      ctx.font = `700 30px ${CARD_FONT}`;
+      ctx.fillText("/85", scoreLeft + scoreWidth, top + 44);
+
+      // ポイント名は点数の手前まで
+      ctx.fillStyle = "#17212b";
+      ctx.font = `800 48px ${CARD_FONT}`;
+      const nameMax = scoreLeft - (CARD_PAD + 90) - 24;
+      ctx.fillText(fitText(ctx, row.name, nameMax), CARD_PAD + 90, top + 40);
+
+      ctx.fillStyle = "#687481";
+      ctx.font = `600 32px ${CARD_FONT}`;
+      ctx.fillText(`${row.wave} ・ ${row.wind}`, CARD_PAD + 90, top + 92);
+    });
+
+    const rest = info.count - info.rows.length;
+    ctx.fillStyle = "#687481";
+    ctx.font = `700 30px ${CARD_FONT}`;
+    if (rest > 0) ctx.fillText(`ほか${rest}件`, CARD_PAD, CARD_SIZE - CARD_PAD);
+    ctx.textAlign = "right";
+    ctx.fillText("tk0407.github.io/surf-check", CARD_SIZE - CARD_PAD, CARD_SIZE - CARD_PAD);
+    ctx.textAlign = "left";
+  }
 ```
 
-`resultCard` を次のように置き換える:
+`return` に `drawShareCard` を足す。
 
 ```js
-function resultCard(result, index) {
-  const rank = index + 1;
-  const featured = index === 0 ? " featured" : "";
-
-  return `<article class="ranking-card${featured}">
-    <div class="ranking-card-head">
-      <span class="medal">${rank}</span>
-      <span class="ranking-card-title">
-        <b>${escapeHtml(result.spot.name)}</b>
-        <span>${escapeHtml(result.spot.region)} / ${rank === 1 ? "BEST" : "候補"}</span>
-      </span>
-      <span class="ranking-score">${result.scores.total}<span>/85</span></span>
-    </div>
-
-    ${conditionMetrics(result.data, result.spot.bearing)}
-
-    <div class="tide-panel">
-      <div class="tide-head">
-        <span class="tide-now">潮汐</span>
-        <span class="tide-percent">${escapeHtml(result.tideTrend || "")}</span>
-      </div>
-      ${result.tideSeries ? `<svg class="tide-curve" data-index="${index}" role="img" aria-label="${escapeHtml(tideAriaLabel(result.tide))}"></svg>` : ""}
-      <div class="tide-times">
-        <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "high"))}</strong></span>
-        <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(result.tide, "low"))}</strong></span>
-      </div>
-    </div>
-
-    <div class="reason-row">${reasonChips(result)}</div>
-  </article>`;
-}
+  return {
+    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    shareLines, shareText, shareUrl, drawShareCard,
+  };
 ```
 
-- [x] **Step 3: 詳細の描画とタップ処理を追加する**
+- [x] **Step 2: app.js に画像の共有処理を足す**
 
-`runWeekly` の直前に追加する:
+`shareError` の下に置く。`navigator.share` に `url` を渡すと、LINEなど一部のアプリが画像を捨ててURLだけを送るため、URLは `text` に入れる。
 
 ```js
-function weeklyDetail(spot, day, slot) {
-  const { data, scores } = day.slots[slot];
-  return `<div class="wk-detail">
-    <div class="wk-detail-head">
-      <b>${escapeHtml(mdLabel(day.date))} ${escapeHtml(SLOT_LABELS[slot])}</b>
-      <span class="ranking-score">${scores.total}<span>/85</span></span>
-    </div>
-    ${conditionMetrics(data, spot.bearing)}
-    <div class="tide-times">
-      <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "high"))}</strong></span>
-      <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "low"))}</strong></span>
-    </div>
-    <div class="reason-row">${reasonChips({ scores })}</div>
-  </div>`;
-}
-
-// One open detail per card: tapping the open cell closes it, tapping another
-// cell in the same card switches to it.
-function onWeeklyClick(e) {
-  const btn = e.target.closest ? e.target.closest("button.wk-cell") : null;
-  if (!btn) return;
-  const card = btn.closest(".wk-card");
-  const detailSlot = card.querySelector(".wk-detail-slot");
-  const wasOpen = btn.getAttribute("aria-pressed") === "true";
-  card.querySelectorAll('button.wk-cell[aria-pressed="true"]').forEach((b) => b.setAttribute("aria-pressed", "false"));
-  if (wasOpen) {
-    detailSlot.innerHTML = "";
+// canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
+async function shareImage(region, date, slot, results) {
+  const canvas = document.createElement("canvas");
+  Share.drawShareCard(canvas, {
+    region, date, slot,
+    rows: Share.cardRows(results),
+    count: results.length,
+  });
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) { shareError("画像を作れませんでした"); return; }
+  const file = new File([blob], `surf-check-${region}-${date}-${slot}.png`, { type: "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+    const lines = Share.shareLines(region, date, slot, results);
+    try {
+      await navigator.share({ files: [file], text: `${lines[0]}\n${url}` });
+    } catch (e) {
+      // 共有シートを閉じただけなので何も出さない。
+      if (e.name !== "AbortError") shareError("画像を共有できませんでした");
+    }
     return;
   }
-  const result = WEEKLY_RESULTS[parseInt(card.dataset.index, 10)];
-  const day = result.days[parseInt(btn.dataset.day, 10)];
-  btn.setAttribute("aria-pressed", "true");
-  detailSlot.innerHTML = weeklyDetail(result.spot, day, btn.dataset.slot);
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = file.name;
+  a.click();
+  URL.revokeObjectURL(href);
 }
 ```
 
-`DOMContentLoaded` のタブ配線の直後に追加する:
+- [x] **Step 3: ボタンに配線してラベルを環境で変える**
+
+Task 2 で足した `lineBtn` の配線のすぐ下に追加する。
 
 ```js
-  document.getElementById("weekly").addEventListener("click", onWeeklyClick);
+  const imageBtn = el.querySelector("#shareImage");
+  if (imageBtn) {
+    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
+    if (!navigator.canShare) imageBtn.textContent = "画像を保存";
+    imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
+  }
 ```
 
-- [x] **Step 4: `style.css` の末尾に追加する**
+- [ ] **Step 4: 生成した画像を確認する**
 
-```css
-.wk-cell[aria-pressed="true"] {
-  border-color: var(--deep);
-  box-shadow: 0 0 0 1px var(--deep);
-}
+ブラウザでランキング（エリア「千葉北」など4件以上出るもの）を実行し、「画像で共有」／「画像を保存」を押す。保存されたPNGを開いて確認する。
 
-.wk-detail {
-  display: grid;
-  gap: 10px;
-  margin-top: 10px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
+Run: `sips -g pixelWidth -g pixelHeight ~/Downloads/surf-check-*.png`
+Expected: `pixelWidth: 1080` / `pixelHeight: 1080`
 
-.wk-detail-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-}
+目視で確認する項目:
 
-.wk-detail-head b {
-  color: var(--deep);
-  font-size: 0.9rem;
-}
+- 上位3件の順位・名前・点数・波・風がすべて読める
+- 長い名前（`釣ヶ崎（志田下）` `波崎シーサイドパーク` `パイプライン（茅ヶ崎）`）が点数に重ならず、はみ出す場合は `…` で切れている
+- 左下に「ほかN件」、右下にURLが出ている
+- 1位のバッジだけ塗りつぶしになっている
 
-.wk-detail .card-metrics {
-  margin-bottom: 0;
-}
+- [ ] **Step 5: 3件未満のときを確認する**
+
+ブラウザのコンソールで1件の絵を作り、余白に描き残しが出ないことを確認する。
+
+```js
+const c = document.createElement("canvas");
+Share.drawShareCard(c, {
+  region: "千葉北", date: "2026-09-20", slot: "morning",
+  rows: Share.cardRows([{ spot: { name: "飯岡", bearing: 90 }, scores: { total: 54 },
+    data: { wave_height: 1.4, wind_dir: 225, wind_speed: 5.5 } }]),
+  count: 1,
+});
+c.style.width = "300px";
+document.body.appendChild(c);
 ```
 
-- [x] **Step 5: ハーネスで確認する（Green）**
+Expected: 1行だけ描かれ、2行目以降の位置に何も残らない。`count` と行数が同じなので「ほかN件」は出ない。
+
+- [x] **Step 6: コミット**
 
 ```bash
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1"
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=2"
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=3"
-```
-
-Expected:
-- `tap=1`: `details=1 pressed=1`。`detail:` の行が `{今日の月/日(曜)} 朝（07-10時） NN/85` で始まり、`波サイズ`、`風向き`、`うねりの向き`、`満潮`、`干潮` と理由チップの文言を含む。`overflowX=false`。
-- `tap=2`（同じセルを2回）: `details=0 pressed=0`。
-- `tap=3`（別のセルへ切替）: `details=1 pressed=1`。見出しが2番目のセル（明日の朝）の日付になっている。
-
-- [x] **Step 6: ランキングが `main` と同一のままか確認する**
-
-Task 2 Step 5 のループをもう一度実行する（`resultCard` を書き換えたため）。Expected: 3回とも `SAME`。
-
-- [x] **Step 7: 詳細を開いた状態のスクリーンショットを確認する**
-
-```bash
-"$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&tap=1" "$SP/weekly-detail-375.png" 375
-```
-
-画像を開いて、詳細パネルがカード内に収まり、コンパスと風速リング、満潮・干潮、理由チップが崩れずに出ていることを見る。
-
-- [x] **Step 8: コミット**
-
-```bash
-git add app.js style.css
-git commit -m "feat: expand slot details when a weekly grid cell is tapped"
+git add share.js app.js
+git commit -m "$(printf 'feat: share the ranking as a 1080px card image\n\nThe card is drawn on a 2D canvas rather than screenshotting the DOM, so\nit needs no library and looks the same in every browser. Phones get the\nshare sheet; everywhere else downloads the PNG.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
 ---
 
-### Task 5: README の更新と最終確認
+### Task 4: 共有URLの復元
+
+`?region=&date=&slot=` を検証して選択欄に入れ、ランキングを自動実行する。実行後は現在の条件をURLに書き戻す。
+
+**Files:**
+- Modify: `share.js`（`parseParams` を追加）
+- Modify: `share.test.js`（テストを追加）
+- Modify: `app.js`（`applyParams` を追加、`DOMContentLoaded` から呼ぶ。`renderResults` で `replaceState`）
+
+**Interfaces:**
+- Consumes: `Share.shareUrl(...)`（Task 2）
+- Produces: `Share.parseParams(search, { regions, slots }) -> { region?, date?, slot? }`
+
+- [x] **Step 1: 失敗するテストを書く**
+
+`share.test.js` の末尾に追加する。
+
+```js
+const OPTS = {
+  regions: ["千葉北", "千葉南", "千葉", "湘南", "茨城", "全域"],
+  slots: ["morning", "afternoon", "evening"],
+};
+
+test("parseParams は3つ揃ったクエリをそのまま返す", () => {
+  const got = Sh.parseParams("?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning", OPTS);
+  assert.deepEqual(got, { region: "千葉北", date: "2026-09-20", slot: "morning" });
+});
+
+test("parseParams は一覧に無いエリアだけを捨てて残りは通す", () => {
+  const got = Sh.parseParams("?region=%E3%83%8F%E3%83%AF%E3%82%A4&date=2026-09-20&slot=morning", OPTS);
+  assert.deepEqual(got, { date: "2026-09-20", slot: "morning" });
+});
+
+test("parseParams は過去の日付をそのまま通す", () => {
+  assert.equal(Sh.parseParams("?date=2020-01-01", OPTS).date, "2020-01-01");
+});
+
+test("parseParams は未来の日付をそのまま通す", () => {
+  assert.equal(Sh.parseParams("?date=2030-12-31", OPTS).date, "2030-12-31");
+});
+
+test("parseParams は形式の違う日付を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?date=2026-9-1", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=20260920", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=hello", OPTS), {});
+});
+
+test("parseParams は実在しない日付を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?date=2026-13-45", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=2026-02-30", OPTS), {});
+});
+
+test("parseParams は不正な時間帯を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?slot=midnight", OPTS), {});
+});
+
+test("parseParams はクエリが無ければ空オブジェクトを返す", () => {
+  assert.deepEqual(Sh.parseParams("", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?", OPTS), {});
+});
+```
+
+- [x] **Step 2: テストが失敗することを確認する**
+
+Run: `node --test share.test.js`
+Expected: FAIL（`Sh.parseParams is not a function`）
+
+- [x] **Step 3: share.js に parseParams を足す**
+
+`shareUrl` の下に置く。
+
+```js
+  // "2026-02-30" のような存在しない日付は Date が繰り上げてしまうので、
+  // 組み立て直して元の文字列と突き合わせる。
+  function isRealDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const d = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return false;
+    const back = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      + `-${String(d.getDate()).padStart(2, "0")}`;
+    return back === value;
+  }
+
+  // 検証を通ったキーだけを含むオブジェクトを返す。日付は過去・未来を問わ
+  // ず通す（共有された日の結果をそのまま見せるため。取得できない範囲かは
+  // API の応答で決まる）。
+  function parseParams(search, options) {
+    const q = new URLSearchParams(search);
+    const out = {};
+    const region = q.get("region");
+    const date = q.get("date");
+    const slot = q.get("slot");
+    if (region && options.regions.includes(region)) out.region = region;
+    if (date && isRealDate(date)) out.date = date;
+    if (slot && options.slots.includes(slot)) out.slot = slot;
+    return out;
+  }
+```
+
+`return` に `parseParams` を足す。
+
+```js
+  return {
+    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    shareLines, shareText, shareUrl, drawShareCard, parseParams,
+  };
+```
+
+- [x] **Step 4: テストが通ることを確認する**
+
+Run: `node --test share.test.js`
+Expected: PASS（26件）
+
+- [x] **Step 5: app.js で復元を配線する**
+
+`initDate` の下に置く。
+
+```js
+// 共有リンクから来た条件を選択欄に入れる。1つでも入ったら true。
+// 日付が min/max の外なら、入力欄の表示と制約が食い違わないよう制約を広げる。
+function applyParams() {
+  const regionEl = document.getElementById("region");
+  const dateEl = document.getElementById("date");
+  const slotEl = document.getElementById("slot");
+  const params = Share.parseParams(location.search, {
+    regions: Array.from(regionEl.options).map((o) => o.value),
+    slots: Object.keys(TIME_SLOTS),
+  });
+  if (params.region) regionEl.value = params.region;
+  if (params.slot) slotEl.value = params.slot;
+  if (params.date) {
+    if (params.date < dateEl.min) dateEl.min = params.date;
+    if (params.date > dateEl.max) dateEl.max = params.date;
+    dateEl.value = params.date;
+  }
+  return Boolean(params.region || params.date || params.slot);
+}
+```
+
+- [x] **Step 6: DOMContentLoaded から自動実行する**
+
+`spots.json` を読んだあとでないとランキングを実行できないので、`check` の配線の直後に置く。
+
+```js
+  document.getElementById("check").addEventListener("click", check);
+  document.getElementById("checkTop").addEventListener("click", check);
+  if (applyParams()) check();
+```
+
+- [x] **Step 7: 実行後のURL反映を足す**
+
+`renderResults` の末尾、`drawTideCurves(el, results, date, slot);` の直後に置く。履歴は増やさない（戻るボタンで直前のページに戻れるようにするため）。
+
+```js
+  history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
+```
+
+- [x] **Step 8: 画面で確認する**
+
+ローカルサーバーで次を順に開く（`<今日>` は実行日、`<3日前>` はその3日前）。
+
+| URL | 期待 |
+| --- | --- |
+| `http://localhost:8000/?region=茨城&date=<今日>&slot=evening` | エリア茨城・夕が選ばれ、自動でランキングが出る |
+| `http://localhost:8000/?region=ハワイ&slot=morning` | エリアは既定のまま、朝だけが選ばれて自動実行 |
+| `http://localhost:8000/?date=2026-13-45` | 何も起きない（空状態のまま） |
+| `http://localhost:8000/?region=茨城&date=<3日前>&slot=morning` | その過去日のランキングが出て、日付欄もその日を表示 |
+| `http://localhost:8000/` | 従来どおり空状態で、自動実行しない |
+
+チェックを押したあと、URL欄に `?region=...&date=...&slot=...` が入っていること、戻るボタンで履歴が増えていないことを確認する。
+
+- [x] **Step 9: 共有リンクの往復を確認する**
+
+ランキングを出して「LINEで送る」を押し、本文のURLをコピーして新しいタブに貼る。同じエリア・日付・時間帯のランキングが再現されることを確認する。
+
+- [x] **Step 10: テスト全体を流してコミット**
+
+Run: `node --test`
+Expected: `tests 55` / `pass 55` / `fail 0`
+
+```bash
+git add share.js share.test.js app.js
+git commit -m "$(printf 'feat: restore a search from the shared link\n\nA shared link carries region, date and slot, so whoever opens it sees the\nsame ranking. Past dates are kept as sent rather than snapped to today;\nOpen-Meteo serves them for about 92 days back.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+
+### Task 5: ドキュメントと仕上げ
 
 **Files:**
 - Modify: `README.md`
+- Modify: `index.html`（`?v=` の日付を上げる）
 - Modify: `tasks/todo.md`（レビュー欄）
 
 - [x] **Step 1: README を更新する**
 
-冒頭の説明文を置き換える:
+構成のファイル一覧に `share.js` と `share.test.js` を足し、共有機能（LINE・画像・共有リンク）の説明を1段落足す。テスト件数に触れている箇所があれば実際の数に直す。
 
-```markdown
-エリア・日付・時間帯を選ぶと、関東のサーフポイントを波質スコアでランキング表示する静的Webアプリ。
-「週間予報」タブでは、エリア内の各ポイントの7日分のスコアを朝・昼・夕で一覧でき、セルをタップすると詳細を表示する。
-データは [Open-Meteo](https://open-meteo.com)（Marine + Forecast API）をブラウザから直接取得。サーバー・APIキー不要。
+- [x] **Step 2: index.html の ?v= を上げる**
+
+5か所すべてを同じ値にする。
+
+```html
+  <link rel="stylesheet" href="style.css?v=20260921" />
+  ...
+  <script src="scoring.js?v=20260921"></script>
+  <script src="forecast.js?v=20260921"></script>
+  <script src="share.js?v=20260921"></script>
+  <script src="app.js?v=20260921"></script>
 ```
 
-「構成」を置き換える:
+- [ ] **Step 3: 全体を通しで確認する**
 
-````markdown
-```
-index.html        UI
-style.css
-scoring.js        採点ロジック
-forecast.js       時間帯平均・週間予報の組み立て（ランキングと共用）
-app.js            取得→描画、タブ切替
-spots.json        スポットデータ
-scoring.test.js   テスト（採点）
-forecast.test.js  テスト（時間帯平均・週間予報）
-```
-````
+- `node --test` が全件成功する
+- ランキングの表示が Task 1 の前と同じ（共有ボタンの行以外）
+- 週間予報タブの日付・時間帯の表示が変わっていない
+- 375px で横スクロールが出ない
+- 共有リンクを開くと結果が再現される
+- 保存した画像が 1080×1080 である
 
-「テスト」のコマンドを `node --test`（全テストファイルを実行）に変える。
+- [x] **Step 4: レビュー欄を書いてコミット**
 
-- [x] **Step 2: 最終確認**
+`tasks/todo.md` の末尾に `## レビュー` を足し、確認した内容・変更したファイル・残っている懸念を書く（秘密情報は書かない）。
 
 ```bash
-node --test
-TOMORROW=$(date -v+1d +%F)
-# ランキングが main と同一（Task 2 Step 5 のループ）
-# 週間予報: 全エリア
-for r in "%E8%8C%A8%E5%9F%8E" "%E6%B9%98%E5%8D%97" "%E5%8D%83%E8%91%89%E5%8D%97" "%E5%85%A8%E5%9F%9F"; do
-  "$SP/drive.sh" "http://localhost:8001/site/harness.html?mode=weekly&region=$r" | grep -E "^(head|failed|overflowX)="
-done
+git add README.md index.html tasks/todo.md
+git commit -m "$(printf 'docs: describe the share buttons and bump the asset version\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
-Expected: テストは fail 0、ランキングは `SAME`、週間予報は全エリアで `failed=none`（通信失敗があれば名前が出る）と `overflowX=false`。
+---
 
-- [x] **Step 3: この `tasks/todo.md` の末尾にレビュー欄を書く**
+## プラン自己レビュー
 
-実施した確認と結果、残っている懸念（あれば）を書く。秘密情報は書かない。
+- **仕様の網羅**: UI・導線 → Task 2 Step 5-7、Task 3 Step 3。共有カード → Task 3 Step 1。画像の共有と保存 → Task 3 Step 2。LINEで送る → Task 2 Step 5。共有URL（生成）→ Task 2 Step 3、（検証と復元）→ Task 4、（`history.replaceState`）→ Task 4 Step 7。モジュール構成 → Task 1〜4。エラー処理 → Task 2 の `shareError`、Task 3 の `AbortError` 無視、Task 4 の不正値切り捨て。テスト → 各タスクの Step 1。確認方法の7項目 → Task 2 Step 8、Task 3 Step 4-5、Task 4 Step 8-9、Task 5 Step 3。
+- **名前の一致**: `cardRows` の返り値 `{ rank, name, score, wave, wind }` を Task 2 の `shareLines` と Task 3 の `drawShareCard` が同じ形で使う。`drawShareCard(canvas, { region, date, slot, rows, count })` は Task 3 Step 2 の呼び出しと一致。`Share.dateParts` / `Share.mdLabel` / `Share.SLOT_SHORT` は Task 1 で定義し、Task 2 の `shareLines` と Task 3 の `longDateLabel` が使う。`share.js` の `return` は Task 1 → 2 → 3 → 4 で積み増し、最終形は11個。
+- **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-01-01` は木曜。`bearing 90` に対し `wind_dir 225` は差45度で `サイドオフ`、`wind_dir 45` なら差135度で `サイドオン`（テスト用の値は225を使う）。`wave_height 1.4` → `カタ〜アタマ`、`2.06` → `オーバーヘッド`（`Scoring.waveSizeLabel` の閾値より）。
+- **テスト件数**: 既存29 + Task 1 で11 + Task 2 で7 + Task 4 で8 = 55。
 
-- [x] **Step 4: コミット**
-
-```bash
-git add README.md tasks/todo.md
-git commit -m "docs: describe weekly forecast tab and forecast.js"
-```
-
-- [x] **Step 5: 後片付けとユーザー確認**
-
-```bash
-git -C /Users/tkasai/Projects/surf-check-deploy worktree remove "$SP/base"
-```
-
-8001 番のサーバーを止める。ユーザーに `http://localhost:8000/` で両タブとセルのタップを手元のブラウザで確認してもらう。`snapshot.html` は `forecast.js` を読み込んでいないため動かなくなっていることを伝える（`scoring.js` と `app.js` の間に `<script src="forecast.js"></script>` を足せば直る）。
+---
 
 ## レビュー
 
-### 実施した確認
+### 変更したファイル
 
-- **単体テスト**: `node --test` を実行。`scoring.test.js`（12件）+ `forecast.test.js`（17件）で合計 `tests 29` / `pass 29` / `fail 0`。
-- **ランキングの main との比較**（Task 2 Step 5 のループを再実行）: 茨城/morning、湘南/evening、千葉南/afternoon の3クエリすべてで送信 URL・`#results` の描画 HTML が `main` と `SAME`。湘南/evening は1回目に `diff` が出たが、Open-Meteo のデータが2回のリクエストの間で更新されたことが原因と判断し再実行したところ `SAME` になった（コード差分ではないことを、同じクエリを続けて再実行して確認）。
-- **週間予報ハーネス（全4エリア）**: `mode=weekly` で 茨城・湘南・千葉南・全域 を確認。最終的に4エリアとも `failed=none` / `overflowX=false`。
-  - 件数: 茨城 4件、湘南 10件、千葉南 8件、全域 32件。
-  - 初回実行時、湘南と千葉南でそれぞれ1スポットが `取得失敗` になったが、再実行のたびに失敗するスポット名が変わり（パイプライン（茅ヶ崎）→鵠沼、部原→失敗なし）、3回連続で成功もしたことから、コードの不具合ではなく Open-Meteo 側の一時的な応答遅延・失敗と判断した（`Promise.allSettled` による失敗スポットの個別レポートは仕様どおり動作）。
+- `README.md`: 構成のファイル一覧に `share.js` / `share.test.js` を追加。「共有機能」の段落を1つ追加（LINE共有・画像共有・共有URLからの復元の3つを説明）。テスト件数を明記した箇所はもともと無かったので、数値の修正は発生していない。
+- `index.html`: `?v=` を5か所すべて `20260920` → `20260922` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
+- `tasks/todo.md`: Task 1〜5 の各ステップのチェックボックスを更新。実際に完了した36項目を `- [ ]` → `- [x]` にした。Task 3 Step 4・Step 5 と Task 5 Step 3 の3項目（画像の目視確認、375px の目視確認、保存PNGの寸法確認）は、このセッションではブラウザ操作ができず未実施のため、意図的に `- [ ]` のまま残した。本セクションを末尾に追加。
 
-### ブランチ全体レビュー後の修正（058ac69）
+このタスクでは `app.js` / `share.js` / `style.css` / `scoring.js` / `forecast.js` など、挙動に関わるファイルは一切変更していない。
 
-全体レビューで、タブ導入によって新しく起きうる不具合が1件見つかったため修正した。
+### 確認した内容（このセッションで実際に実行して確認）
 
-- **潮汐カーブの幅**: ランキングの取得中に週間予報タブへ切り替えると、`#results` が非表示のまま描画が終わり、`getBoundingClientRect().width` が 0 になって viewBox が既定値の 300px に固定されていた（ランキングに戻すとカーブが横に足りない状態で残り、ホバーの縦線もずれる）。`renderResults` で最後の描画条件を控えておき、`setMode` でランキングに戻ったときに `drawTideCurves` を呼び直すようにした。ハーネス（900px 幅・タブ往復）で修正前 `viewBox=300 / rect=680`、修正後は4本とも `viewBox=680 / rect=680`。
-- あわせて、タブの ARIA（`role="tabpanel"` と `aria-labelledby`）、空セルの `role="img"`、週間予報タブ用の説明文、`.controls` の上書きについてのコメントを追加した。
-- 修正後に `node --test`（29件）、ランキングの `main` 比較（3件とも `SAME`）、週間予報のセルタップを再確認済み。
+- `node --test` を実行し、`tests 55` / `pass 55` / `fail 0` を確認した（内訳: 採点12 + 予報17 + 共有26。変更前と同じ件数で、追加・削除したテストは無い）。
+- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の5つの読み込み行がすべて `?v=20260922` で揃っており、古い値の残存が無いことを確認した。
+- 「ランキング・週間予報の表示が共有ボタンの行以外変わっていないこと」は Task 1 で描画結果を byte-for-byte diff して確認済みであり、その review でも独立に再確認されている。今回のセッションで新たに確認したものではなく、その結果を引用している。
 
-### 実機確認で見つかった不具合（キャッシュの取りこぼし）
+### 未確認（実機で確認してほしいこと）
 
-ユーザーの環境で「週間予報の結果が見れない」という報告があり、調査した結果、原因はコードではなくブラウザキャッシュだった。
+このセッションには Playwright 等のブラウザ自動化が無く、ローカルサーバーも起動していないため、以下は確認できていない。Task 3 Step 4-5 と Task 5 Step 3 のチェックボックスを未完了のまま残しているのはこのためで、コードを読んだだけの推測でチェックを入れることはしていない。
 
-- **症状**: 新しい HTML（タブあり）に対して、ランキングと週間予報の両パネルが同時に表示され、タブは未装飾で、押しても何も起きない。
-- **根本原因**: ローカルサーバーのアクセスログに `GET /` と `GET /forecast.js` だけが記録され、`style.css` と `app.js` のリクエストが無かった。新規ファイルの `forecast.js` はキャッシュに無いので取得されるが、既存の `style.css` / `app.js` は前日のキャッシュがそのまま使われ、「タブを知らない CSS / JS」と「タブのある HTML」が混ざっていた。
-- **確認**: 同じファイルをヘッドレスブラウザで新規ロードすると、`data-mode` の切り替えで `#results` / `#weekly` の `display` が正しく入れ替わる（CSS 99 ルールすべて適用）。コード側の不具合ではない。
-- **対処**: `index.html` のアセット参照に `?v=20260920` を付けた。新しい HTML が古い CSS / JS と組み合わさることが原理的に無くなる。GitHub Pages のキャッシュは 10 分なので、公開後の再訪問者にも同じ事故が起きうる（全体レビューでも指摘されていた懸念）。
-- **運用**: CSS / JS を変更したら `index.html` の `?v=` の日付を上げる。忘れた場合の影響は、この対処を入れる前と同じ（最大10分の取りこぼし）で、悪化はしない。
+1. スマホ（実機、または Chrome DevTools のデバイスモードで 375px 幅）でサイトを開き、ランキングを1回チェックする。結果カードの見た目が「LINEで送る」「画像で共有」の行以外、これまでと同じに見えるか確認する。
+2. 「週間予報」タブに切り替え、日付・時間帯のラベル表示が変わっていないか確認する。
+3. 375px 幅の画面で、結果一覧やボタン行を横に指でスワイプしても横スクロールが発生しないか確認する。
+4. 「LINEで送る」をタップし、LINEのトーク選択画面が開いてテキストとURLが入っているか確認する。次にそのURL（または `?region=千葉北&date=2026-09-21&slot=morning` のような手打ちのURL）を別タブで開き、エリア・日付・時間帯が自動で入り、同じランキングが再現されるか確認する。
+5. 「画像で共有」（`navigator.canShare` が使えない環境では「画像を保存」）をタップして画像を保存し、保存されたPNGのプロパティ（写真アプリの情報表示、またはPCの「情報を見る」）でサイズが 1080×1080 になっているか確認する。
 
 ### 残っている懸念
 
-- 週間予報は1エリアあたり最大32件のスポットに並列でリクエストするため、Open-Meteo 側が混雑していると一部スポットが `取得失敗` として表示されることがある（コードの不具合ではなく、UI は失敗したスポット名を表示して残りは正常に描画する設計どおりの挙動）。
-- `snapshot.html`（未追跡ファイル）は本タスクでも変更していないため、`forecast.js` を読み込んでおらず動作しない状態のまま。`scoring.js` と `app.js` の間に `<script src="forecast.js"></script>` を追加すれば直る。
-- 一時的な取得失敗に対するリトライは入れていない（設計書に規定がないため）。入れるかどうかは設計の追加としてユーザーに確認する。
+- 上記「未確認」の5項目はいずれも Task 5 で新規に生まれた懸念ではなく、Task 2〜4 の実装時点から持ち越されている実機確認事項である。今回のコミットはドキュメントと `?v=` のみで、挙動を変える変更は無いため、リスクは低いと判断しているが、最終確認は必須。対応する3つのチェックボックス（Task 3 Step 4・Step 5、Task 5 Step 3）は未完了のまま残してあるので、確認でき次第チェックを入れてほしい。
+- 秘密情報（APIキー・認証情報等）は本プロジェクトに存在せず（Open-Meteo はAPIキー不要）、本セクションにも含めていない。
+
+## 最終レビューで直したこと
+
+ブランチ全体のレビューで2件の指摘があり、どちらも直した。
+
+1. **PCのChromeで「画像で共有」と出るのに保存が走っていた**（`app.js`）。
+   ラベルは `navigator.canShare` が有るかどうかだけで決めていたが、実際の分岐は
+   `navigator.canShare({ files: [file] })` で判定していた。PCのChromeは前者が真・後者が偽なので、
+   「押す前に何が起きるか分かる状態にする」という仕様に反して、共有シートを約束しておいて
+   ダウンロードしていた。同じ形のダミーPNGで先に問い合わせる `canShareImageFile()` を足し、
+   ラベルもこれで決めるようにした。4環境（canShare無し / 有るがファイル不可 / ファイル可 / 例外）で
+   期待どおりに分かれることを確認済み。
+2. **`navigator.share` の失敗メッセージ**（設計メモ側を修正）。
+   設計メモでは `canvas.toBlob` の失敗と同じ `画像を作れませんでした` にしていたが、
+   この分岐では画像は作れている。実装の `画像を共有できませんでした` のほうが正しいので、
+   設計メモの表と本文を実装に合わせ、理由も書き添えた。
+
+JSを触ったので `?v=` を `20260922` に上げ直した。
