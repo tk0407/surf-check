@@ -947,7 +947,7 @@ git commit -m "$(printf 'feat: restore a search from the shared link\n\nA shared
 
 - [x] **Step 2: index.html の ?v= を上げる**
 
-4か所すべてを同じ値にする。
+5か所すべてを同じ値にする。
 
 ```html
   <link rel="stylesheet" href="style.css?v=20260921" />
@@ -992,7 +992,7 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 ### 変更したファイル
 
 - `README.md`: 構成のファイル一覧に `share.js` / `share.test.js` を追加。「共有機能」の段落を1つ追加（LINE共有・画像共有・共有URLからの復元の3つを説明）。テスト件数を明記した箇所はもともと無かったので、数値の修正は発生していない。
-- `index.html`: `?v=` を4か所すべて `20260920` → `20260921` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
+- `index.html`: `?v=` を5か所すべて `20260920` → `20260921` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
 - `tasks/todo.md`: Task 1〜5 の各ステップのチェックボックスを更新。実際に完了した36項目を `- [ ]` → `- [x]` にした。Task 3 Step 4・Step 5 と Task 5 Step 3 の3項目（画像の目視確認、375px の目視確認、保存PNGの寸法確認）は、このセッションではブラウザ操作ができず未実施のため、意図的に `- [ ]` のまま残した。本セクションを末尾に追加。
 
 このタスクでは `app.js` / `share.js` / `style.css` / `scoring.js` / `forecast.js` など、挙動に関わるファイルは一切変更していない。
@@ -1000,7 +1000,7 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 ### 確認した内容（このセッションで実際に実行して確認）
 
 - `node --test` を実行し、`tests 55` / `pass 55` / `fail 0` を確認した（内訳: 採点12 + 予報17 + 共有26。変更前と同じ件数で、追加・削除したテストは無い）。
-- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の4つの読み込み行がすべて `?v=20260921` で揃っており、古い値の残存が無いことを確認した。
+- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の5つの読み込み行がすべて `?v=20260921` で揃っており、古い値の残存が無いことを確認した。
 - 「ランキング・週間予報の表示が共有ボタンの行以外変わっていないこと」は Task 1 で描画結果を byte-for-byte diff して確認済みであり、その review でも独立に再確認されている。今回のセッションで新たに確認したものではなく、その結果を引用している。
 
 ### 未確認（実機で確認してほしいこと）
