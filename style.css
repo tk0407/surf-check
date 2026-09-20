@@ -613,3 +613,165 @@ footer {
     white-space: normal;
   }
 }
+
+/* --- Mode tabs --- */
+
+.mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid rgba(18, 69, 89, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.mode-tab {
+  min-height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.mode-tab[aria-selected="true"] {
+  background: var(--deep);
+  color: #fff;
+}
+
+.app-shell[data-mode="weekly"] .ranking-only,
+.app-shell[data-mode="ranking"] .weekly-only {
+  display: none;
+}
+
+/* Intentionally wins over the ≤640px .controls rule above (higher
+   selector specificity, regardless of source order): weekly mode only
+   shows エリア + チェック, so it stays 2 columns even on narrow screens. */
+.app-shell[data-mode="weekly"] .controls {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+/* --- Weekly forecast --- */
+
+.wk-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.wk-best {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.wk-best b {
+  color: var(--deep);
+  font-size: 0.84rem;
+  font-weight: 900;
+}
+
+.wk-grid {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 3px;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+.wk-grid th {
+  padding: 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.wk-grid thead th:first-child {
+  width: 22px;
+}
+
+.wk-grid td {
+  padding: 0;
+}
+
+.wk-cell {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.wk-cell.good {
+  background: rgba(29, 154, 114, 0.14);
+  color: var(--good);
+}
+
+.wk-cell.ok {
+  background: rgba(244, 201, 107, 0.24);
+  color: var(--ok);
+}
+
+.wk-cell.bad {
+  background: rgba(239, 111, 94, 0.1);
+  color: #b84a3c;
+}
+
+.wk-cell.empty {
+  background: #f1f4f6;
+  color: var(--muted);
+  cursor: default;
+}
+
+.wk-wave {
+  color: var(--deep);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.wk-cell[aria-pressed="true"] {
+  border-color: var(--deep);
+  box-shadow: 0 0 0 1px var(--deep);
+}
+
+.wk-detail {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.wk-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.wk-detail-head b {
+  color: var(--deep);
+  font-size: 0.9rem;
+}
+
+.wk-detail .card-metrics {
+  margin-bottom: 0;
+}
