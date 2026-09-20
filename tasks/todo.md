@@ -981,6 +981,6 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 ## プラン自己レビュー
 
 - **仕様の網羅**: UI・導線 → Task 2 Step 5-7、Task 3 Step 3。共有カード → Task 3 Step 1。画像の共有と保存 → Task 3 Step 2。LINEで送る → Task 2 Step 5。共有URL（生成）→ Task 2 Step 3、（検証と復元）→ Task 4、（`history.replaceState`）→ Task 4 Step 7。モジュール構成 → Task 1〜4。エラー処理 → Task 2 の `shareError`、Task 3 の `AbortError` 無視、Task 4 の不正値切り捨て。テスト → 各タスクの Step 1。確認方法の7項目 → Task 2 Step 8、Task 3 Step 4-5、Task 4 Step 8-9、Task 5 Step 3。
-- **名前の一致**: `cardRows` の返り値 `{ rank, name, score, wave, wind }` を Task 2 の `shareLines` と Task 3 の `drawShareCard` が同じ形で使う。`drawShareCard(canvas, { region, date, slot, rows, count })` は Task 3 Step 2 の呼び出しと一致。`Share.dateParts` / `Share.mdLabel` / `Share.SLOT_SHORT` は Task 1 で定義し、Task 2 の `shareLines` と Task 3 の `longDateLabel` が使う。`share.js` の `return` は Task 1 → 2 → 3 → 4 で積み増し、最終形は10個。
+- **名前の一致**: `cardRows` の返り値 `{ rank, name, score, wave, wind }` を Task 2 の `shareLines` と Task 3 の `drawShareCard` が同じ形で使う。`drawShareCard(canvas, { region, date, slot, rows, count })` は Task 3 Step 2 の呼び出しと一致。`Share.dateParts` / `Share.mdLabel` / `Share.SLOT_SHORT` は Task 1 で定義し、Task 2 の `shareLines` と Task 3 の `longDateLabel` が使う。`share.js` の `return` は Task 1 → 2 → 3 → 4 で積み増し、最終形は11個。
 - **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-01-01` は木曜。`bearing 90` に対し `wind_dir 225` は差45度で `サイドオフ`、`wind_dir 45` なら差135度で `サイドオン`（テスト用の値は225を使う）。`wave_height 1.4` → `カタ〜アタマ`、`2.06` → `オーバーヘッド`（`Scoring.waveSizeLabel` の閾値より）。
 - **テスト件数**: 既存29 + Task 1 で11 + Task 2 で7 + Task 4 で8 = 55。
