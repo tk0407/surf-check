@@ -364,6 +364,36 @@ function shareError(message) {
   note.textContent = message;
 }
 
+// canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
+async function shareImage(region, date, slot, results) {
+  const canvas = document.createElement("canvas");
+  Share.drawShareCard(canvas, {
+    region, date, slot,
+    rows: Share.cardRows(results),
+    count: results.length,
+  });
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  if (!blob) { shareError("画像を作れませんでした"); return; }
+  const file = new File([blob], `surf-check-${region}-${date}-${slot}.png`, { type: "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
+    const lines = Share.shareLines(region, date, slot, results);
+    try {
+      await navigator.share({ files: [file], text: `${lines[0]}\n${url}` });
+    } catch (e) {
+      // 共有シートを閉じただけなので何も出さない。
+      if (e.name !== "AbortError") shareError("画像を共有できませんでした");
+    }
+    return;
+  }
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = file.name;
+  a.click();
+  URL.revokeObjectURL(href);
+}
+
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
@@ -384,6 +414,12 @@ function renderResults(el, region, date, slot, results, failed) {
     ${failedNote}`;
   const lineBtn = el.querySelector("#shareLine");
   if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
+  const imageBtn = el.querySelector("#shareImage");
+  if (imageBtn) {
+    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
+    if (!navigator.canShare) imageBtn.textContent = "画像を保存";
+    imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
+  }
   drawTideCurves(el, results, date, slot);
 }
 
