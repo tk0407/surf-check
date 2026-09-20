@@ -4,7 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>サーフチェック</title>
-  <link rel="stylesheet" href="style.css" />
+  <!-- ?v= は更新の取りこぼし防止。CSS / JS を変更したら日付を上げる。
+       これが無いと、新しい index.html と古いキャッシュの CSS / JS が
+       混ざって画面が壊れる（GitHub Pages のキャッシュは 10 分）。 -->
+  <link rel="stylesheet" href="style.css?v=20260920" />
 </head>
 <body>
   <main class="app-shell" data-mode="ranking">
@@ -65,8 +68,8 @@
 
     <footer>データ提供: Open-Meteo（数値予報モデル）</footer>
   </main>
-  <script src="scoring.js"></script>
-  <script src="forecast.js"></script>
-  <script src="app.js"></script>
+  <script src="scoring.js?v=20260920"></script>
+  <script src="forecast.js?v=20260920"></script>
+  <script src="app.js?v=20260920"></script>
 </body>
 </html>
