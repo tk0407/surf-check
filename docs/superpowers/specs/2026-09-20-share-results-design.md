@@ -140,10 +140,14 @@ https://tk0407.github.io/surf-check/?region=千葉北&date=2026-09-20&slot=morni
 | パラメータ | 通す条件 | 外れたとき |
 | --- | --- | --- |
 | `region` | `#region` の `<option>` の値に完全一致 | そのパラメータを無視（既定値のまま） |
-| `date` | `YYYY-MM-DD` 形式かつ `initDate()` が入れた `min`〜`max` の範囲内 | そのパラメータを無視（今日のまま） |
+| `date` | `YYYY-MM-DD` 形式で、実在する日付であること（`2026-13-45` は落とす） | そのパラメータを無視（今日のまま） |
 | `slot` | `morning` / `afternoon` / `evening` のいずれか | そのパラメータを無視（既定値のまま） |
 
-`date` の範囲チェックは、数日後に共有リンクを開いたときに過去日を検索してしまうのを防ぐためのもの。**1つでも有効なパラメータがあれば**、選択欄に反映したうえでランキングを自動実行する。1つも無ければ何もしない（従来どおり空状態から始まる）。
+`date` は過去・未来を問わず、形式が正しければそのまま使う。数日後に共有リンクを開いた人は、送られた日の結果をそのまま見る。**1つでも有効なパラメータがあれば**、選択欄に反映したうえでランキングを自動実行する。1つも無ければ何もしない（従来どおり空状態から始まる）。
+
+`initDate()` は `#date` に `min`（今日）と `max`（今日+9日）を入れている。URLで渡った日付がこの範囲の外だったときは、**その日付を含むように `min` または `max` を広げる**。入力欄の表示値と制約が食い違ったままにしないため。
+
+Open-Meteo が受け付ける日付の範囲は marine と forecast で違い、風のデータは概ね92日前までしか取れない。それより古いリンクを開くと全ポイントの取得が失敗し、既存の「データを取得できませんでした。」が出る。これは想定内の挙動として受け入れ、専用のメッセージは作らない。
 
 ランキングタブ以外のパラメータ（週間予報）は今回扱わない。
 
@@ -160,7 +164,7 @@ https://tk0407.github.io/surf-check/?region=千葉北&date=2026-09-20&slot=morni
 | `shareLines(region, date, slot, results)` | 整列済み `results` | `string[]` | LINE文面の本文（1行目＋上位3件）。URLは含めない |
 | `shareText(region, date, slot, results, url)` | 上記 + 共有URL | `string` | `shareLines` の結果と `url` を空行で連結した全文 |
 | `shareUrl(base, region, date, slot)` | `base` は `origin + pathname` | `string` | クエリ付きURL |
-| `parseParams(search, options)` | `search` は文字列、`options` は `{ regions, slots, minDate, maxDate }` | `{ region?, date?, slot? }` | 検証を通ったものだけを含むオブジェクト。何も通らなければ空オブジェクト |
+| `parseParams(search, options)` | `search` は文字列、`options` は `{ regions, slots }` | `{ region?, date?, slot? }` | 検証を通ったものだけを含むオブジェクト。何も通らなければ空オブジェクト |
 | `cardRows(results)` | 整列済み `results` | `{ rank, name, score, wave, wind }[]` | 画像とテキストが同じ値を使うための共通の整形。最大3件 |
 | `drawShareCard(canvas, info)` | `info` は `{ region, date, slot, rows, count }`（`count` はヒットした総件数） | `void` | 1080×1080 に描画 |
 
@@ -176,6 +180,7 @@ https://tk0407.github.io/surf-check/?region=千葉北&date=2026-09-20&slot=morni
 | `canvas.toBlob` が null を返す | 同上 |
 | `window.open` がブロックされた | `LINEを開けませんでした` を1行表示 |
 | URLパラメータが不正 | 黙って無視し、既定値で表示する（警告は出さない） |
+| 古すぎる日付でAPIが範囲外を返す | 全ポイントが取得失敗し、既存の「データを取得できませんでした。」が出る |
 
 ## テスト
 
@@ -185,7 +190,7 @@ https://tk0407.github.io/surf-check/?region=千葉北&date=2026-09-20&slot=morni
 - `shareLines`: 1行目の書式、順位の採番、件数が1〜3件のときの行数
 - `shareText`: 本文とURLが空行で連結される
 - `shareUrl`: 日本語のエリア名がエンコードされる、3つのパラメータが揃う
-- `parseParams`: 全部有効 / `region` が一覧に無い / `date` が範囲外（過去・先すぎ）/ `date` の形式違い / `slot` が不正 / クエリ無し
+- `parseParams`: 全部有効 / `region` が一覧に無い / 過去の日付が通る / 未来の日付が通る / `date` の形式違い（`2026-9-1`、`2026-13-45`）/ `slot` が不正 / クエリ無し
 - `jpDirection` と `windConditionLabel`: 移設後も同じ値を返すこと（境界の角度を含む）
 
 `drawShareCard` はブラウザAPIを使うためNodeのテスト対象にしない。ヘッドレスブラウザで実際にPNGを生成し、サイズと見た目を確認する。
@@ -195,6 +200,7 @@ https://tk0407.github.io/surf-check/?region=千葉北&date=2026-09-20&slot=morni
 1. `node --test` が全件成功する
 2. ランキングの取得・表示が従来と同じ（共有ボタンの行以外、描画HTMLに差が無い）
 3. 共有URLを開くと、選択欄が復元されて自動でランキングが出る
-4. 不正なパラメータ（存在しないエリア、過去の日付）で開いても既定値で正常に動く
-5. 生成したPNGが1080×1080で、上位3件と条件が読める
-6. 375px で横スクロールが出ない
+4. 過去の日付のリンクを開くと、その日の結果が出る（数日前のリンクで確認する）
+5. 不正なパラメータ（存在しないエリア、`2026-13-45`）で開いても既定値で正常に動く
+6. 生成したPNGが1080×1080で、上位3件と条件が読める
+7. 375px で横スクロールが出ない
