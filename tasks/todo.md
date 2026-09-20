@@ -720,7 +720,7 @@ test("weeklyShare の draw は週間カードを描く", () => {
 - [ ] **Step 2: テストが失敗することを確認する**
 
 Run: `node --test`
-Expected: FAIL。`Sh.drawWeeklyCard is not a function` などで新しい13件が落ち、既存の79件は通る。
+Expected: FAIL。`Sh.drawWeeklyCard is not a function` などで新しい13件が落ち、既存の81件は通る。
 
 - [ ] **Step 3: 週間カードを描く**
 
@@ -841,7 +841,7 @@ Expected: FAIL。`Sh.drawWeeklyCard is not a function` などで新しい13件�
 - [ ] **Step 6: テストが通ることを確認する**
 
 Run: `node --test`
-Expected: PASS。`tests 92` / `pass 92` / `fail 0`（Task 2 の79 + 追加13）。
+Expected: PASS。`tests 94` / `pass 94` / `fail 0`（Task 2 の81 + 追加13）。
 
 - [ ] **Step 7: コミット**
 
@@ -980,7 +980,7 @@ Expected:
 - [ ] **Step 7: 既存テストが影響を受けていないことを確認する**
 
 Run: `node --test`
-Expected: PASS。`tests 92` / `pass 92` / `fail 0`。`app.js` はテスト対象外なので件数は Task 3 と同じ。
+Expected: PASS。`tests 94` / `pass 94` / `fail 0`。`app.js` はテスト対象外なので件数は Task 3 と同じ。
 
 - [ ] **Step 8: コミット**
 
@@ -1110,7 +1110,7 @@ Expected: 1つ目が `5`、2つ目が何も出さない。
 python3 -m http.server 8000
 ```
 
-- `node --test` が全件成功する（`tests 92` / `fail 0`）
+- `node --test` が全件成功する（`tests 94` / `fail 0`）
 - ランキングの表示と共有が Task 4 の前と変わらない（ボタンを押すと LINE が開く／画像が保存できる）
 - 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出る
 - 週間の「LINEで送る」でテキストに7行と ★ が入っている
@@ -1136,5 +1136,5 @@ git commit -m "$(printf 'feat: share the weekly forecast by line and image\n\nCo
 - **名前の一致**: `weeklyRows` の返り値 `{ date, slot, name, score, best }` を Task 1 の `weeklyShareLines`、Task 3 の `drawWeeklyCard` と `WEEK_ROWS` フィクスチャが同じ形で使う。`drawWeeklyCard(canvas, { region, dates, rows, count })` は Task 3 Step 4 の `weeklyShare` の呼び出しと一致。`rankingShare` / `weeklyShare` が返す `{ text, headline, url, filename, draw }` の5つのキーを、Task 4 の `openLineShare`（`text`）・`shareImage`（`draw` / `filename` / `headline` / `url`）と Task 5 の `history.replaceState`（`url`）が使う。`fakeCanvas()` は Task 2 Step 1 で定義し、Task 3 のテストが使う。`WEEK_DATES` は Task 1 Step 1 で定義し、Task 3 のテストが使う。`drawCardFrame` / `drawCardFooter` は Task 2 Step 4 で定義し、Task 3 Step 3 が呼ぶ。
 - **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-09-26` は土曜。`weeklyRows` と `weeklyShareLines` の期待値、`weeklyUrl` の URL エンコード（`千葉北` → `%E5%8D%83%E8%91%89%E5%8C%97`）、`drawWeeklyCard` の日付の y 座標（350 / 446 / 542 / 638 / 734 / 830 / 926）とフッタの位置（1016）、スコア帯の色（62→`#1d9a72` / 48→`#b7791f` / 26→`#b84a3c`）は、実装の試作を `node` で走らせて実測した値。`drawShareCard` の特性テストの期待値も、現在の `share.js` を偽コンテキストで走らせた実測値。
 - **レイアウトの余白**: 7行目の日付のベースラインが y=926、フッタが y=1016 で 90px 空く。日付の欄は `WEEK_DATE_LEFT`(108) から `WEEK_SLOT_LEFT`(294) までの 186px で、最も長い `12/31(木)` が 153px（近似計算）。ポイント名は点数の左端から 24px 手前まで。実在する最長の名前 `パイプライン（茅ヶ崎）`（11文字）は 40px で 440px、収まる枠は約 551px。
-- **テスト件数**: 既存55 + Task 1 で16 + Task 2 で8 + Task 3 で13 = 92。
+- **テスト件数**: 既存55 + Task 1 で16 + Task 2 で8 + Task 2 の修正ラウンドで2 + Task 3 で13 = 94。修正ラウンドの2件は、切り出した `drawCardFrame` の区切り線と見出しの色・太さを検証するもの。レビューで「移した当の描画が未検証」と指摘され、変異テスト（区切り線を削除しても緑のまま）で実証されたため追加した。
 - **Red-Green の例外**: Task 2 のテストは既存の出荷コードの絵を固定する特性テストなので、最初から通る。これはタスク本文に明記してある。Task 1・3・5 の新しい振る舞いは失敗から始める。
