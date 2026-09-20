@@ -327,7 +327,7 @@ function fakeCanvas() {
     beginPath() { calls.push({ op: "beginPath" }); },
     moveTo(...args) { calls.push({ op: "moveTo", args }); },
     lineTo(...args) { calls.push({ op: "lineTo", args }); },
-    stroke() { calls.push({ op: "stroke", strokeStyle: this.strokeStyle }); },
+    stroke() { calls.push({ op: "stroke", strokeStyle: this.strokeStyle, lineWidth: this.lineWidth }); },
     arc(...args) { calls.push({ op: "arc", args }); },
     fill() { calls.push({ op: "fill", fillStyle: this.fillStyle }); },
     measureText(text) {
@@ -415,4 +415,28 @@ test("drawShareCard はサイトのURLを右下に描く", () => {
   assert.equal(url.textAlign, "right");
   assert.equal(url.x, 1016);
   assert.equal(url.y, 1016);
+});
+
+test("drawShareCard は見出しの下に区切り線を引く", () => {
+  const f = drawRanking(CARD_RESULTS);
+  assert.ok(f.calls.some((c) => c.op === "moveTo" && c.args[0] === 64 && c.args[1] === 264));
+  assert.ok(f.calls.some((c) => c.op === "lineTo" && c.args[0] === 1016 && c.args[1] === 264));
+  const line = f.calls.find((c) => c.op === "stroke");
+  assert.equal(line.strokeStyle, "#dce5eb");
+  assert.equal(line.lineWidth, 2);
+});
+
+test("drawShareCard は見出しの色と太さを描き分ける", () => {
+  const f = drawRanking(CARD_RESULTS);
+  const kicker = f.drawn("SURF CHECK");
+  assert.equal(kicker.fillStyle, "#007f8f");
+  assert.ok(kicker.font.startsWith("800 30px"));
+
+  const title = f.drawn("千葉北 / 9月20日(日)");
+  assert.equal(title.fillStyle, "#124559");
+  assert.ok(title.font.startsWith("800 54px"));
+
+  const subtitle = f.drawn("朝 07-10時");
+  assert.equal(subtitle.fillStyle, "#687481");
+  assert.ok(subtitle.font.startsWith("700 38px"));
 });
