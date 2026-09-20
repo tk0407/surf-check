@@ -1147,7 +1147,7 @@ git add README.md tasks/todo.md
 git commit -m "docs: describe weekly forecast tab and forecast.js"
 ```
 
-- [ ] **Step 5: 後片付けとユーザー確認**
+- [x] **Step 5: 後片付けとユーザー確認**
 
 ```bash
 git -C /Users/tkasai/Projects/surf-check-deploy worktree remove "$SP/base"
@@ -1165,7 +1165,16 @@ git -C /Users/tkasai/Projects/surf-check-deploy worktree remove "$SP/base"
   - 件数: 茨城 4件、湘南 10件、千葉南 8件、全域 32件。
   - 初回実行時、湘南と千葉南でそれぞれ1スポットが `取得失敗` になったが、再実行のたびに失敗するスポット名が変わり（パイプライン（茅ヶ崎）→鵠沼、部原→失敗なし）、3回連続で成功もしたことから、コードの不具合ではなく Open-Meteo 側の一時的な応答遅延・失敗と判断した（`Promise.allSettled` による失敗スポットの個別レポートは仕様どおり動作）。
 
+### ブランチ全体レビュー後の修正（058ac69）
+
+全体レビューで、タブ導入によって新しく起きうる不具合が1件見つかったため修正した。
+
+- **潮汐カーブの幅**: ランキングの取得中に週間予報タブへ切り替えると、`#results` が非表示のまま描画が終わり、`getBoundingClientRect().width` が 0 になって viewBox が既定値の 300px に固定されていた（ランキングに戻すとカーブが横に足りない状態で残り、ホバーの縦線もずれる）。`renderResults` で最後の描画条件を控えておき、`setMode` でランキングに戻ったときに `drawTideCurves` を呼び直すようにした。ハーネス（900px 幅・タブ往復）で修正前 `viewBox=300 / rect=680`、修正後は4本とも `viewBox=680 / rect=680`。
+- あわせて、タブの ARIA（`role="tabpanel"` と `aria-labelledby`）、空セルの `role="img"`、週間予報タブ用の説明文、`.controls` の上書きについてのコメントを追加した。
+- 修正後に `node --test`（29件）、ランキングの `main` 比較（3件とも `SAME`）、週間予報のセルタップを再確認済み。
+
 ### 残っている懸念
 
 - 週間予報は1エリアあたり最大32件のスポットに並列でリクエストするため、Open-Meteo 側が混雑していると一部スポットが `取得失敗` として表示されることがある（コードの不具合ではなく、UI は失敗したスポット名を表示して残りは正常に描画する設計どおりの挙動）。
 - `snapshot.html`（未追跡ファイル）は本タスクでも変更していないため、`forecast.js` を読み込んでおらず動作しない状態のまま。`scoring.js` と `app.js` の間に `<script src="forecast.js"></script>` を追加すれば直る。
+- 一時的な取得失敗に対するリトライは入れていない（設計書に規定がないため）。入れるかどうかは設計の追加としてユーザーに確認する。
