@@ -421,6 +421,7 @@ function renderResults(el, region, date, slot, results, failed) {
     imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
   }
   drawTideCurves(el, results, date, slot);
+  history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
 }
 
 // Runs fn for every spot in parallel; spots whose promise rejects are
@@ -603,6 +604,26 @@ function initDate() {
   dateEl.value = fmtDate(today);
 }
 
+// 共有リンクから来た条件を選択欄に入れる。1つでも入ったら true。
+// 日付が min/max の外なら、入力欄の表示と制約が食い違わないよう制約を広げる。
+function applyParams() {
+  const regionEl = document.getElementById("region");
+  const dateEl = document.getElementById("date");
+  const slotEl = document.getElementById("slot");
+  const params = Share.parseParams(location.search, {
+    regions: Array.from(regionEl.options).map((o) => o.value),
+    slots: Object.keys(TIME_SLOTS),
+  });
+  if (params.region) regionEl.value = params.region;
+  if (params.slot) slotEl.value = params.slot;
+  if (params.date) {
+    if (params.date < dateEl.min) dateEl.min = params.date;
+    if (params.date > dateEl.max) dateEl.max = params.date;
+    dateEl.value = params.date;
+  }
+  return Boolean(params.region || params.date || params.slot);
+}
+
 // Hover layer: crosshair + dot inside the hovered sparkline, one shared
 // tooltip (textContent only) positioned above the snapped sample.
 let tideTip = null;
@@ -679,4 +700,5 @@ window.addEventListener("DOMContentLoaded", async () => {
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", check);
   document.getElementById("checkTop").addEventListener("click", check);
+  if (applyParams()) check();
 });

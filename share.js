@@ -72,6 +72,32 @@
     return u.toString();
   }
 
+  // "2026-02-30" のような存在しない日付は Date が繰り上げてしまうので、
+  // 組み立て直して元の文字列と突き合わせる。
+  function isRealDate(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const d = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return false;
+    const back = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+      + `-${String(d.getDate()).padStart(2, "0")}`;
+    return back === value;
+  }
+
+  // 検証を通ったキーだけを含むオブジェクトを返す。日付は過去・未来を問わ
+  // ず通す（共有された日の結果をそのまま見せるため。取得できない範囲かは
+  // API の応答で決まる）。
+  function parseParams(search, options) {
+    const q = new URLSearchParams(search);
+    const out = {};
+    const region = q.get("region");
+    const date = q.get("date");
+    const slot = q.get("slot");
+    if (region && options.regions.includes(region)) out.region = region;
+    if (date && isRealDate(date)) out.date = date;
+    if (slot && options.slots.includes(slot)) out.slot = slot;
+    return out;
+  }
+
   const CARD_SIZE = 1080;
   const CARD_PAD = 64;
   const CARD_FONT = 'system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif';
@@ -173,6 +199,6 @@
 
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl, drawShareCard,
+    shareLines, shareText, shareUrl, drawShareCard, parseParams,
   };
 });

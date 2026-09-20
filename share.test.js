@@ -129,3 +129,46 @@ test("shareUrl は base に付いていた既存のクエリを捨てる", () =>
   assert.ok(url.includes("region=%E8%8C%A8%E5%9F%8E"));
   assert.ok(url.includes("slot=evening"));
 });
+
+const OPTS = {
+  regions: ["千葉北", "千葉南", "千葉", "湘南", "茨城", "全域"],
+  slots: ["morning", "afternoon", "evening"],
+};
+
+test("parseParams は3つ揃ったクエリをそのまま返す", () => {
+  const got = Sh.parseParams("?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning", OPTS);
+  assert.deepEqual(got, { region: "千葉北", date: "2026-09-20", slot: "morning" });
+});
+
+test("parseParams は一覧に無いエリアだけを捨てて残りは通す", () => {
+  const got = Sh.parseParams("?region=%E3%83%8F%E3%83%AF%E3%82%A4&date=2026-09-20&slot=morning", OPTS);
+  assert.deepEqual(got, { date: "2026-09-20", slot: "morning" });
+});
+
+test("parseParams は過去の日付をそのまま通す", () => {
+  assert.equal(Sh.parseParams("?date=2020-01-01", OPTS).date, "2020-01-01");
+});
+
+test("parseParams は未来の日付をそのまま通す", () => {
+  assert.equal(Sh.parseParams("?date=2030-12-31", OPTS).date, "2030-12-31");
+});
+
+test("parseParams は形式の違う日付を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?date=2026-9-1", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=20260920", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=hello", OPTS), {});
+});
+
+test("parseParams は実在しない日付を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?date=2026-13-45", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?date=2026-02-30", OPTS), {});
+});
+
+test("parseParams は不正な時間帯を捨てる", () => {
+  assert.deepEqual(Sh.parseParams("?slot=midnight", OPTS), {});
+});
+
+test("parseParams はクエリが無ければ空オブジェクトを返す", () => {
+  assert.deepEqual(Sh.parseParams("", OPTS), {});
+  assert.deepEqual(Sh.parseParams("?", OPTS), {});
+});
