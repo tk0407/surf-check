@@ -173,10 +173,8 @@
     return `${cut}…`;
   }
 
-  function drawShareCard(canvas, info) {
-    canvas.width = CARD_SIZE;
-    canvas.height = CARD_SIZE;
-    const ctx = canvas.getContext("2d");
+  // ランキングカードと週間カードで共通の、上の見出しと区切り線。
+  function drawCardFrame(ctx, title, subtitle) {
     ctx.fillStyle = "#edf3f5";
     ctx.fillRect(0, 0, CARD_SIZE, CARD_SIZE);
     ctx.textBaseline = "alphabetic";
@@ -188,10 +186,10 @@
 
     ctx.fillStyle = "#124559";
     ctx.font = `800 54px ${CARD_FONT}`;
-    ctx.fillText(`${info.region} / ${longDateLabel(info.date)}`, CARD_PAD, CARD_PAD + 104);
+    ctx.fillText(title, CARD_PAD, CARD_PAD + 104);
     ctx.fillStyle = "#687481";
     ctx.font = `700 38px ${CARD_FONT}`;
-    ctx.fillText(SLOT_LONG[info.slot], CARD_PAD, CARD_PAD + 160);
+    ctx.fillText(subtitle, CARD_PAD, CARD_PAD + 160);
 
     ctx.strokeStyle = "#dce5eb";
     ctx.lineWidth = 2;
@@ -199,6 +197,23 @@
     ctx.moveTo(CARD_PAD, CARD_PAD + 200);
     ctx.lineTo(CARD_SIZE - CARD_PAD, CARD_PAD + 200);
     ctx.stroke();
+  }
+
+  // 左下の補足（空文字なら描かない）と、右下のサイトURL。
+  function drawCardFooter(ctx, note) {
+    ctx.fillStyle = "#687481";
+    ctx.font = `700 30px ${CARD_FONT}`;
+    if (note) ctx.fillText(note, CARD_PAD, CARD_SIZE - CARD_PAD);
+    ctx.textAlign = "right";
+    ctx.fillText("tk0407.github.io/surf-check", CARD_SIZE - CARD_PAD, CARD_SIZE - CARD_PAD);
+    ctx.textAlign = "left";
+  }
+
+  function drawShareCard(canvas, info) {
+    canvas.width = CARD_SIZE;
+    canvas.height = CARD_SIZE;
+    const ctx = canvas.getContext("2d");
+    drawCardFrame(ctx, `${info.region} / ${longDateLabel(info.date)}`, SLOT_LONG[info.slot]);
 
     info.rows.forEach((row, i) => {
       const top = CARD_PAD + 250 + i * 200;
@@ -245,12 +260,7 @@
     });
 
     const rest = info.count - info.rows.length;
-    ctx.fillStyle = "#687481";
-    ctx.font = `700 30px ${CARD_FONT}`;
-    if (rest > 0) ctx.fillText(`ほか${rest}件`, CARD_PAD, CARD_SIZE - CARD_PAD);
-    ctx.textAlign = "right";
-    ctx.fillText("tk0407.github.io/surf-check", CARD_SIZE - CARD_PAD, CARD_SIZE - CARD_PAD);
-    ctx.textAlign = "left";
+    drawCardFooter(ctx, rest > 0 ? `ほか${rest}件` : "");
   }
 
   return {

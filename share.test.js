@@ -311,3 +311,108 @@ test("parseParams は modes を渡さなければ mode を捨てる", () => {
   const opts = { regions: ["千葉北"], slots: ["morning"] };
   assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北" });
 });
+
+// canvas は node に無いので、描画の呼び出しを記録する偽の2Dコンテキストで
+// 確認する。measureText は「半角0.5em・全角1em」の近似で、fitText が末尾を
+// 切る条件を再現できる程度の精度があればよい（実機の字幅とは一致しない）。
+function fakeCanvas() {
+  const calls = [];
+  const ctx = {
+    fillStyle: "", strokeStyle: "", font: "16px sans-serif",
+    textAlign: "left", textBaseline: "alphabetic", lineWidth: 0,
+    fillRect(...args) { calls.push({ op: "fillRect", args }); },
+    fillText(text, x, y) {
+      calls.push({ op: "fillText", text, x, y, fillStyle: this.fillStyle, font: this.font, textAlign: this.textAlign });
+    },
+    beginPath() { calls.push({ op: "beginPath" }); },
+    moveTo(...args) { calls.push({ op: "moveTo", args }); },
+    lineTo(...args) { calls.push({ op: "lineTo", args }); },
+    stroke() { calls.push({ op: "stroke", strokeStyle: this.strokeStyle }); },
+    arc(...args) { calls.push({ op: "arc", args }); },
+    fill() { calls.push({ op: "fill", fillStyle: this.fillStyle }); },
+    measureText(text) {
+      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(this.font)[1]);
+      let width = 0;
+      for (const ch of text) width += (ch.codePointAt(0) < 128 ? 0.5 : 1) * size;
+      return { width };
+    },
+  };
+  return {
+    canvas: { width: 0, height: 0, getContext: () => ctx },
+    calls,
+    texts: () => calls.filter((c) => c.op === "fillText").map((c) => c.text),
+    drawn: (text) => calls.find((c) => c.op === "fillText" && c.text === text),
+  };
+}
+
+const CARD_RESULTS = [
+  result("志田下", 62), result("一宮", 55),
+  result("パイプライン（茅ヶ崎）", 48), result("片貝", 40),
+];
+
+function drawRanking(results) {
+  const f = fakeCanvas();
+  Sh.drawShareCard(f.canvas, {
+    region: "千葉北", date: "2026-09-20", slot: "morning",
+    rows: Sh.cardRows(results), count: results.length,
+  });
+  return f;
+}
+
+test("drawShareCard は1080×1080のcanvasに描く", () => {
+  const f = drawRanking(CARD_RESULTS);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.canvas.height, 1080);
+});
+
+test("drawShareCard はエリア・日付・時間帯を見出しにする", () => {
+  const f = drawRanking(CARD_RESULTS);
+  const texts = f.texts();
+  assert.equal(texts[0], "SURF CHECK");
+  assert.equal(texts[1], "千葉北 / 9月20日(日)");
+  assert.equal(texts[2], "朝 07-10時");
+});
+
+test("drawShareCard は上位3件の順位・名前・点数を描く", () => {
+  const texts = drawRanking(CARD_RESULTS).texts();
+  assert.deepEqual(texts.filter((t) => ["1", "2", "3"].includes(t)), ["1", "2", "3"]);
+  assert.ok(texts.includes("志田下"));
+  assert.ok(texts.includes("一宮"));
+  assert.ok(texts.includes("パイプライン（茅ヶ崎）"));
+  assert.ok(texts.includes("62"));
+  assert.equal(texts.filter((t) => t === "/85").length, 3);
+  // 4件目は載らない
+  assert.ok(!texts.includes("片貝"));
+});
+
+test("drawShareCard は1位のバッジだけを塗りつぶす", () => {
+  const f = drawRanking(CARD_RESULTS);
+  assert.equal(f.calls.filter((c) => c.op === "arc").length, 3);
+  assert.deepEqual(f.calls.filter((c) => c.op === "fill").map((c) => c.fillStyle),
+    ["#124559", "#ffffff", "#ffffff"]);
+});
+
+test("drawShareCard は枠に収まらないポイント名を…で切る", () => {
+  const long = result("あいうえおかきくけこさしすせそたちつてと", 62);
+  const texts = drawRanking([long, result("一宮", 55), result("片貝", 48)]).texts();
+  const drawnName = texts.find((t) => t.startsWith("あいうえお"));
+  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
+  assert.ok(drawnName.length < "あいうえおかきくけこさしすせそたちつてと".length);
+});
+
+test("drawShareCard は4件以上なら「ほかN件」を描く", () => {
+  assert.ok(drawRanking(CARD_RESULTS).texts().includes("ほか1件"));
+});
+
+test("drawShareCard は3件ちょうどなら「ほか」を描かない", () => {
+  const texts = drawRanking(CARD_RESULTS.slice(0, 3)).texts();
+  assert.equal(texts.filter((t) => t.startsWith("ほか")).length, 0);
+});
+
+test("drawShareCard はサイトのURLを右下に描く", () => {
+  const f = drawRanking(CARD_RESULTS);
+  const url = f.drawn("tk0407.github.io/surf-check");
+  assert.equal(url.textAlign, "right");
+  assert.equal(url.x, 1016);
+  assert.equal(url.y, 1016);
+});
