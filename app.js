@@ -353,6 +353,10 @@ function resultCard(result, index) {
 }
 
 let LAST_RESULTS = [];
+// { el, date, slot } from the most recent renderResults call, so setMode can
+// redraw tide curves that were laid out at width 0 while #results was
+// display:none (see drawTideCurves), without re-fetching anything.
+let LAST_RANKING_RENDER = null;
 
 function drawTideCurves(el, results, date, slot) {
   const now = new Date();
@@ -368,6 +372,7 @@ function drawTideCurves(el, results, date, slot) {
 
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
+  LAST_RANKING_RENDER = { el, date, slot };
   if (results.length === 0) {
     el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
@@ -423,7 +428,7 @@ async function weeklySpot(spot, dates) {
 
 function weeklyCell(day, slot, dayIndex) {
   const cell = day.slots[slot];
-  if (!cell) return `<td><span class="wk-cell empty" aria-label="データなし">–</span></td>`;
+  if (!cell) return `<td><span class="wk-cell empty" role="img" aria-label="データなし">–</span></td>`;
   const total = cell.scores.total;
   const label = `${mdLabel(day.date)} ${SLOT_SHORT[slot]} ${total}点`;
   return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
@@ -533,6 +538,12 @@ function setMode(mode) {
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.setAttribute("aria-selected", String(tab.dataset.mode === mode));
   });
+  // #results may have finished a render while hidden (display:none gives
+  // sparklines a 0 width to measure); redraw now that it's visible again.
+  // Reading a rect below forces the style recalc, so the width is fresh.
+  if (mode === "ranking" && LAST_RANKING_RENDER) {
+    drawTideCurves(LAST_RANKING_RENDER.el, LAST_RESULTS, LAST_RANKING_RENDER.date, LAST_RANKING_RENDER.slot);
+  }
 }
 
 // Both check buttons run whichever view is active; disabled while loading.

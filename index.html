@@ -13,15 +13,16 @@
       <div class="app-title-row">
         <div>
           <h1>サーフチェック</h1>
-          <p>エリア・日付・時間帯から、入りやすいポイントをランキングします。</p>
+          <p class="ranking-only">エリア・日付・時間帯から、入りやすいポイントをランキングします。</p>
+          <p class="weekly-only">エリアを選ぶと、ポイントごとの7日分の予報を表示します。</p>
         </div>
         <button type="button" id="checkTop" class="refresh" aria-label="チェックを実行">↻</button>
       </div>
     </header>
 
     <nav class="mode-tabs" role="tablist" aria-label="表示モード">
-      <button type="button" class="mode-tab" role="tab" data-mode="ranking" aria-controls="results" aria-selected="true">ランキング</button>
-      <button type="button" class="mode-tab" role="tab" data-mode="weekly" aria-controls="weekly" aria-selected="false">週間予報</button>
+      <button type="button" id="tab-ranking" class="mode-tab" role="tab" data-mode="ranking" aria-controls="results" aria-selected="true">ランキング</button>
+      <button type="button" id="tab-weekly" class="mode-tab" role="tab" data-mode="weekly" aria-controls="weekly" aria-selected="false">週間予報</button>
     </nav>
 
     <form id="controls" class="controls" onsubmit="return false;">
@@ -48,14 +49,14 @@
       <button type="button" id="check">チェック</button>
     </form>
 
-    <section id="results" class="results ranking-only" aria-live="polite">
+    <section id="results" class="results ranking-only" aria-live="polite" role="tabpanel" aria-labelledby="tab-ranking">
       <div class="empty-state">
         <b>条件を選んでチェック</b>
         <span>波サイズ、風、うねり、潮情報をカードで比較できます。</span>
       </div>
     </section>
 
-    <section id="weekly" class="results weekly-only" aria-live="polite">
+    <section id="weekly" class="results weekly-only" aria-live="polite" role="tabpanel" aria-labelledby="tab-weekly">
       <div class="empty-state">
         <b>エリアを選んでチェック</b>
         <span>各ポイントの7日分のスコアを、朝・昼・夕で比較できます。</span>

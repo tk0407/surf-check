@@ -649,6 +649,9 @@ footer {
   display: none;
 }
 
+/* Intentionally wins over the ≤640px .controls rule above (higher
+   selector specificity, regardless of source order): weekly mode only
+   shows エリア + チェック, so it stays 2 columns even on narrow screens. */
 .app-shell[data-mode="weekly"] .controls {
   grid-template-columns: minmax(0, 1fr) auto;
 }
