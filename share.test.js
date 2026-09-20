@@ -172,3 +172,142 @@ test("parseParams はクエリが無ければ空オブジェクトを返す", ()
   assert.deepEqual(Sh.parseParams("", OPTS), {});
   assert.deepEqual(Sh.parseParams("?", OPTS), {});
 });
+
+// 週間1ポイント分。app.js の weeklySpot が返す形のうち、共有に使う部分だけ。
+// totals は7日分で、1日は [朝, 昼, 夕] の点数。null はデータの無いセル。
+const WEEK_DATES = ["2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23",
+  "2026-09-24", "2026-09-25", "2026-09-26"];
+
+function weekResult(name, totals) {
+  return {
+    spot: { name, region: "千葉北", bearing: 90 },
+    days: totals.map((day, i) => ({
+      date: WEEK_DATES[i],
+      slots: {
+        morning: day[0] === null ? null : { data: {}, scores: { total: day[0] } },
+        afternoon: day[1] === null ? null : { data: {}, scores: { total: day[1] } },
+        evening: day[2] === null ? null : { data: {}, scores: { total: day[2] } },
+      },
+      maxWaveHeight: 1.4,
+      tide: [],
+    })),
+  };
+}
+
+// 2026-09-20 は日曜。9/22 は両ポイントともデータ無し、9/21 の夕は同点
+// （並び順の先勝ちを見る）、9/24 の朝は一宮のほうが高い。
+const SHIDA = weekResult("志田下",
+  [[48, 30, 22], [20, 25, 41], [null, null, null], [62, 50, 44],
+   [35, 33, 30], [28, 52, 40], [18, 20, 26]]);
+const ICHINOMIYA = weekResult("一宮",
+  [[40, 30, 20], [20, 25, 41], [null, null, null], [55, 50, 44],
+   [36, 33, 30], [28, 49, 40], [24, 20, 26]]);
+
+test("weeklyRows は各日のベストを1行ずつ返す", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(rows.length, 7);
+  assert.deepEqual(rows[0], { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false });
+  assert.deepEqual(rows[3], { date: "2026-09-23", slot: "morning", name: "志田下", score: 62, best: true });
+  assert.deepEqual(rows[5], { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false });
+});
+
+test("weeklyRows は全時間帯のデータが無い日を空の行にする", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(rows[2], { date: "2026-09-22", slot: null, name: null, score: null, best: false });
+});
+
+test("weeklyRows は点数が高いポイントを日ごとに選び直す", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  // 9/24 の朝は 一宮36 > 志田下35
+  assert.equal(rows[4].name, "一宮");
+  assert.equal(rows[4].score, 36);
+});
+
+test("weeklyRows は同点なら朝・昼・夕の順で先の時間帯を採る", () => {
+  const tie = weekResult("同点", [[40, 40, 40], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const rows = Sh.weeklyRows(WEEK_DATES, [tie]);
+  assert.equal(rows[0].slot, "morning");
+});
+
+test("weeklyRows は同点なら results の並び順で先のポイントを採る", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  // 9/21 の夕は両方 41 点
+  assert.equal(rows[1].score, 41);
+  assert.equal(rows[1].slot, "evening");
+  assert.equal(rows[1].name, "志田下");
+});
+
+test("weeklyRows は週で最も高い1行だけに best を立てる", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(rows.map((r) => r.best), [false, false, false, true, false, false, false]);
+});
+
+test("weeklyRows は週ベストが同点なら早い日に best を立てる", () => {
+  const twice = weekResult("同点", [[0, 0, 0], [70, 0, 0], [0, 0, 0], [70, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const rows = Sh.weeklyRows(WEEK_DATES, [twice]);
+  assert.equal(rows[1].best, true);
+  assert.equal(rows[3].best, false);
+});
+
+test("weeklyRows はデータが1つも無ければ best を立てない", () => {
+  const empty = weekResult("無", Array.from({ length: 7 }, () => [null, null, null]));
+  const rows = Sh.weeklyRows(WEEK_DATES, [empty]);
+  assert.equal(rows.filter((r) => r.best).length, 0);
+  assert.equal(rows.length, 7);
+});
+
+test("weeklyShareLines の1行目はエリアと期間", () => {
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(lines[0], "千葉北 9/20(日)〜9/26(土)の週間予報");
+});
+
+test("weeklyShareLines は7日分を順に並べ、週ベストに★を付ける", () => {
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(lines.slice(1), [
+    "9/20(日) 朝 志田下 48点",
+    "9/21(月) 夕 志田下 41点",
+    "9/22(火) データなし",
+    "★9/23(水) 朝 志田下 62点",
+    "9/24(木) 朝 一宮 36点",
+    "9/25(金) 昼 志田下 52点",
+    "9/26(土) 夕 志田下 26点",
+  ]);
+});
+
+test("weeklyText は本文とURLを空行で挟んでつなぐ", () => {
+  const text = Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA], "https://example.test/?region=x&mode=weekly");
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA]);
+  assert.equal(text, `${lines.join("\n")}\n\nhttps://example.test/?region=x&mode=weekly`);
+  assert.ok(text.includes("\n\nhttps://"));
+});
+
+test("weeklyUrl は region と mode=weekly をクエリにする", () => {
+  assert.equal(
+    Sh.weeklyUrl("https://tk0407.github.io/surf-check/", "千葉北"),
+    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly"
+  );
+});
+
+test("weeklyUrl は base に付いていた既存のクエリを捨ててハッシュは残す", () => {
+  assert.equal(
+    Sh.weeklyUrl("https://tk0407.github.io/surf-check/?region=%E6%B9%98%E5%8D%97&date=2026-09-20&slot=morning#x", "千葉北"),
+    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly#x"
+  );
+});
+
+test("parseParams は modes に載っている mode を通す", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北", mode: "weekly" });
+  assert.deepEqual(Sh.parseParams("?mode=ranking", opts), { mode: "ranking" });
+});
+
+test("parseParams は modes に無い mode を捨てる", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=admin", opts), { region: "千葉北" });
+  assert.deepEqual(Sh.parseParams("?mode=__proto__", opts), {});
+});
+
+test("parseParams は modes を渡さなければ mode を捨てる", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北" });
+});

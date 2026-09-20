@@ -2,9 +2,12 @@
 // 画像が同じ文字列を出せるよう、ラベルはここにだけ置く。pure な部分は
 // node --test で動く。
 (function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./scoring.js"));
-  else root.Share = factory(root.Scoring);
-})(typeof self !== "undefined" ? self : this, function (Scoring) {
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = factory(require("./scoring.js"), require("./forecast.js"));
+  } else {
+    root.Share = factory(root.Scoring, root.Forecast);
+  }
+})(typeof self !== "undefined" ? self : this, function (Scoring, Forecast) {
   const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
   const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -83,6 +86,57 @@
     return back === value;
   }
 
+  // 週間予報の共有。7日それぞれについて、エリア内の全ポイント・全時間帯の
+  // 中で最も点数の高い1件を選ぶ。同点は時間帯順（朝→昼→夕）、次に results
+  // の並び順で先に見つけたほうを採る（strict ">" で先勝ち）。
+  // results は app.js の weeklySpot が返す { spot, days, best } の配列で、
+  // days[i] が dates[i] に対応する。
+  function weeklyRows(dates, results) {
+    const rows = dates.map((date, dayIndex) => {
+      let found = null;
+      for (const slot of Forecast.SLOT_ORDER) {
+        for (const r of results) {
+          const day = r.days[dayIndex];
+          const cell = day && day.slots[slot];
+          if (cell && (!found || cell.scores.total > found.score)) {
+            found = { slot, name: r.spot.name, score: cell.scores.total };
+          }
+        }
+      }
+      return found
+        ? { date, slot: found.slot, name: found.name, score: found.score, best: false }
+        : { date, slot: null, name: null, score: null, best: false };
+    });
+    // 週で最も高い1行にだけ印を付ける。同点なら早い日。
+    let bestIndex = -1;
+    rows.forEach((row, i) => {
+      if (row.score !== null && (bestIndex === -1 || row.score > rows[bestIndex].score)) bestIndex = i;
+    });
+    if (bestIndex !== -1) rows[bestIndex].best = true;
+    return rows;
+  }
+
+  function weeklyShareLines(region, dates, results) {
+    const head = `${region} ${mdLabel(dates[0])}〜${mdLabel(dates[dates.length - 1])}の週間予報`;
+    const rows = weeklyRows(dates, results).map((row) => (
+      row.score === null
+        ? `${mdLabel(row.date)} データなし`
+        : `${row.best ? "★" : ""}${mdLabel(row.date)} ${SLOT_SHORT[row.slot]} ${row.name} ${row.score}点`
+    ));
+    return [head, ...rows];
+  }
+
+  function weeklyText(region, dates, results, url) {
+    return `${weeklyShareLines(region, dates, results).join("\n")}\n\n${url}`;
+  }
+
+  // 週間には日付も時間帯も無いので、エリアと mode だけを載せる。
+  function weeklyUrl(base, region) {
+    const u = new URL(base);
+    u.search = new URLSearchParams({ region, mode: "weekly" }).toString();
+    return u.toString();
+  }
+
   // 検証を通ったキーだけを含むオブジェクトを返す。日付は過去・未来を問わ
   // ず通す（共有された日の結果をそのまま見せるため。取得できない範囲かは
   // API の応答で決まる）。
@@ -92,9 +146,11 @@
     const region = q.get("region");
     const date = q.get("date");
     const slot = q.get("slot");
+    const mode = q.get("mode");
     if (region && options.regions.includes(region)) out.region = region;
     if (date && isRealDate(date)) out.date = date;
     if (slot && options.slots.includes(slot)) out.slot = slot;
+    if (mode && (options.modes || []).includes(mode)) out.mode = mode;
     return out;
   }
 
@@ -200,5 +256,6 @@
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
     shareLines, shareText, shareUrl, drawShareCard, parseParams,
+    weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
   };
 });
