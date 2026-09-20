@@ -364,6 +364,18 @@ function shareError(message) {
   note.textContent = message;
 }
 
+// 押す前にラベルを決めたいので、同じ形のダミーPNGで共有可否を先に聞く。
+// navigator.canShare の有無だけでは足りない（PCのChromeは関数を持っているが
+// ファイル共有はできないので、「画像で共有」と出して保存が走ってしまう）。
+function canShareImageFile() {
+  if (!navigator.canShare) return false;
+  try {
+    return navigator.canShare({ files: [new File([], "surf-check.png", { type: "image/png" })] });
+  } catch (e) {
+    return false;
+  }
+}
+
 // canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
 async function shareImage(region, date, slot, results) {
   const canvas = document.createElement("canvas");
@@ -417,7 +429,7 @@ function renderResults(el, region, date, slot, results, failed) {
   const imageBtn = el.querySelector("#shareImage");
   if (imageBtn) {
     // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
-    if (!navigator.canShare) imageBtn.textContent = "画像を保存";
+    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
     imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
   }
   drawTideCurves(el, results, date, slot);

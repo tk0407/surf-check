@@ -992,7 +992,7 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 ### 変更したファイル
 
 - `README.md`: 構成のファイル一覧に `share.js` / `share.test.js` を追加。「共有機能」の段落を1つ追加（LINE共有・画像共有・共有URLからの復元の3つを説明）。テスト件数を明記した箇所はもともと無かったので、数値の修正は発生していない。
-- `index.html`: `?v=` を5か所すべて `20260920` → `20260921` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
+- `index.html`: `?v=` を5か所すべて `20260920` → `20260922` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
 - `tasks/todo.md`: Task 1〜5 の各ステップのチェックボックスを更新。実際に完了した36項目を `- [ ]` → `- [x]` にした。Task 3 Step 4・Step 5 と Task 5 Step 3 の3項目（画像の目視確認、375px の目視確認、保存PNGの寸法確認）は、このセッションではブラウザ操作ができず未実施のため、意図的に `- [ ]` のまま残した。本セクションを末尾に追加。
 
 このタスクでは `app.js` / `share.js` / `style.css` / `scoring.js` / `forecast.js` など、挙動に関わるファイルは一切変更していない。
@@ -1000,7 +1000,7 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 ### 確認した内容（このセッションで実際に実行して確認）
 
 - `node --test` を実行し、`tests 55` / `pass 55` / `fail 0` を確認した（内訳: 採点12 + 予報17 + 共有26。変更前と同じ件数で、追加・削除したテストは無い）。
-- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の5つの読み込み行がすべて `?v=20260921` で揃っており、古い値の残存が無いことを確認した。
+- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の5つの読み込み行がすべて `?v=20260922` で揃っており、古い値の残存が無いことを確認した。
 - 「ランキング・週間予報の表示が共有ボタンの行以外変わっていないこと」は Task 1 で描画結果を byte-for-byte diff して確認済みであり、その review でも独立に再確認されている。今回のセッションで新たに確認したものではなく、その結果を引用している。
 
 ### 未確認（実機で確認してほしいこと）
@@ -1017,3 +1017,21 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 
 - 上記「未確認」の5項目はいずれも Task 5 で新規に生まれた懸念ではなく、Task 2〜4 の実装時点から持ち越されている実機確認事項である。今回のコミットはドキュメントと `?v=` のみで、挙動を変える変更は無いため、リスクは低いと判断しているが、最終確認は必須。対応する3つのチェックボックス（Task 3 Step 4・Step 5、Task 5 Step 3）は未完了のまま残してあるので、確認でき次第チェックを入れてほしい。
 - 秘密情報（APIキー・認証情報等）は本プロジェクトに存在せず（Open-Meteo はAPIキー不要）、本セクションにも含めていない。
+
+## 最終レビューで直したこと
+
+ブランチ全体のレビューで2件の指摘があり、どちらも直した。
+
+1. **PCのChromeで「画像で共有」と出るのに保存が走っていた**（`app.js`）。
+   ラベルは `navigator.canShare` が有るかどうかだけで決めていたが、実際の分岐は
+   `navigator.canShare({ files: [file] })` で判定していた。PCのChromeは前者が真・後者が偽なので、
+   「押す前に何が起きるか分かる状態にする」という仕様に反して、共有シートを約束しておいて
+   ダウンロードしていた。同じ形のダミーPNGで先に問い合わせる `canShareImageFile()` を足し、
+   ラベルもこれで決めるようにした。4環境（canShare無し / 有るがファイル不可 / ファイル可 / 例外）で
+   期待どおりに分かれることを確認済み。
+2. **`navigator.share` の失敗メッセージ**（設計メモ側を修正）。
+   設計メモでは `canvas.toBlob` の失敗と同じ `画像を作れませんでした` にしていたが、
+   この分岐では画像は作れている。実装の `画像を共有できませんでした` のほうが正しいので、
+   設計メモの表と本文を実装に合わせ、理由も書き添えた。
+
+JSを触ったので `?v=` を `20260922` に上げ直した。
