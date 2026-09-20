@@ -1,6 +1,6 @@
 # 検索結果の共有（LINE / 画像）実装計画
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** ランキングの上位3件を、LINEに送れるテキストと1枚の画像として共有できるようにし、共有リンクから同じ検索結果を再現できるようにする。
 
@@ -60,7 +60,7 @@
   - `Share.windConditionLabel(windDir, windSpeed, bearing) -> string` — `"オフ弱" | "オフショア" | "サイドオフ" | "サイド" | "サイドオン" | "オンショア"`
   - `Share.cardRows(results) -> { rank, name, score, wave, wind }[]` — 先頭3件まで
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `share.test.js` を新規作成する。
 
@@ -153,12 +153,12 @@ test("cardRows は小数を1桁に丸める", () => {
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確認する**
+- [x] **Step 2: テストが失敗することを確認する**
 
 Run: `node --test share.test.js`
 Expected: FAIL（`Cannot find module './share.js'`）
 
-- [ ] **Step 3: share.js を作る**
+- [x] **Step 3: share.js を作る**
 
 `forecast.js` と同じ UMD の書き方に合わせる。`jpDirection` と `windConditionLabel` の中身は `app.js` から一字一句そのまま持ってくる（挙動を変えないため）。
 
@@ -225,12 +225,12 @@ Expected: FAIL（`Cannot find module './share.js'`）
 });
 ```
 
-- [ ] **Step 4: テストが通ることを確認する**
+- [x] **Step 4: テストが通ることを確認する**
 
 Run: `node --test share.test.js`
 Expected: PASS（11件）
 
-- [ ] **Step 5: app.js から移設した定義を削除する**
+- [x] **Step 5: app.js から移設した定義を削除する**
 
 次の6つを `app.js` からまるごと削除する。関数の本体は Step 3 で `share.js` に入っている。
 
@@ -241,7 +241,7 @@ Expected: PASS（11件）
 - `function jpDirection(deg) { ... }`（133-142行目）
 - `function windConditionLabel(...) { ... }`（150-159行目）
 
-- [ ] **Step 6: app.js の呼び出しを Share. 付きに直す**
+- [x] **Step 6: app.js の呼び出しを Share. 付きに直す**
 
 `dayColumnLabel`（52-56行目付近）:
 
@@ -272,7 +272,7 @@ function dayColumnLabel(date) {
 Run: `grep -n "jpDirection\|windConditionLabel\|mdLabel\|SLOT_SHORT\|dateParts\|WEEKDAYS_JA" app.js`
 Expected: 表示されるすべての行に `Share.` が付いている（定義の残りが無い）
 
-- [ ] **Step 7: index.html に share.js を足す**
+- [x] **Step 7: index.html に share.js を足す**
 
 `app.js` より前、`forecast.js` の次に読み込む。
 
@@ -283,16 +283,16 @@ Expected: 表示されるすべての行に `Share.` が付いている（定義
   <script src="app.js?v=20260920"></script>
 ```
 
-- [ ] **Step 8: テスト全体を流す**
+- [x] **Step 8: テスト全体を流す**
 
 Run: `node --test`
 Expected: `tests 40` / `pass 40` / `fail 0`（既存29件 + 新規11件）
 
-- [ ] **Step 9: 画面が変わっていないことを確認する**
+- [x] **Step 9: 画面が変わっていないことを確認する**
 
 ローカルサーバー（`python3 -m http.server 8000`）でランキングと週間予報の両方を表示し、方位・風・日付・時間帯の文字列が移設前と同じであることを確認する。
 
-- [ ] **Step 10: コミット**
+- [x] **Step 10: コミット**
 
 ```bash
 git add share.js share.test.js app.js index.html
@@ -319,7 +319,7 @@ git commit -m "$(printf 'refactor: move display labels into share.js\n\nThe shar
   - `Share.shareUrl(base, region, date, slot) -> string`
   - `app.js` の `shareRow() -> string`（HTML断片）、`shareError(message) -> void`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `share.test.js` の末尾に追加する。`result` ヘルパーは Task 1 で定義済みのものを使う。
 
@@ -370,12 +370,12 @@ test("shareUrl は base に付いていた既存のクエリを捨てる", () =>
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確認する**
+- [x] **Step 2: テストが失敗することを確認する**
 
 Run: `node --test share.test.js`
 Expected: FAIL（`Sh.shareLines is not a function`）
 
-- [ ] **Step 3: share.js に3つの関数を足す**
+- [x] **Step 3: share.js に3つの関数を足す**
 
 `cardRows` の下、`return` の前に置く。`wave` は `"1.4m カタ〜アタマ"` なので先頭の数値だけを取り、`wind` は `"南西 5.5m/s サイドオフ"` の最初の空白1つだけを詰めて `"南西5.5m/s サイドオフ"` にする（`replace` は第1引数が文字列なら最初の1つしか置き換えない）。
 
@@ -408,12 +408,12 @@ Expected: FAIL（`Sh.shareLines is not a function`）
   };
 ```
 
-- [ ] **Step 4: テストが通ることを確認する**
+- [x] **Step 4: テストが通ることを確認する**
 
 Run: `node --test share.test.js`
 Expected: PASS（18件）
 
-- [ ] **Step 5: app.js に共有ボタンの行と処理を足す**
+- [x] **Step 5: app.js に共有ボタンの行と処理を足す**
 
 `renderResults`（373行目付近）のすぐ上に置く。
 
@@ -448,7 +448,7 @@ function shareError(message) {
 }
 ```
 
-- [ ] **Step 6: renderResults にボタンを差し込む**
+- [x] **Step 6: renderResults にボタンを差し込む**
 
 `.results-head` の直後に `shareRow()` を置く。
 
@@ -472,7 +472,7 @@ function shareError(message) {
   if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
 ```
 
-- [ ] **Step 7: style.css に見た目を足す**
+- [x] **Step 7: style.css に見た目を足す**
 
 ファイル末尾に追加する。
 
@@ -510,7 +510,7 @@ function shareError(message) {
 }
 ```
 
-- [ ] **Step 8: 画面で確認する**
+- [x] **Step 8: 画面で確認する**
 
 ローカルサーバーでランキングを実行し、次を確認する。
 
@@ -519,7 +519,7 @@ function shareError(message) {
 - 「LINEで送る」を押すと `line.me` が新しいタブで開き、本文に3件と URL が入っている
 - 結果が0件のとき（例: 対応範囲外の日付）はボタンが出ない
 
-- [ ] **Step 9: テスト全体を流してコミット**
+- [x] **Step 9: テスト全体を流してコミット**
 
 Run: `node --test`
 Expected: `tests 47` / `pass 47` / `fail 0`
@@ -543,7 +543,7 @@ git commit -m "$(printf 'feat: add a LINE share button to the ranking\n\nThe but
 - Consumes: `Share.cardRows(results)`、`Share.shareLines(...)`、`Share.shareUrl(...)`、`Share.dateParts(date)`（Task 1・2）
 - Produces: `Share.drawShareCard(canvas, { region, date, slot, rows, count }) -> void`
 
-- [ ] **Step 1: share.js に描画関数を足す**
+- [x] **Step 1: share.js に描画関数を足す**
 
 DOM（canvas）に触るため Node のテスト対象にはしない。目視で確認する。`shareUrl` の下に置く。
 
@@ -657,7 +657,7 @@ DOM（canvas）に触るため Node のテスト対象にはしない。目視�
   };
 ```
 
-- [ ] **Step 2: app.js に画像の共有処理を足す**
+- [x] **Step 2: app.js に画像の共有処理を足す**
 
 `shareError` の下に置く。`navigator.share` に `url` を渡すと、LINEなど一部のアプリが画像を捨ててURLだけを送るため、URLは `text` に入れる。
 
@@ -693,7 +693,7 @@ async function shareImage(region, date, slot, results) {
 }
 ```
 
-- [ ] **Step 3: ボタンに配線してラベルを環境で変える**
+- [x] **Step 3: ボタンに配線してラベルを環境で変える**
 
 Task 2 で足した `lineBtn` の配線のすぐ下に追加する。
 
@@ -738,7 +738,7 @@ document.body.appendChild(c);
 
 Expected: 1行だけ描かれ、2行目以降の位置に何も残らない。`count` と行数が同じなので「ほかN件」は出ない。
 
-- [ ] **Step 6: コミット**
+- [x] **Step 6: コミット**
 
 ```bash
 git add share.js app.js
@@ -760,7 +760,7 @@ git commit -m "$(printf 'feat: share the ranking as a 1080px card image\n\nThe c
 - Consumes: `Share.shareUrl(...)`（Task 2）
 - Produces: `Share.parseParams(search, { regions, slots }) -> { region?, date?, slot? }`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `share.test.js` の末尾に追加する。
 
@@ -809,12 +809,12 @@ test("parseParams はクエリが無ければ空オブジェクトを返す", ()
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確認する**
+- [x] **Step 2: テストが失敗することを確認する**
 
 Run: `node --test share.test.js`
 Expected: FAIL（`Sh.parseParams is not a function`）
 
-- [ ] **Step 3: share.js に parseParams を足す**
+- [x] **Step 3: share.js に parseParams を足す**
 
 `shareUrl` の下に置く。
 
@@ -855,12 +855,12 @@ Expected: FAIL（`Sh.parseParams is not a function`）
   };
 ```
 
-- [ ] **Step 4: テストが通ることを確認する**
+- [x] **Step 4: テストが通ることを確認する**
 
 Run: `node --test share.test.js`
 Expected: PASS（26件）
 
-- [ ] **Step 5: app.js で復元を配線する**
+- [x] **Step 5: app.js で復元を配線する**
 
 `initDate` の下に置く。
 
@@ -886,7 +886,7 @@ function applyParams() {
 }
 ```
 
-- [ ] **Step 6: DOMContentLoaded から自動実行する**
+- [x] **Step 6: DOMContentLoaded から自動実行する**
 
 `spots.json` を読んだあとでないとランキングを実行できないので、`check` の配線の直後に置く。
 
@@ -896,7 +896,7 @@ function applyParams() {
   if (applyParams()) check();
 ```
 
-- [ ] **Step 7: 実行後のURL反映を足す**
+- [x] **Step 7: 実行後のURL反映を足す**
 
 `renderResults` の末尾、`drawTideCurves(el, results, date, slot);` の直後に置く。履歴は増やさない（戻るボタンで直前のページに戻れるようにするため）。
 
@@ -904,7 +904,7 @@ function applyParams() {
   history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
 ```
 
-- [ ] **Step 8: 画面で確認する**
+- [x] **Step 8: 画面で確認する**
 
 ローカルサーバーで次を順に開く（`<今日>` は実行日、`<3日前>` はその3日前）。
 
@@ -918,11 +918,11 @@ function applyParams() {
 
 チェックを押したあと、URL欄に `?region=...&date=...&slot=...` が入っていること、戻るボタンで履歴が増えていないことを確認する。
 
-- [ ] **Step 9: 共有リンクの往復を確認する**
+- [x] **Step 9: 共有リンクの往復を確認する**
 
 ランキングを出して「LINEで送る」を押し、本文のURLをコピーして新しいタブに貼る。同じエリア・日付・時間帯のランキングが再現されることを確認する。
 
-- [ ] **Step 10: テスト全体を流してコミット**
+- [x] **Step 10: テスト全体を流してコミット**
 
 Run: `node --test`
 Expected: `tests 55` / `pass 55` / `fail 0`
@@ -941,11 +941,11 @@ git commit -m "$(printf 'feat: restore a search from the shared link\n\nA shared
 - Modify: `index.html`（`?v=` の日付を上げる）
 - Modify: `tasks/todo.md`（レビュー欄）
 
-- [ ] **Step 1: README を更新する**
+- [x] **Step 1: README を更新する**
 
 構成のファイル一覧に `share.js` と `share.test.js` を足し、共有機能（LINE・画像・共有リンク）の説明を1段落足す。テスト件数に触れている箇所があれば実際の数に直す。
 
-- [ ] **Step 2: index.html の ?v= を上げる**
+- [x] **Step 2: index.html の ?v= を上げる**
 
 4か所すべてを同じ値にする。
 
@@ -967,7 +967,7 @@ git commit -m "$(printf 'feat: restore a search from the shared link\n\nA shared
 - 共有リンクを開くと結果が再現される
 - 保存した画像が 1080×1080 である
 
-- [ ] **Step 4: レビュー欄を書いてコミット**
+- [x] **Step 4: レビュー欄を書いてコミット**
 
 `tasks/todo.md` の末尾に `## レビュー` を足し、確認した内容・変更したファイル・残っている懸念を書く（秘密情報は書かない）。
 
@@ -984,3 +984,36 @@ git commit -m "$(printf 'docs: describe the share buttons and bump the asset ver
 - **名前の一致**: `cardRows` の返り値 `{ rank, name, score, wave, wind }` を Task 2 の `shareLines` と Task 3 の `drawShareCard` が同じ形で使う。`drawShareCard(canvas, { region, date, slot, rows, count })` は Task 3 Step 2 の呼び出しと一致。`Share.dateParts` / `Share.mdLabel` / `Share.SLOT_SHORT` は Task 1 で定義し、Task 2 の `shareLines` と Task 3 の `longDateLabel` が使う。`share.js` の `return` は Task 1 → 2 → 3 → 4 で積み増し、最終形は11個。
 - **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-01-01` は木曜。`bearing 90` に対し `wind_dir 225` は差45度で `サイドオフ`、`wind_dir 45` なら差135度で `サイドオン`（テスト用の値は225を使う）。`wave_height 1.4` → `カタ〜アタマ`、`2.06` → `オーバーヘッド`（`Scoring.waveSizeLabel` の閾値より）。
 - **テスト件数**: 既存29 + Task 1 で11 + Task 2 で7 + Task 4 で8 = 55。
+
+---
+
+## レビュー
+
+### 変更したファイル
+
+- `README.md`: 構成のファイル一覧に `share.js` / `share.test.js` を追加。「共有機能」の段落を1つ追加（LINE共有・画像共有・共有URLからの復元の3つを説明）。テスト件数を明記した箇所はもともと無かったので、数値の修正は発生していない。
+- `index.html`: `?v=` を4か所すべて `20260920` → `20260921` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
+- `tasks/todo.md`: Task 1〜5 の各ステップのチェックボックスを更新。実際に完了した36項目を `- [ ]` → `- [x]` にした。Task 3 Step 4・Step 5 と Task 5 Step 3 の3項目（画像の目視確認、375px の目視確認、保存PNGの寸法確認）は、このセッションではブラウザ操作ができず未実施のため、意図的に `- [ ]` のまま残した。本セクションを末尾に追加。
+
+このタスクでは `app.js` / `share.js` / `style.css` / `scoring.js` / `forecast.js` など、挙動に関わるファイルは一切変更していない。
+
+### 確認した内容（このセッションで実際に実行して確認）
+
+- `node --test` を実行し、`tests 55` / `pass 55` / `fail 0` を確認した（内訳: 採点12 + 予報17 + 共有26。変更前と同じ件数で、追加・削除したテストは無い）。
+- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の4つの読み込み行がすべて `?v=20260921` で揃っており、古い値の残存が無いことを確認した。
+- 「ランキング・週間予報の表示が共有ボタンの行以外変わっていないこと」は Task 1 で描画結果を byte-for-byte diff して確認済みであり、その review でも独立に再確認されている。今回のセッションで新たに確認したものではなく、その結果を引用している。
+
+### 未確認（実機で確認してほしいこと）
+
+このセッションには Playwright 等のブラウザ自動化が無く、ローカルサーバーも起動していないため、以下は確認できていない。Task 3 Step 4-5 と Task 5 Step 3 のチェックボックスを未完了のまま残しているのはこのためで、コードを読んだだけの推測でチェックを入れることはしていない。
+
+1. スマホ（実機、または Chrome DevTools のデバイスモードで 375px 幅）でサイトを開き、ランキングを1回チェックする。結果カードの見た目が「LINEで送る」「画像で共有」の行以外、これまでと同じに見えるか確認する。
+2. 「週間予報」タブに切り替え、日付・時間帯のラベル表示が変わっていないか確認する。
+3. 375px 幅の画面で、結果一覧やボタン行を横に指でスワイプしても横スクロールが発生しないか確認する。
+4. 「LINEで送る」をタップし、LINEのトーク選択画面が開いてテキストとURLが入っているか確認する。次にそのURL（または `?region=千葉北&date=2026-09-21&slot=morning` のような手打ちのURL）を別タブで開き、エリア・日付・時間帯が自動で入り、同じランキングが再現されるか確認する。
+5. 「画像で共有」（`navigator.canShare` が使えない環境では「画像を保存」）をタップして画像を保存し、保存されたPNGのプロパティ（写真アプリの情報表示、またはPCの「情報を見る」）でサイズが 1080×1080 になっているか確認する。
+
+### 残っている懸念
+
+- 上記「未確認」の5項目はいずれも Task 5 で新規に生まれた懸念ではなく、Task 2〜4 の実装時点から持ち越されている実機確認事項である。今回のコミットはドキュメントと `?v=` のみで、挙動を変える変更は無いため、リスクは低いと判断しているが、最終確認は必須。対応する3つのチェックボックス（Task 3 Step 4・Step 5、Task 5 Step 3）は未完了のまま残してあるので、確認でき次第チェックを入れてほしい。
+- 秘密情報（APIキー・認証情報等）は本プロジェクトに存在せず（Open-Meteo はAPIキー不要）、本セクションにも含めていない。
