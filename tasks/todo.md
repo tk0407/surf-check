@@ -1,576 +1,520 @@
-# 検索結果の共有（LINE / 画像）実装計画
+# 週間予報の共有（LINE・画像）Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** ランキングの上位3件を、LINEに送れるテキストと1枚の画像として共有できるようにし、共有リンクから同じ検索結果を再現できるようにする。
+**Goal:** 週間予報タブの結果を、ランキングと同じように LINE のテキストと 1080×1080 の画像カードで共有できるようにする。
 
-**Architecture:** 共有用の文字列組み立てとカード描画を `share.js` に新設する。共有テキスト・共有画像・画面のカードが必ず同じ文字列を出すよう、ラベルの整形（方位・風・波・日付・時間帯）を `share.js` に集め、`app.js` はそこから借りる。画像は外部ライブラリを使わず `<canvas>` の2Dコンテキストに直接描く。検索条件は `?region=&date=&slot=` で持ち回り、読み込み時に復元する。
+**Architecture:** 共有の単位は「各日のベスト（ポイント＋時間帯＋点数）を7行」。`share.js` に週間用の純関数（行の組み立て・テキスト・URL・カード描画）を足し、`app.js` は共有の導線を `payload` 駆動に一本化して、ランキングと週間の両方が同じ `wireShareRow` を通るようにする。共有URLは `?region=...&mode=weekly` で、`mode` が無いURLは従来どおりランキングとして動く。
 
-**Tech Stack:** 素のHTML / CSS / JavaScript（ビルド手順なし）、Canvas 2D API、Web Share API、`node --test`
+**Tech Stack:** 素の HTML / CSS / JavaScript（ビルド無し・依存無し）。テストは `node --test`。キャンバス描画は `canvas.getContext("2d")`。
 
-**Spec:** `docs/superpowers/specs/2026-09-20-share-results-design.md`
+**Spec:** このプランに先立つ設計はチャットで承認済みで、下の「設計（承認済み）」節がその内容。親となる仕様書は `docs/superpowers/specs/2026-09-20-share-results-design.md`（ランキングの共有）で、共有ボタンの文言・エラーメッセージ・`navigator.share` の扱いはそちらを踏襲する。
 
 ## Global Constraints
 
-- 新しいパッケージは入れない。外部スクリプトも読み込まない。
-- ランキングの取得・採点・カード描画の挙動は変更しない。共有ボタンの行以外、`#results` と `#weekly` の描画HTMLに差が出ないこと。
-- 画面に出す文字列は `escapeHtml` を通す。canvas に描く文字列はHTMLではないためエスケープ不要。
-- 本番コードにテスト用の分岐を入れない。
-- スマホ幅 375px でページが横スクロールしないこと。
-- 共有カードは 1080 × 1080 px、PNG。
-- 色は既存の CSS 変数と同じ値を使う: `--ink #17212b` / `--muted #687481` / `--line #dce5eb` / `--bg #edf3f5` / `--panel #ffffff` / `--sea #007f8f` / `--deep #124559`。
-- フォント指定は画面と同じ `system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif`。
-- CSS / JS を変更したら `index.html` の `?v=` の日付を上げる。
-- コミットメッセージの末尾に `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` を付ける。
+- 依存パッケージを増やさない。`npm install` も CDN の読み込みも行わない。ビルド手順は無いまま維持する。
+- 本番コードに `if (testMode)` のようなテスト用の分岐や、テスト専用のマジックナンバーを入れない。
+- テストは実際の入出力を検証する。`assert.ok(true)` のような無意味なアサーションを書かない。
+- `share.js` は表示ラベルの整形と共有用の値の組み立てだけを持つ。データ取得と採点は `scoring.js` / `forecast.js`、DOM の組み立ては `app.js`。
+- `share.js` の pure な部分（描画を含む）は `node --test` から呼べる状態を保つ。`document` や `window` を参照しない。
+- 既存のエクスポート `SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows, shareLines, shareText, shareUrl, drawShareCard, parseParams` は名前も引数も変えない。既存の55件のテストは1件も書き換えない。
+- 既に共有済みのランキングURL（`?region=...&date=...&slot=...`）は `mode` が無くても従来どおり動く。
+- カードの寸法と色は既存のものを使う。`CARD_SIZE = 1080` / `CARD_PAD = 64` / 地色 `#edf3f5` / 見出し `#124559` / 補助文字 `#687481` / アクセント `#007f8f` / 本文 `#17212b`。
+- スコア帯の色は画面（`style.css`）と揃える。good `#1d9a72` / ok `#b7791f` / bad `#b84a3c`。帯の判定は `Forecast.scoreBand`（50以上 good、30以上 ok、それ未満 bad）を使い、しきい値を `share.js` に書き写さない。
+- コミットメッセージの末尾に次の2行目を付ける（1行空けてから）。
 
-## ファイル構成
+```
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```
 
-| ファイル | 役割 | 変更 |
-| --- | --- | --- |
-| `share.js` | 表示ラベルの整形・共有テキスト・共有URL・URLパラメータ検証・カード描画。`forecast.js` と同じ UMD 形式 | 新規 |
-| `share.test.js` | `share.js` の純粋関数のテスト | 新規 |
-| `app.js` | 共有ボタンの描画とイベント、URLの復元と反映。ラベル整形は `share.js` に委譲 | 変更 |
-| `index.html` | `share.js` の読み込み、`?v=` の更新 | 変更 |
-| `style.css` | 共有ボタンの見た目 | 変更 |
-| `README.md` | 共有機能の説明 | 変更 |
-
-責任の線引き: `share.js` は「値を人が読む文字列にする」ところまで。データ取得・採点は `forecast.js` / `scoring.js`、画面の組み立ては `app.js` のままにする。同じラベルを2か所で定義しない（定義が2つあると、画面の文言を直したときに共有テキストだけ古いまま残る）。
-
-**開始前のベースライン**: `node --test` は現在 29件すべて成功する。
+- 秘密情報（APIキー・認証情報・個人情報）をコード・テスト・ドキュメントに書かない。本プロジェクトに秘密情報は存在しない（Open-Meteo は APIキー不要）。
 
 ---
 
-### Task 1: share.js にラベル整形を集める
+## 設計（承認済み）
 
-`jpDirection` / `windConditionLabel` / `WEEKDAYS_JA` / `dateParts` / `mdLabel` / `SLOT_SHORT` は現在 `app.js` にあり、画面のカードと週間表が使っている。共有テキストと共有画像も同じ文字列を出す必要があるため、`share.js` に移して両方から使えるようにする。この時点では画面の表示は1文字も変わらない。
+### 共有するもの
 
-**Files:**
-- Create: `share.js`
-- Create: `share.test.js`
-- Modify: `app.js:11-12`（`SLOT_SHORT` と `WEEKDAYS_JA` を削除）、`app.js:41-50`（`dateParts` と `mdLabel` を削除）、`app.js:52-56`（`dayColumnLabel` を `Share.dateParts` 経由に）、`app.js:133-142`（`jpDirection` を削除）、`app.js:150-159`（`windConditionLabel` を削除）、`app.js:299-320`（`conditionMetrics` の3か所）、`app.js:433` / `app.js:442` / `app.js:453` / `app.js:475` / `app.js:487`（呼び出しを `Share.` 付きに）
-- Modify: `index.html:71-73`（`share.js` の読み込みを追加）
+週間予報は「エリア × 7日 × 3時間帯 × 最大10ポイント（全域なら32）」なので、ランキングの「1日1時間帯のTOP3」はそのまま移せない。共有の単位は **各日のベスト** とする。7日それぞれについて、そのエリアの全ポイント・全時間帯の中で最も点数の高い1件を選び、7行にする。
 
-**Interfaces:**
-- Consumes: `Scoring.waveSizeLabel(heightM) -> string`（`scoring.js`）
-- Produces:
-  - `Share.SLOT_SHORT` — `{ morning: "朝", afternoon: "昼", evening: "夕" }`
-  - `Share.dateParts(date) -> { month, day, weekday }`
-  - `Share.mdLabel(date) -> string` — `"2026-09-20"` → `"9/20(日)"`
-  - `Share.jpDirection(deg) -> string` — `0` → `"北"`、`45` → `"北東"`
-  - `Share.windConditionLabel(windDir, windSpeed, bearing) -> string` — `"オフ弱" | "オフショア" | "サイドオフ" | "サイド" | "サイドオン" | "オンショア"`
-  - `Share.cardRows(results) -> { rank, name, score, wave, wind }[]` — 先頭3件まで
+### 共有テキスト
 
-- [x] **Step 1: 失敗するテストを書く**
+```
+千葉北 9/20(日)〜9/26(土)の週間予報
+9/20(日) 朝 志田下 48点
+9/21(月) 夕 志田下 41点
+9/22(火) データなし
+★9/23(水) 朝 志田下 62点
+9/24(木) 朝 一宮 36点
+9/25(金) 昼 志田下 52点
+9/26(土) 夕 志田下 26点
 
-`share.test.js` を新規作成する。
-
-```js
-const test = require("node:test");
-const assert = require("node:assert/strict");
-const Sh = require("./share.js");
-
-// ランキング1件分。app.js の rankSpot が返す形のうち、共有に使う部分だけ。
-// bearing 90 (東向きの浜) に対し wind_dir 225 (南西) はサイドオフになる。
-function result(name, total, over) {
-  return {
-    spot: { name, region: "千葉北", bearing: 90, ...(over && over.spot) },
-    scores: { total },
-    data: {
-      wave_height: 1.4, swell_period: 8.0, wind_dir: 225,
-      wind_speed: 5.5, swell_dir: 135, ...(over && over.data),
-    },
-  };
-}
-
-test("jpDirection は8方位の日本語を返す", () => {
-  assert.equal(Sh.jpDirection(0), "北");
-  assert.equal(Sh.jpDirection(45), "北東");
-  assert.equal(Sh.jpDirection(180), "南");
-  assert.equal(Sh.jpDirection(315), "北西");
-});
-
-test("jpDirection は境界の角度を次の方位に入れる", () => {
-  assert.equal(Sh.jpDirection(22.4), "北");
-  assert.equal(Sh.jpDirection(22.5), "北東");
-  assert.equal(Sh.jpDirection(337.5), "北");
-});
-
-test("jpDirection は360度を超える値と負の値を正規化する", () => {
-  assert.equal(Sh.jpDirection(405), "北東");
-  assert.equal(Sh.jpDirection(-45), "北西");
-});
-
-test("windConditionLabel は岸の向きに対する風の角度で決まる", () => {
-  // bearing 90 (東向きの浜) の沖向きは西風 (270)
-  assert.equal(Sh.windConditionLabel(270, 5, 90), "オフショア");
-  assert.equal(Sh.windConditionLabel(225, 5, 90), "サイドオフ");
-  assert.equal(Sh.windConditionLabel(180, 5, 90), "サイド");
-  assert.equal(Sh.windConditionLabel(135, 5, 90), "サイドオン");
-  assert.equal(Sh.windConditionLabel(90, 5, 90), "オンショア");
-});
-
-test("windConditionLabel は弱いオフショアを区別する", () => {
-  assert.equal(Sh.windConditionLabel(270, 3, 90), "オフ弱");
-  assert.equal(Sh.windConditionLabel(270, 3.1, 90), "オフショア");
-});
-
-test("mdLabel は月日と曜日を返す", () => {
-  assert.equal(Sh.mdLabel("2026-09-20"), "9/20(日)");
-  assert.equal(Sh.mdLabel("2026-01-01"), "1/1(木)");
-});
-
-test("dateParts は月・日・曜日に分ける", () => {
-  assert.deepEqual(Sh.dateParts("2026-09-20"), { month: 9, day: 20, weekday: "日" });
-});
-
-test("cardRows は上位3件までに切る", () => {
-  const rows = Sh.cardRows([
-    result("飯岡", 54), result("一宮", 51), result("木戸", 47), result("太東", 44),
-  ]);
-  assert.equal(rows.length, 3);
-  assert.deepEqual(rows.map((r) => r.name), ["飯岡", "一宮", "木戸"]);
-  assert.deepEqual(rows.map((r) => r.rank), [1, 2, 3]);
-});
-
-test("cardRows は件数が3件未満ならその数だけ返す", () => {
-  assert.equal(Sh.cardRows([result("飯岡", 54)]).length, 1);
-  assert.equal(Sh.cardRows([]).length, 0);
-});
-
-test("cardRows は波と風を画面と同じ文字列に整える", () => {
-  const rows = Sh.cardRows([result("飯岡", 54)]);
-  assert.equal(rows[0].score, 54);
-  assert.equal(rows[0].wave, "1.4m カタ〜アタマ");
-  assert.equal(rows[0].wind, "南西 5.5m/s サイドオフ");
-});
-
-test("cardRows は小数を1桁に丸める", () => {
-  const rows = Sh.cardRows([
-    result("飯岡", 54, { data: { wave_height: 2.06, wind_speed: 4.98 } }),
-  ]);
-  assert.equal(rows[0].wave, "2.1m オーバーヘッド");
-  assert.equal(rows[0].wind, "南西 5.0m/s サイドオフ");
-});
+https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly
 ```
 
-- [x] **Step 2: テストが失敗することを確認する**
+`★` は週で最も点数の高い1行だけに付く。本文と URL は空行1つで挟む（ランキングの `shareText` と同じ）。
 
-Run: `node --test share.test.js`
-Expected: FAIL（`Cannot find module './share.js'`）
+### 共有画像（1080×1080）
 
-- [x] **Step 3: share.js を作る**
+上から「SURF CHECK」→「千葉北 / 週間予報」→「9月20日(日) 〜 9月26日(土)」→ 区切り線 → 7行 → 左下「全10ポイント」・右下サイトURL。1行は `★`（週ベストのみ）／日付／時間帯／ポイント名／点数。点数はスコア帯の色で描く。
 
-`forecast.js` と同じ UMD の書き方に合わせる。`jpDirection` と `windConditionLabel` の中身は `app.js` から一字一句そのまま持ってくる（挙動を変えないため）。
+ヘッダ（kicker・見出し・副見出し・区切り線）とフッタはランキングカードと共通なので `drawCardFrame` / `drawCardFooter` に切り出して両方から呼ぶ。`drawShareCard` は実機確認済みの出荷コードでテストが1件も無いため、切り出しの前に偽の2Dコンテキストによる特性テストを入れて回帰を止める。
 
-```js
-// 表示ラベルの整形と、共有用のテキスト・カード。画面・共有テキスト・共有
-// 画像が同じ文字列を出せるよう、ラベルはここにだけ置く。pure な部分は
-// node --test で動く。
-(function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./scoring.js"));
-  else root.Share = factory(root.Scoring);
-})(typeof self !== "undefined" ? self : this, function (Scoring) {
-  const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
-  const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
+### 共有URL
 
-  function dateParts(date) {
-    const d = new Date(`${date}T00:00:00`);
-    return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
-  }
+`?region=千葉北&mode=weekly`。`parseParams` に `mode` を足し、`options.modes` に載っている値だけを通す。`mode` の無いURLはランキング扱いのままで、既に共有されたリンクは壊れない。`shareUrl` の引数は変えず、週間用に `weeklyUrl(base, region)` を別に足す。
 
-  // "9/19(土)"
-  function mdLabel(date) {
-    const p = dateParts(date);
-    return `${p.month}/${p.day}(${p.weekday})`;
-  }
+### app.js の共有導線
 
-  function jpDirection(deg) {
-    const names = [
-      [0, 22.5, "北"], [22.5, 67.5, "北東"], [67.5, 112.5, "東"],
-      [112.5, 157.5, "南東"], [157.5, 202.5, "南"], [202.5, 247.5, "南西"],
-      [247.5, 292.5, "西"], [292.5, 337.5, "北西"], [337.5, 360, "北"],
-    ];
-    const normalized = ((deg % 360) + 360) % 360;
-    const found = names.find(([lo, hi]) => lo <= normalized && normalized < hi);
-    return found ? found[2] : "北";
-  }
-
-  function windConditionLabel(windDir, windSpeed, bearing) {
-    const offshoreFrom = (bearing + 180) % 360;
-    let diff = Math.abs(windDir - offshoreFrom) % 360;
-    if (diff > 180) diff = 360 - diff;
-    if (diff < 45) return windSpeed <= 3 ? "オフ弱" : "オフショア";
-    if (diff <= 75) return "サイドオフ";
-    if (diff <= 105) return "サイド";
-    if (diff <= 135) return "サイドオン";
-    return "オンショア";
-  }
-
-  // 共有テキストと共有カードが参照する唯一の整形。results は
-  // scores.total の降順に並んでいる前提。
-  function cardRows(results) {
-    return results.slice(0, 3).map((r, i) => ({
-      rank: i + 1,
-      name: r.spot.name,
-      score: r.scores.total,
-      wave: `${r.data.wave_height.toFixed(1)}m ${Scoring.waveSizeLabel(r.data.wave_height)}`,
-      wind: `${jpDirection(r.data.wind_dir)} ${r.data.wind_speed.toFixed(1)}m/s `
-        + `${windConditionLabel(r.data.wind_dir, r.data.wind_speed, r.spot.bearing)}`,
-    }));
-  }
-
-  return {
-    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-  };
-});
-```
-
-- [x] **Step 4: テストが通ることを確認する**
-
-Run: `node --test share.test.js`
-Expected: PASS（11件）
-
-- [x] **Step 5: app.js から移設した定義を削除する**
-
-次の6つを `app.js` からまるごと削除する。関数の本体は Step 3 で `share.js` に入っている。
-
-- `const SLOT_SHORT = ...`（11行目）
-- `const WEEKDAYS_JA = ...`（12行目）
-- `function dateParts(date) { ... }`（41-44行目）
-- `// "9/19(土)"` のコメントと `function mdLabel(date) { ... }`（46-50行目）
-- `function jpDirection(deg) { ... }`（133-142行目）
-- `function windConditionLabel(...) { ... }`（150-159行目）
-
-- [x] **Step 6: app.js の呼び出しを Share. 付きに直す**
-
-`dayColumnLabel`（52-56行目付近）:
-
-```js
-// "土19" — weekly grid column header
-function dayColumnLabel(date) {
-  const p = Share.dateParts(date);
-  return `${p.weekday}${p.day}`;
-}
-```
-
-`conditionMetrics` の3か所:
-
-```js
-  const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
-```
-
-```js
-        <span><strong>${escapeHtml(windCondition)}</strong><span class="metric-sub">${escapeHtml(Share.jpDirection(data.wind_dir))}風 ${data.wind_speed.toFixed(1)}m/s</span></span>
-```
-
-```js
-        <span><strong>${escapeHtml(Share.jpDirection(data.swell_dir))}うねり</strong></span>
-```
-
-週間予報側の5か所（433 / 442 / 453 / 475 / 487行目付近）は `mdLabel(` → `Share.mdLabel(`、`SLOT_SHORT[` → `Share.SLOT_SHORT[` に置き換える。
-
-Run: `grep -n "jpDirection\|windConditionLabel\|mdLabel\|SLOT_SHORT\|dateParts\|WEEKDAYS_JA" app.js`
-Expected: 表示されるすべての行に `Share.` が付いている（定義の残りが無い）
-
-- [x] **Step 7: index.html に share.js を足す**
-
-`app.js` より前、`forecast.js` の次に読み込む。
-
-```html
-  <script src="scoring.js?v=20260920"></script>
-  <script src="forecast.js?v=20260920"></script>
-  <script src="share.js?v=20260920"></script>
-  <script src="app.js?v=20260920"></script>
-```
-
-- [x] **Step 8: テスト全体を流す**
-
-Run: `node --test`
-Expected: `tests 40` / `pass 40` / `fail 0`（既存29件 + 新規11件）
-
-- [x] **Step 9: 画面が変わっていないことを確認する**
-
-ローカルサーバー（`python3 -m http.server 8000`）でランキングと週間予報の両方を表示し、方位・風・日付・時間帯の文字列が移設前と同じであることを確認する。
-
-- [x] **Step 10: コミット**
-
-```bash
-git add share.js share.test.js app.js index.html
-git commit -m "$(printf 'refactor: move display labels into share.js\n\nThe share text and the share card have to render the same strings as the\nranking card, so the label formatters move to a module both sides can\nreach. Keeping one definition each stops the share output from drifting\nwhen the on-screen wording changes. No visible change.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
+ランキングと週間の両パネルは CSS で隠しているだけで同時に DOM に存在するため、`shareRow()` が `id` を出すと重複し、`shareError` の `document.querySelector(".share-row")` が別パネルを掴む。`id` をやめて class にし、`wireShareRow(root, payload)` が `root.querySelector` で閉じる。`payload` は `share.js` が組み立てる `{ text, headline, url, filename, draw }`。
 
 ---
 
-### Task 2: LINEで送るボタン
+## File Structure
 
-共有テキストと共有URLを組み立て、結果ヘッダーの下に「LINEで送る」ボタンを出す。
+| ファイル | 責務 | この計画での変更 |
+|---|---|---|
+| `share.js` | 表示ラベルの整形、共有テキスト・URL・カードの組み立て | 週間用の純関数とカード描画、カードの共通部分の切り出し、`parseParams` の `mode`、payload の組み立て |
+| `share.test.js` | `share.js` の検証 | 週間用の関数とカード描画のテストを追加 |
+| `app.js` | DOM の組み立てと配線 | 共有導線の payload 化、週間側への配線、`mode` の復元 |
+| `index.html` | 画面の骨格と読み込み | `?v=` の日付を上げる（5か所） |
+| `style.css` | 見た目 | 変更なしの見込み（`.share-row` をそのまま再利用） |
+| `README.md` | 説明 | 共有機能の節に週間予報を足す、テスト件数を直す |
+
+`forecast.js` と `scoring.js` は変更しない。
+
+---
+
+### Task 1: 週間共有の純関数（行・テキスト・URL・mode）
 
 **Files:**
-- Modify: `share.js`（`shareLines` / `shareText` / `shareUrl` を追加）
-- Modify: `share.test.js`（テストを追加）
-- Modify: `app.js`（`shareRow` / `openLineShare` / `shareError` を追加し、`renderResults` から呼ぶ）
-- Modify: `style.css`（末尾に共有ボタンのスタイル）
+- Modify: `share.js`
+- Test: `share.test.js`
 
 **Interfaces:**
-- Consumes: `Share.cardRows(results)`、`Share.mdLabel(date)`、`Share.SLOT_SHORT`（Task 1）
+- Consumes: `Forecast.SLOT_ORDER`（`["morning", "afternoon", "evening"]`）、`Forecast.scoreBand(total)`。`share.js` は今まで `Scoring` だけを受け取っていたので、ファクトリの引数に `Forecast` を足す。
 - Produces:
-  - `Share.shareLines(region, date, slot, results) -> string[]`
-  - `Share.shareText(region, date, slot, results, url) -> string`
-  - `Share.shareUrl(base, region, date, slot) -> string`
-  - `app.js` の `shareRow() -> string`（HTML断片）、`shareError(message) -> void`
+  - `Share.weeklyRows(dates, results)` → 7要素の配列。各要素は `{ date, slot, name, score, best }`。データが1つも無い日は `{ date, slot: null, name: null, score: null, best: false }`。
+  - `Share.weeklyShareLines(region, dates, results)` → 文字列の配列（見出し1行 + 日ごとに1行）。
+  - `Share.weeklyText(region, dates, results, url)` → 本文と URL を空行で挟んだ文字列。
+  - `Share.weeklyUrl(base, region)` → `?region=...&mode=weekly` の URL 文字列。
+  - `Share.parseParams(search, options)` が `options.modes` を見て `out.mode` を足す。
+- `results` の形（`app.js` の `weeklySpot` が返すもの）: `{ spot: { name, region, bearing }, days, best }`。`days[i]` は `dates[i]` に対応し、`{ date, slots: { morning, afternoon, evening }, maxWaveHeight, tide }`。各 `slots[slot]` は `{ data, scores }` または `null`。
 
-- [x] **Step 1: 失敗するテストを書く**
+- [ ] **Step 1: テスト用のフィクスチャを足す**
 
-`share.test.js` の末尾に追加する。`result` ヘルパーは Task 1 で定義済みのものを使う。
+`share.test.js` の末尾に追記する。既存の `result()` ヘルパーとテストは触らない。
 
 ```js
-test("shareLines の1行目はエリア・日付・時間帯", () => {
-  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [result("飯岡", 54)]);
-  assert.equal(lines[0], "千葉北 9/20(日) 朝のサーフチェック");
+// 週間1ポイント分。app.js の weeklySpot が返す形のうち、共有に使う部分だけ。
+// totals は7日分で、1日は [朝, 昼, 夕] の点数。null はデータの無いセル。
+const WEEK_DATES = ["2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23",
+  "2026-09-24", "2026-09-25", "2026-09-26"];
+
+function weekResult(name, totals) {
+  return {
+    spot: { name, region: "千葉北", bearing: 90 },
+    days: totals.map((day, i) => ({
+      date: WEEK_DATES[i],
+      slots: {
+        morning: day[0] === null ? null : { data: {}, scores: { total: day[0] } },
+        afternoon: day[1] === null ? null : { data: {}, scores: { total: day[1] } },
+        evening: day[2] === null ? null : { data: {}, scores: { total: day[2] } },
+      },
+      maxWaveHeight: 1.4,
+      tide: [],
+    })),
+  };
+}
+
+// 2026-09-20 は日曜。9/22 は両ポイントともデータ無し、9/21 の夕は同点
+// （並び順の先勝ちを見る）、9/24 の朝は一宮のほうが高い。
+const SHIDA = weekResult("志田下",
+  [[48, 30, 22], [20, 25, 41], [null, null, null], [62, 50, 44],
+   [35, 33, 30], [28, 52, 40], [18, 20, 26]]);
+const ICHINOMIYA = weekResult("一宮",
+  [[40, 30, 20], [20, 25, 41], [null, null, null], [55, 50, 44],
+   [36, 33, 30], [28, 49, 40], [24, 20, 26]]);
+```
+
+- [ ] **Step 2: 失敗するテストを書く**
+
+`share.test.js` の末尾に追記する。
+
+```js
+test("weeklyRows は各日のベストを1行ずつ返す", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(rows.length, 7);
+  assert.deepEqual(rows[0], { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false });
+  assert.deepEqual(rows[3], { date: "2026-09-23", slot: "morning", name: "志田下", score: 62, best: true });
+  assert.deepEqual(rows[5], { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false });
 });
 
-test("shareLines は時間帯を朝・昼・夕で書き分ける", () => {
-  const r = [result("飯岡", 54)];
-  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "afternoon", r)[0].includes("昼のサーフチェック"));
-  assert.ok(Sh.shareLines("千葉北", "2026-09-20", "evening", r)[0].includes("夕のサーフチェック"));
+test("weeklyRows は全時間帯のデータが無い日を空の行にする", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(rows[2], { date: "2026-09-22", slot: null, name: null, score: null, best: false });
 });
 
-test("shareLines は上位3件を順位付きで並べる", () => {
-  const lines = Sh.shareLines("千葉北", "2026-09-20", "morning", [
-    result("飯岡", 54), result("一宮", 51), result("木戸", 47), result("太東", 44),
+test("weeklyRows は点数が高いポイントを日ごとに選び直す", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  // 9/24 の朝は 一宮36 > 志田下35
+  assert.equal(rows[4].name, "一宮");
+  assert.equal(rows[4].score, 36);
+});
+
+test("weeklyRows は同点なら朝・昼・夕の順で先の時間帯を採る", () => {
+  const tie = weekResult("同点", [[40, 40, 40], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const rows = Sh.weeklyRows(WEEK_DATES, [tie]);
+  assert.equal(rows[0].slot, "morning");
+});
+
+test("weeklyRows は同点なら results の並び順で先のポイントを採る", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  // 9/21 の夕は両方 41 点
+  assert.equal(rows[1].score, 41);
+  assert.equal(rows[1].slot, "evening");
+  assert.equal(rows[1].name, "志田下");
+});
+
+test("weeklyRows は週で最も高い1行だけに best を立てる", () => {
+  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(rows.map((r) => r.best), [false, false, false, true, false, false, false]);
+});
+
+test("weeklyRows は週ベストが同点なら早い日に best を立てる", () => {
+  const twice = weekResult("同点", [[0, 0, 0], [70, 0, 0], [0, 0, 0], [70, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+  const rows = Sh.weeklyRows(WEEK_DATES, [twice]);
+  assert.equal(rows[1].best, true);
+  assert.equal(rows[3].best, false);
+});
+
+test("weeklyRows はデータが1つも無ければ best を立てない", () => {
+  const empty = weekResult("無", Array.from({ length: 7 }, () => [null, null, null]));
+  const rows = Sh.weeklyRows(WEEK_DATES, [empty]);
+  assert.equal(rows.filter((r) => r.best).length, 0);
+  assert.equal(rows.length, 7);
+});
+
+test("weeklyShareLines の1行目はエリアと期間", () => {
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(lines[0], "千葉北 9/20(日)〜9/26(土)の週間予報");
+});
+
+test("weeklyShareLines は7日分を順に並べ、週ベストに★を付ける", () => {
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.deepEqual(lines.slice(1), [
+    "9/20(日) 朝 志田下 48点",
+    "9/21(月) 夕 志田下 41点",
+    "9/22(火) データなし",
+    "★9/23(水) 朝 志田下 62点",
+    "9/24(木) 朝 一宮 36点",
+    "9/25(金) 昼 志田下 52点",
+    "9/26(土) 夕 志田下 26点",
   ]);
-  assert.equal(lines.length, 4);
-  assert.equal(lines[1], "1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）");
-  assert.equal(lines[3], "3位 木戸 47点（1.4m / 南西5.5m/s サイドオフ）");
 });
 
-test("shareLines は1件だけでも成立する", () => {
-  const lines = Sh.shareLines("茨城", "2026-09-20", "morning", [result("飯岡", 54)]);
-  assert.equal(lines.length, 2);
+test("weeklyText は本文とURLを空行で挟んでつなぐ", () => {
+  const text = Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA], "https://example.test/?region=x&mode=weekly");
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA]);
+  assert.equal(text, `${lines.join("\n")}\n\nhttps://example.test/?region=x&mode=weekly`);
+  assert.ok(text.includes("\n\nhttps://"));
 });
 
-test("shareText は本文とURLを空行で挟んでつなぐ", () => {
-  const text = Sh.shareText("千葉北", "2026-09-20", "morning", [result("飯岡", 54)], "https://example.test/?x=1");
+test("weeklyUrl は region と mode=weekly をクエリにする", () => {
   assert.equal(
-    text,
-    "千葉北 9/20(日) 朝のサーフチェック\n1位 飯岡 54点（1.4m / 南西5.5m/s サイドオフ）\n\nhttps://example.test/?x=1"
+    Sh.weeklyUrl("https://tk0407.github.io/surf-check/", "千葉北"),
+    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly"
   );
 });
 
-test("shareUrl は3つの条件をクエリにする", () => {
-  const url = Sh.shareUrl("https://example.test/surf/", "千葉北", "2026-09-20", "morning");
-  assert.equal(url, "https://example.test/surf/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
+test("weeklyUrl は base に付いていた既存のクエリを捨ててハッシュは残す", () => {
+  assert.equal(
+    Sh.weeklyUrl("https://tk0407.github.io/surf-check/?region=%E6%B9%98%E5%8D%97&date=2026-09-20&slot=morning#x", "千葉北"),
+    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly#x"
+  );
 });
 
-test("shareUrl は base に付いていた既存のクエリを捨てる", () => {
-  const url = Sh.shareUrl("https://example.test/surf/?old=1", "茨城", "2026-09-21", "evening");
-  assert.ok(!url.includes("old=1"));
-  assert.ok(url.includes("region=%E8%8C%A8%E5%9F%8E"));
-  assert.ok(url.includes("slot=evening"));
+test("parseParams は modes に載っている mode を通す", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北", mode: "weekly" });
+  assert.deepEqual(Sh.parseParams("?mode=ranking", opts), { mode: "ranking" });
+});
+
+test("parseParams は modes に無い mode を捨てる", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=admin", opts), { region: "千葉北" });
+  assert.deepEqual(Sh.parseParams("?mode=__proto__", opts), {});
+});
+
+test("parseParams は modes を渡さなければ mode を捨てる", () => {
+  const opts = { regions: ["千葉北"], slots: ["morning"] };
+  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北" });
 });
 ```
 
-- [x] **Step 2: テストが失敗することを確認する**
+- [ ] **Step 3: テストが失敗することを確認する**
 
-Run: `node --test share.test.js`
-Expected: FAIL（`Sh.shareLines is not a function`）
+Run: `node --test`
+Expected: FAIL。`Sh.weeklyRows is not a function` などで新しい16件が落ち、既存の55件は通る。
 
-- [x] **Step 3: share.js に3つの関数を足す**
+- [ ] **Step 4: share.js のファクトリに Forecast を足す**
 
-`cardRows` の下、`return` の前に置く。`wave` は `"1.4m カタ〜アタマ"` なので先頭の数値だけを取り、`wind` は `"南西 5.5m/s サイドオフ"` の最初の空白1つだけを詰めて `"南西5.5m/s サイドオフ"` にする（`replace` は第1引数が文字列なら最初の1つしか置き換えない）。
+`share.js` の先頭（UMD の部分）を書き換える。`index.html` の読み込み順は `scoring.js` → `forecast.js` → `share.js` → `app.js` なので、`root.Forecast` は `share.js` の実行時に既に存在する。
 
 ```js
-  function shareLines(region, date, slot, results) {
-    const head = `${region} ${mdLabel(date)} ${SLOT_SHORT[slot]}のサーフチェック`;
-    const rows = cardRows(results).map(
-      (r) => `${r.rank}位 ${r.name} ${r.score}点（${r.wave.split(" ")[0]} / ${r.wind.replace(" ", "")}）`
-    );
+(function (root, factory) {
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = factory(require("./scoring.js"), require("./forecast.js"));
+  } else {
+    root.Share = factory(root.Scoring, root.Forecast);
+  }
+})(typeof self !== "undefined" ? self : this, function (Scoring, Forecast) {
+```
+
+- [ ] **Step 5: 週間用の関数を書く**
+
+`share.js` の `parseParams` の直前に足す。
+
+```js
+  // 週間予報の共有。7日それぞれについて、エリア内の全ポイント・全時間帯の
+  // 中で最も点数の高い1件を選ぶ。同点は時間帯順（朝→昼→夕）、次に results
+  // の並び順で先に見つけたほうを採る（strict ">" で先勝ち）。
+  // results は app.js の weeklySpot が返す { spot, days, best } の配列で、
+  // days[i] が dates[i] に対応する。
+  function weeklyRows(dates, results) {
+    const rows = dates.map((date, dayIndex) => {
+      let found = null;
+      for (const slot of Forecast.SLOT_ORDER) {
+        for (const r of results) {
+          const day = r.days[dayIndex];
+          const cell = day && day.slots[slot];
+          if (cell && (!found || cell.scores.total > found.score)) {
+            found = { slot, name: r.spot.name, score: cell.scores.total };
+          }
+        }
+      }
+      return found
+        ? { date, slot: found.slot, name: found.name, score: found.score, best: false }
+        : { date, slot: null, name: null, score: null, best: false };
+    });
+    // 週で最も高い1行にだけ印を付ける。同点なら早い日。
+    let bestIndex = -1;
+    rows.forEach((row, i) => {
+      if (row.score !== null && (bestIndex === -1 || row.score > rows[bestIndex].score)) bestIndex = i;
+    });
+    if (bestIndex !== -1) rows[bestIndex].best = true;
+    return rows;
+  }
+
+  function weeklyShareLines(region, dates, results) {
+    const head = `${region} ${mdLabel(dates[0])}〜${mdLabel(dates[dates.length - 1])}の週間予報`;
+    const rows = weeklyRows(dates, results).map((row) => (
+      row.score === null
+        ? `${mdLabel(row.date)} データなし`
+        : `${row.best ? "★" : ""}${mdLabel(row.date)} ${SLOT_SHORT[row.slot]} ${row.name} ${row.score}点`
+    ));
     return [head, ...rows];
   }
 
-  function shareText(region, date, slot, results, url) {
-    return `${shareLines(region, date, slot, results).join("\n")}\n\n${url}`;
+  function weeklyText(region, dates, results, url) {
+    return `${weeklyShareLines(region, dates, results).join("\n")}\n\n${url}`;
   }
 
-  function shareUrl(base, region, date, slot) {
+  // 週間には日付も時間帯も無いので、エリアと mode だけを載せる。
+  function weeklyUrl(base, region) {
     const u = new URL(base);
-    u.search = new URLSearchParams({ region, date, slot }).toString();
+    u.search = new URLSearchParams({ region, mode: "weekly" }).toString();
     return u.toString();
   }
 ```
 
-`return` に3つを足す。
+- [ ] **Step 6: parseParams に mode を足す**
+
+`parseParams` の中を書き換える。`options.modes` を渡さない呼び出し（既存のテスト）でも落ちないように `|| []` で受ける。
+
+```js
+  function parseParams(search, options) {
+    const q = new URLSearchParams(search);
+    const out = {};
+    const region = q.get("region");
+    const date = q.get("date");
+    const slot = q.get("slot");
+    const mode = q.get("mode");
+    if (region && options.regions.includes(region)) out.region = region;
+    if (date && isRealDate(date)) out.date = date;
+    if (slot && options.slots.includes(slot)) out.slot = slot;
+    if (mode && (options.modes || []).includes(mode)) out.mode = mode;
+    return out;
+  }
+```
+
+- [ ] **Step 7: エクスポートに足す**
+
+`share.js` 末尾の `return { ... }` を書き換える。
 
 ```js
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl,
+    shareLines, shareText, shareUrl, drawShareCard, parseParams,
+    weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
   };
 ```
 
-- [x] **Step 4: テストが通ることを確認する**
-
-Run: `node --test share.test.js`
-Expected: PASS（18件）
-
-- [x] **Step 5: app.js に共有ボタンの行と処理を足す**
-
-`renderResults`（373行目付近）のすぐ上に置く。
-
-```js
-// 共有ボタンの行。結果が1件以上あるときだけ描く。
-function shareRow() {
-  return `<div class="share-row">
-      <button type="button" id="shareLine" class="share-btn line">LINEで送る</button>
-      <button type="button" id="shareImage" class="share-btn">画像で共有</button>
-    </div>`;
-}
-
-// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
-function openLineShare(region, date, slot, results) {
-  const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
-  const text = Share.shareText(region, date, slot, results, url);
-  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, "_blank", "noopener");
-  if (!win) shareError("LINEを開けませんでした");
-}
-
-// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
-function shareError(message) {
-  const row = document.querySelector(".share-row");
-  if (!row) return;
-  let note = row.querySelector(".share-note");
-  if (!note) {
-    note = document.createElement("p");
-    note.className = "failed share-note";
-    row.appendChild(note);
-  }
-  note.textContent = message;
-}
-```
-
-- [x] **Step 6: renderResults にボタンを差し込む**
-
-`.results-head` の直後に `shareRow()` を置く。
-
-```js
-  el.innerHTML = `
-    <div class="results-head">
-      <h2>${escapeHtml(region)}の${escapeHtml(SLOT_LABELS[slot])}ランキング</h2>
-      <span>${escapeHtml(date)} / ${results.length}件</span>
-    </div>
-    ${shareRow()}
-    <div class="ranking-cards">
-      ${results.map(resultCard).join("")}
-    </div>
-    ${failedNote}`;
-```
-
-`drawTideCurves(el, results, date, slot);` の直前にクリックを配線する。`innerHTML` を入れ替えた直後なのでボタンは毎回新しく、リスナーの重複は起きない。
-
-```js
-  const lineBtn = el.querySelector("#shareLine");
-  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
-```
-
-- [x] **Step 7: style.css に見た目を足す**
-
-ファイル末尾に追加する。
-
-```css
-/* --- Share buttons --- */
-
-.share-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.share-btn {
-  min-height: 44px;
-  border: 1px solid rgba(18, 69, 89, 0.16);
-  border-radius: 8px;
-  background: var(--panel);
-  color: var(--deep);
-  font: inherit;
-  font-size: 0.86rem;
-  font-weight: 800;
-  cursor: pointer;
-}
-
-.share-btn.line {
-  border-color: transparent;
-  background: #06c755;
-  color: #fff;
-}
-
-.share-note {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-```
-
-- [x] **Step 8: 画面で確認する**
-
-ローカルサーバーでランキングを実行し、次を確認する。
-
-- ヘッダーの下に2つのボタンが横に並ぶ
-- 375px 幅で横スクロールが出ない、ボタンの高さが44px以上ある
-- 「LINEで送る」を押すと `line.me` が新しいタブで開き、本文に3件と URL が入っている
-- 結果が0件のとき（例: 対応範囲外の日付）はボタンが出ない
-
-- [x] **Step 9: テスト全体を流してコミット**
+- [ ] **Step 8: テストが通ることを確認する**
 
 Run: `node --test`
-Expected: `tests 47` / `pass 47` / `fail 0`
+Expected: PASS。`tests 71` / `pass 71` / `fail 0`（既存55 + 追加16）。
+
+- [ ] **Step 9: コミット**
 
 ```bash
-git add share.js share.test.js app.js style.css
-git commit -m "$(printf 'feat: add a LINE share button to the ranking\n\nThe button hands LINE a plain-text summary of the top three spots plus a\nlink that restores the search. LINE URL schemes only carry text, so the\nimage gets its own button in the next commit.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+git add share.js share.test.js
+git commit -m "$(printf 'feat: build the weekly share lines, text and url\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
 ---
 
-### Task 3: 共有カードの画像
-
-1080×1080 のPNGを作り、スマホでは共有シート、PCではダウンロードに渡す。
+### Task 2: カード描画のテスト土台と共通部分の切り出し
 
 **Files:**
-- Modify: `share.js`（`drawShareCard` を追加）
-- Modify: `app.js`（`shareImage` を追加し、ボタンに配線）
+- Modify: `share.js`
+- Test: `share.test.js`
 
 **Interfaces:**
-- Consumes: `Share.cardRows(results)`、`Share.shareLines(...)`、`Share.shareUrl(...)`、`Share.dateParts(date)`（Task 1・2）
-- Produces: `Share.drawShareCard(canvas, { region, date, slot, rows, count }) -> void`
+- Consumes: 既存の `drawShareCard(canvas, info)`。
+- Produces: `share.js` 内部（エクスポートしない）の `drawCardFrame(ctx, title, subtitle)` と `drawCardFooter(ctx, note)`。Task 3 の `drawWeeklyCard` がこの2つを呼ぶ。`drawShareCard` の外から見える振る舞いは一切変えない。
 
-- [x] **Step 1: share.js に描画関数を足す**
+**このタスクのテストについて:** ここで足すのは「いま出ている絵を固定する」特性テスト（characterization test）であり、最初から通る。失敗から始める Red-Green-Refactor は新しい振る舞いを足すとき（Task 1・3・5）の規則で、既存の出荷コードを壊さずに切り出すこのタスクには当てはまらない。もし Step 3 でテストが落ちたら、それは `drawShareCard` のバグではなく偽コンテキストの作りが間違っている。
 
-DOM（canvas）に触るため Node のテスト対象にはしない。目視で確認する。`shareUrl` の下に置く。
+- [ ] **Step 1: 偽の2Dコンテキストを書く**
+
+`share.test.js` の末尾に追記する。
 
 ```js
-  const CARD_SIZE = 1080;
-  const CARD_PAD = 64;
-  const CARD_FONT = 'system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif';
-  const SLOT_LONG = { morning: "朝 07-10時", afternoon: "昼 12-15時", evening: "夕 16-19時" };
+// canvas は node に無いので、描画の呼び出しを記録する偽の2Dコンテキストで
+// 確認する。measureText は「半角0.5em・全角1em」の近似で、fitText が末尾を
+// 切る条件を再現できる程度の精度があればよい（実機の字幅とは一致しない）。
+function fakeCanvas() {
+  const calls = [];
+  const ctx = {
+    fillStyle: "", strokeStyle: "", font: "16px sans-serif",
+    textAlign: "left", textBaseline: "alphabetic", lineWidth: 0,
+    fillRect(...args) { calls.push({ op: "fillRect", args }); },
+    fillText(text, x, y) {
+      calls.push({ op: "fillText", text, x, y, fillStyle: this.fillStyle, font: this.font, textAlign: this.textAlign });
+    },
+    beginPath() { calls.push({ op: "beginPath" }); },
+    moveTo(...args) { calls.push({ op: "moveTo", args }); },
+    lineTo(...args) { calls.push({ op: "lineTo", args }); },
+    stroke() { calls.push({ op: "stroke", strokeStyle: this.strokeStyle }); },
+    arc(...args) { calls.push({ op: "arc", args }); },
+    fill() { calls.push({ op: "fill", fillStyle: this.fillStyle }); },
+    measureText(text) {
+      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(this.font)[1]);
+      let width = 0;
+      for (const ch of text) width += (ch.codePointAt(0) < 128 ? 0.5 : 1) * size;
+      return { width };
+    },
+  };
+  return {
+    canvas: { width: 0, height: 0, getContext: () => ctx },
+    calls,
+    texts: () => calls.filter((c) => c.op === "fillText").map((c) => c.text),
+    drawn: (text) => calls.find((c) => c.op === "fillText" && c.text === text),
+  };
+}
 
-  // "9月20日(日)"
-  function longDateLabel(date) {
-    const p = dateParts(date);
-    return `${p.month}月${p.day}日(${p.weekday})`;
-  }
+const CARD_RESULTS = [
+  result("志田下", 62), result("一宮", 55),
+  result("パイプライン（茅ヶ崎）", 48), result("片貝", 40),
+];
 
-  // 幅に収まらない名前は末尾を … にする。
-  function fitText(ctx, text, maxWidth) {
-    if (ctx.measureText(text).width <= maxWidth) return text;
-    let cut = text;
-    while (cut.length > 1 && ctx.measureText(`${cut}…`).width > maxWidth) cut = cut.slice(0, -1);
-    return `${cut}…`;
-  }
+function drawRanking(results) {
+  const f = fakeCanvas();
+  Sh.drawShareCard(f.canvas, {
+    region: "千葉北", date: "2026-09-20", slot: "morning",
+    rows: Sh.cardRows(results), count: results.length,
+  });
+  return f;
+}
+```
 
-  function drawShareCard(canvas, info) {
-    canvas.width = CARD_SIZE;
-    canvas.height = CARD_SIZE;
-    const ctx = canvas.getContext("2d");
+- [ ] **Step 2: 既存カードの特性テストを書く**
+
+`share.test.js` の末尾に追記する。
+
+```js
+test("drawShareCard は1080×1080のcanvasに描く", () => {
+  const f = drawRanking(CARD_RESULTS);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.canvas.height, 1080);
+});
+
+test("drawShareCard はエリア・日付・時間帯を見出しにする", () => {
+  const f = drawRanking(CARD_RESULTS);
+  const texts = f.texts();
+  assert.equal(texts[0], "SURF CHECK");
+  assert.equal(texts[1], "千葉北 / 9月20日(日)");
+  assert.equal(texts[2], "朝 07-10時");
+});
+
+test("drawShareCard は上位3件の順位・名前・点数を描く", () => {
+  const texts = drawRanking(CARD_RESULTS).texts();
+  assert.deepEqual(texts.filter((t) => ["1", "2", "3"].includes(t)), ["1", "2", "3"]);
+  assert.ok(texts.includes("志田下"));
+  assert.ok(texts.includes("一宮"));
+  assert.ok(texts.includes("パイプライン（茅ヶ崎）"));
+  assert.ok(texts.includes("62"));
+  assert.equal(texts.filter((t) => t === "/85").length, 3);
+  // 4件目は載らない
+  assert.ok(!texts.includes("片貝"));
+});
+
+test("drawShareCard は1位のバッジだけを塗りつぶす", () => {
+  const f = drawRanking(CARD_RESULTS);
+  assert.equal(f.calls.filter((c) => c.op === "arc").length, 3);
+  assert.deepEqual(f.calls.filter((c) => c.op === "fill").map((c) => c.fillStyle),
+    ["#124559", "#ffffff", "#ffffff"]);
+});
+
+test("drawShareCard は枠に収まらないポイント名を…で切る", () => {
+  const long = result("あいうえおかきくけこさしすせそたちつてと", 62);
+  const texts = drawRanking([long, result("一宮", 55), result("片貝", 48)]).texts();
+  const drawnName = texts.find((t) => t.startsWith("あいうえお"));
+  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
+  assert.ok(drawnName.length < "あいうえおかきくけこさしすせそたちつてと".length);
+});
+
+test("drawShareCard は4件以上なら「ほかN件」を描く", () => {
+  assert.ok(drawRanking(CARD_RESULTS).texts().includes("ほか1件"));
+});
+
+test("drawShareCard は3件ちょうどなら「ほか」を描かない", () => {
+  const texts = drawRanking(CARD_RESULTS.slice(0, 3)).texts();
+  assert.equal(texts.filter((t) => t.startsWith("ほか")).length, 0);
+});
+
+test("drawShareCard はサイトのURLを右下に描く", () => {
+  const f = drawRanking(CARD_RESULTS);
+  const url = f.drawn("tk0407.github.io/surf-check");
+  assert.equal(url.textAlign, "right");
+  assert.equal(url.x, 1016);
+  assert.equal(url.y, 1016);
+});
+```
+
+- [ ] **Step 3: テストが通ることを確認する（切り出し前の基準）**
+
+Run: `node --test`
+Expected: PASS。`tests 79` / `pass 79` / `fail 0`（Task 1 の71 + 追加8）。落ちた場合は偽コンテキストの作りを直す。`share.js` は触らない。
+
+- [ ] **Step 4: 共通部分を切り出す**
+
+`share.js` の `drawShareCard` の直前に足す。中身は `drawShareCard` の先頭と末尾から動かしたもので、文も順番も変えない。
+
+```js
+  // ランキングカードと週間カードで共通の、上の見出しと区切り線。
+  function drawCardFrame(ctx, title, subtitle) {
     ctx.fillStyle = "#edf3f5";
     ctx.fillRect(0, 0, CARD_SIZE, CARD_SIZE);
     ctx.textBaseline = "alphabetic";
@@ -582,10 +526,10 @@ DOM（canvas）に触るため Node のテスト対象にはしない。目視�
 
     ctx.fillStyle = "#124559";
     ctx.font = `800 54px ${CARD_FONT}`;
-    ctx.fillText(`${info.region} / ${longDateLabel(info.date)}`, CARD_PAD, CARD_PAD + 104);
+    ctx.fillText(title, CARD_PAD, CARD_PAD + 104);
     ctx.fillStyle = "#687481";
     ctx.font = `700 38px ${CARD_FONT}`;
-    ctx.fillText(SLOT_LONG[info.slot], CARD_PAD, CARD_PAD + 160);
+    ctx.fillText(subtitle, CARD_PAD, CARD_PAD + 160);
 
     ctx.strokeStyle = "#dce5eb";
     ctx.lineWidth = 2;
@@ -593,94 +537,392 @@ DOM（canvas）に触るため Node のテスト対象にはしない。目視�
     ctx.moveTo(CARD_PAD, CARD_PAD + 200);
     ctx.lineTo(CARD_SIZE - CARD_PAD, CARD_PAD + 200);
     ctx.stroke();
+  }
 
-    info.rows.forEach((row, i) => {
-      const top = CARD_PAD + 250 + i * 200;
-
-      // 順位バッジ
-      ctx.beginPath();
-      ctx.arc(CARD_PAD + 34, top + 24, 34, 0, Math.PI * 2);
-      ctx.fillStyle = row.rank === 1 ? "#124559" : "#ffffff";
-      ctx.fill();
-      if (row.rank !== 1) {
-        ctx.strokeStyle = "#124559";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
-      ctx.fillStyle = row.rank === 1 ? "#ffffff" : "#124559";
-      ctx.font = `900 38px ${CARD_FONT}`;
-      ctx.textAlign = "center";
-      ctx.fillText(String(row.rank), CARD_PAD + 34, top + 38);
-      ctx.textAlign = "left";
-
-      // 点数は右端から逆算して置く
-      ctx.font = `900 56px ${CARD_FONT}`;
-      const scoreText = String(row.score);
-      const scoreWidth = ctx.measureText(scoreText).width;
-      ctx.font = `700 30px ${CARD_FONT}`;
-      const suffixWidth = ctx.measureText("/85").width;
-      const scoreLeft = CARD_SIZE - CARD_PAD - scoreWidth - suffixWidth;
-      ctx.fillStyle = "#007f8f";
-      ctx.font = `900 56px ${CARD_FONT}`;
-      ctx.fillText(scoreText, scoreLeft, top + 44);
-      ctx.fillStyle = "#687481";
-      ctx.font = `700 30px ${CARD_FONT}`;
-      ctx.fillText("/85", scoreLeft + scoreWidth, top + 44);
-
-      // ポイント名は点数の手前まで
-      ctx.fillStyle = "#17212b";
-      ctx.font = `800 48px ${CARD_FONT}`;
-      const nameMax = scoreLeft - (CARD_PAD + 90) - 24;
-      ctx.fillText(fitText(ctx, row.name, nameMax), CARD_PAD + 90, top + 40);
-
-      ctx.fillStyle = "#687481";
-      ctx.font = `600 32px ${CARD_FONT}`;
-      ctx.fillText(`${row.wave} ・ ${row.wind}`, CARD_PAD + 90, top + 92);
-    });
-
-    const rest = info.count - info.rows.length;
+  // 左下の補足（空文字なら描かない）と、右下のサイトURL。
+  function drawCardFooter(ctx, note) {
     ctx.fillStyle = "#687481";
     ctx.font = `700 30px ${CARD_FONT}`;
-    if (rest > 0) ctx.fillText(`ほか${rest}件`, CARD_PAD, CARD_SIZE - CARD_PAD);
+    if (note) ctx.fillText(note, CARD_PAD, CARD_SIZE - CARD_PAD);
     ctx.textAlign = "right";
     ctx.fillText("tk0407.github.io/surf-check", CARD_SIZE - CARD_PAD, CARD_SIZE - CARD_PAD);
     ctx.textAlign = "left";
   }
 ```
 
-`return` に `drawShareCard` を足す。
+- [ ] **Step 5: drawShareCard を切り出した関数で書き直す**
+
+`drawShareCard` の先頭（`canvas.width` から区切り線の `ctx.stroke()` まで）と末尾（`const rest` から最後の `ctx.textAlign = "left"` まで）を差し替える。`info.rows.forEach(...)` の中身は1文字も変えない。
+
+```js
+  function drawShareCard(canvas, info) {
+    canvas.width = CARD_SIZE;
+    canvas.height = CARD_SIZE;
+    const ctx = canvas.getContext("2d");
+    drawCardFrame(ctx, `${info.region} / ${longDateLabel(info.date)}`, SLOT_LONG[info.slot]);
+
+    info.rows.forEach((row, i) => {
+      // ...（既存のまま。順位バッジ・点数・ポイント名・波と風）
+    });
+
+    const rest = info.count - info.rows.length;
+    drawCardFooter(ctx, rest > 0 ? `ほか${rest}件` : "");
+  }
+```
+
+- [ ] **Step 6: 切り出しで絵が変わっていないことを確認する**
+
+Run: `node --test`
+Expected: PASS。`tests 79` / `pass 79` / `fail 0`。Step 3 と同じ結果になること。1件でも落ちたら切り出しで振る舞いが変わっている。
+
+- [ ] **Step 7: コミット**
+
+```bash
+git add share.js share.test.js
+git commit -m "$(printf 'refactor: pull the shared card frame out of drawShareCard\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+
+### Task 3: 週間カードの描画と共有 payload
+
+**Files:**
+- Modify: `share.js`
+- Test: `share.test.js`
+
+**Interfaces:**
+- Consumes: Task 1 の `weeklyRows` / `weeklyShareLines` / `weeklyText` / `weeklyUrl`、Task 2 の `drawCardFrame(ctx, title, subtitle)` / `drawCardFooter(ctx, note)`、既存の `mdLabel` / `longDateLabel` / `fitText` / `cardRows` / `shareLines` / `shareText` / `shareUrl` / `drawShareCard`、`Forecast.scoreBand(total)`。Task 2 の `fakeCanvas()` ヘルパーがテストにある。
+- Produces:
+  - `Share.drawWeeklyCard(canvas, info)`。`info` は `{ region, dates, rows, count }`。`rows` は `weeklyRows` の返り値、`count` はポイント数。
+  - `Share.rankingShare(base, region, date, slot, results)` → `{ text, headline, url, filename, draw }`。
+  - `Share.weeklyShare(base, region, dates, results)` → 同じ形。
+  - `draw` は `(canvas) => void` で、渡された canvas に対応するカードを描く。`app.js` はこの5つのキーだけを見る。
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+`share.test.js` の末尾に追記する。
+
+```js
+const WEEK_ROWS = [
+  { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false },
+  { date: "2026-09-21", slot: "evening", name: "志田下", score: 41, best: false },
+  { date: "2026-09-22", slot: null, name: null, score: null, best: false },
+  { date: "2026-09-23", slot: "morning", name: "パイプライン（茅ヶ崎）", score: 62, best: true },
+  { date: "2026-09-24", slot: "morning", name: "一宮", score: 36, best: false },
+  { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false },
+  { date: "2026-09-26", slot: "evening", name: "片貝", score: 26, best: false },
+];
+
+function drawWeekly(rows, count) {
+  const f = fakeCanvas();
+  Sh.drawWeeklyCard(f.canvas, { region: "千葉北", dates: WEEK_DATES, rows, count });
+  return f;
+}
+
+test("drawWeeklyCard は1080×1080のcanvasに描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.canvas.height, 1080);
+});
+
+test("drawWeeklyCard はエリアと期間を見出しにする", () => {
+  const texts = drawWeekly(WEEK_ROWS, 10).texts();
+  assert.equal(texts[0], "SURF CHECK");
+  assert.equal(texts[1], "千葉北 / 週間予報");
+  assert.equal(texts[2], "9月20日(日) 〜 9月26日(土)");
+});
+
+test("drawWeeklyCard は7日分の日付を縦に並べる", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const dates = f.calls.filter((c) => c.op === "fillText" && /^\d+\/\d+\(.\)$/.test(c.text));
+  assert.deepEqual(dates.map((c) => c.text), [
+    "9/20(日)", "9/21(月)", "9/22(火)", "9/23(水)", "9/24(木)", "9/25(金)", "9/26(土)",
+  ]);
+  // 1行96pxずつ下がり、最後の行はフッタ（y=1016）にかからない
+  assert.deepEqual(dates.map((c) => c.y), [350, 446, 542, 638, 734, 830, 926]);
+});
+
+test("drawWeeklyCard は週ベストの行にだけ★を描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const stars = f.calls.filter((c) => c.op === "fillText" && c.text === "★");
+  assert.equal(stars.length, 1);
+  // 4行目（9/23）と同じ高さ
+  assert.equal(stars[0].y, 638);
+});
+
+test("drawWeeklyCard はデータなしの日に点数を描かない", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.ok(f.texts().includes("データなし"));
+  // 点数の「/85」は7行のうちデータのある6行だけ
+  assert.equal(f.texts().filter((t) => t === "/85").length, 6);
+});
+
+test("drawWeeklyCard は点数をスコア帯の色で描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.equal(f.drawn("62").fillStyle, "#1d9a72"); // good (50以上)
+  assert.equal(f.drawn("48").fillStyle, "#b7791f"); // ok (30以上)
+  assert.equal(f.drawn("26").fillStyle, "#b84a3c"); // bad
+});
+
+test("drawWeeklyCard は枠に収まらないポイント名を…で切る", () => {
+  const rows = WEEK_ROWS.map((r, i) => (
+    i === 0 ? { ...r, name: "あいうえおかきくけこさしすせそたちつてと" } : r
+  ));
+  const drawnName = drawWeekly(rows, 10).texts().find((t) => t.startsWith("あいうえお"));
+  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
+});
+
+test("drawWeeklyCard はポイント数とサイトのURLを下に描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const note = f.drawn("全10ポイント");
+  assert.equal(note.x, 64);
+  assert.equal(note.y, 1016);
+  const url = f.drawn("tk0407.github.io/surf-check");
+  assert.equal(url.textAlign, "right");
+  assert.equal(url.y, 1016);
+});
+
+test("rankingShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
+  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
+  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
+  assert.equal(p.headline, "千葉北 9/20(日) 朝のサーフチェック");
+  assert.equal(p.text, Sh.shareText("千葉北", "2026-09-20", "morning", CARD_RESULTS, p.url));
+  assert.equal(p.filename, "surf-check-千葉北-2026-09-20-morning.png");
+});
+
+test("rankingShare の draw はランキングカードを描く", () => {
+  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
+  const f = fakeCanvas();
+  p.draw(f.canvas);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.texts()[1], "千葉北 / 9月20日(日)");
+  assert.ok(f.texts().includes("ほか1件"));
+});
+
+test("weeklyShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
+  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly");
+  assert.equal(p.headline, "千葉北 9/20(日)〜9/26(土)の週間予報");
+  assert.equal(p.text, Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA], p.url));
+  assert.equal(p.filename, "surf-check-千葉北-weekly-2026-09-20.png");
+});
+
+test("weeklyShare の draw は週間カードを描く", () => {
+  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  const f = fakeCanvas();
+  p.draw(f.canvas);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.texts()[1], "千葉北 / 週間予報");
+  assert.ok(f.texts().includes("全2ポイント"));
+});
+```
+
+- [ ] **Step 2: テストが失敗することを確認する**
+
+Run: `node --test`
+Expected: FAIL。`Sh.drawWeeklyCard is not a function` などで新しい13件が落ち、既存の81件は通る。
+
+- [ ] **Step 3: 週間カードを描く**
+
+`share.js` の `drawShareCard` の直後に足す。`BAND_COLORS` と行の座標は `SLOT_LONG` の近くの定数と並べて置く。
+
+```js
+  // 画面（style.css の .wk-cell）と同じスコア帯の色。帯の判定そのものは
+  // Forecast.scoreBand に任せ、しきい値をここに書き写さない。
+  const BAND_COLORS = { good: "#1d9a72", ok: "#b7791f", bad: "#b84a3c" };
+  // 行は上から96pxおき。左の44pxは週ベストの★のために空けてある。
+  const WEEK_ROW_TOP = CARD_PAD + 250;
+  const WEEK_ROW_STEP = 96;
+  const WEEK_DATE_LEFT = CARD_PAD + 44;
+  const WEEK_SLOT_LEFT = CARD_PAD + 230;
+  const WEEK_NAME_LEFT = CARD_PAD + 290;
+
+  function drawWeeklyCard(canvas, info) {
+    canvas.width = CARD_SIZE;
+    canvas.height = CARD_SIZE;
+    const ctx = canvas.getContext("2d");
+    const last = info.dates[info.dates.length - 1];
+    drawCardFrame(ctx, `${info.region} / 週間予報`,
+      `${longDateLabel(info.dates[0])} 〜 ${longDateLabel(last)}`);
+
+    info.rows.forEach((row, i) => {
+      const top = WEEK_ROW_TOP + i * WEEK_ROW_STEP;
+
+      if (row.best) {
+        ctx.fillStyle = "#007f8f";
+        ctx.font = `900 34px ${CARD_FONT}`;
+        ctx.fillText("★", CARD_PAD, top + 36);
+      }
+
+      ctx.fillStyle = "#124559";
+      ctx.font = `700 34px ${CARD_FONT}`;
+      ctx.fillText(mdLabel(row.date), WEEK_DATE_LEFT, top + 36);
+
+      if (row.score === null) {
+        ctx.fillStyle = "#687481";
+        ctx.font = `600 32px ${CARD_FONT}`;
+        ctx.fillText("データなし", WEEK_SLOT_LEFT, top + 36);
+        return;
+      }
+
+      // 点数は右端から逆算して置く（ランキングカードと同じ）
+      ctx.font = `900 48px ${CARD_FONT}`;
+      const scoreText = String(row.score);
+      const scoreWidth = ctx.measureText(scoreText).width;
+      ctx.font = `700 26px ${CARD_FONT}`;
+      const suffixWidth = ctx.measureText("/85").width;
+      const scoreLeft = CARD_SIZE - CARD_PAD - scoreWidth - suffixWidth;
+      ctx.fillStyle = BAND_COLORS[Forecast.scoreBand(row.score)];
+      ctx.font = `900 48px ${CARD_FONT}`;
+      ctx.fillText(scoreText, scoreLeft, top + 40);
+      ctx.fillStyle = "#687481";
+      ctx.font = `700 26px ${CARD_FONT}`;
+      ctx.fillText("/85", scoreLeft + scoreWidth, top + 40);
+
+      ctx.fillStyle = "#687481";
+      ctx.font = `700 34px ${CARD_FONT}`;
+      ctx.fillText(SLOT_SHORT[row.slot], WEEK_SLOT_LEFT, top + 36);
+
+      // ポイント名は点数の手前まで
+      ctx.fillStyle = "#17212b";
+      ctx.font = `800 40px ${CARD_FONT}`;
+      ctx.fillText(fitText(ctx, row.name, scoreLeft - WEEK_NAME_LEFT - 24), WEEK_NAME_LEFT, top + 38);
+    });
+
+    drawCardFooter(ctx, `全${info.count}ポイント`);
+  }
+```
+
+- [ ] **Step 4: 共有 payload の組み立てを書く**
+
+`share.js` の `drawWeeklyCard` の直後に足す。`app.js` がこの2つだけを呼べば済むようにする。
+
+```js
+  // app.js が共有に必要とする値を1か所で組み立てる。draw は canvas を受け
+  // 取って対応するカードを描く。
+  function rankingShare(base, region, date, slot, results) {
+    const url = shareUrl(base, region, date, slot);
+    return {
+      text: shareText(region, date, slot, results, url),
+      headline: shareLines(region, date, slot, results)[0],
+      url,
+      filename: `surf-check-${region}-${date}-${slot}.png`,
+      draw: (canvas) => drawShareCard(canvas, {
+        region, date, slot, rows: cardRows(results), count: results.length,
+      }),
+    };
+  }
+
+  function weeklyShare(base, region, dates, results) {
+    const url = weeklyUrl(base, region);
+    return {
+      text: weeklyText(region, dates, results, url),
+      headline: weeklyShareLines(region, dates, results)[0],
+      url,
+      filename: `surf-check-${region}-weekly-${dates[0]}.png`,
+      draw: (canvas) => drawWeeklyCard(canvas, {
+        region, dates, rows: weeklyRows(dates, results), count: results.length,
+      }),
+    };
+  }
+```
+
+- [ ] **Step 5: エクスポートに足す**
 
 ```js
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl, drawShareCard,
+    shareLines, shareText, shareUrl, drawShareCard, parseParams,
+    weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
+    drawWeeklyCard, rankingShare, weeklyShare,
   };
 ```
 
-- [x] **Step 2: app.js に画像の共有処理を足す**
+- [ ] **Step 6: テストが通ることを確認する**
 
-`shareError` の下に置く。`navigator.share` に `url` を渡すと、LINEなど一部のアプリが画像を捨ててURLだけを送るため、URLは `text` に入れる。
+Run: `node --test`
+Expected: PASS。`tests 94` / `pass 94` / `fail 0`（Task 2 の81 + 追加13）。
+
+- [ ] **Step 7: コミット**
+
+```bash
+git add share.js share.test.js
+git commit -m "$(printf 'feat: draw the weekly share card and assemble share payloads\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+```
+
+---
+
+### Task 4: 共有導線を payload 駆動にする（ランキングの挙動は不変）
+
+**Files:**
+- Modify: `app.js:339-440`（`shareRow` から `renderResults` まで）
+
+**Interfaces:**
+- Consumes: Task 3 の `Share.rankingShare(base, region, date, slot, results)`。
+- Produces: `app.js` 内部の `shareRow()`（class を出す）、`shareError(root, message)`、`canShareImageFile()`（変更なし）、`openLineShare(root, payload)`、`shareImage(root, payload)`、`wireShareRow(root, payload)`。Task 5 の `renderWeekly` が `wireShareRow` を呼ぶ。
+
+**なぜ id をやめるか:** ランキングと週間の両パネルは CSS（`.app-shell[data-mode=...]`）で隠しているだけで、同時に DOM に存在する。両方が `id="shareLine"` を出すと id が重複し、`shareError` の `document.querySelector(".share-row")` は常に先に現れるランキング側を掴んで、週間側のエラーが出ない・別パネルに出る。`root.querySelector` に閉じることでこれを防ぐ。
+
+**このタスクの検証:** `app.js` は DOM を触るので `node --test` の対象外（jsdom を入れない＝依存を増やさない方針）。構文チェックと文字列検査で機械的に確認し、目視確認は Task 5 の通し確認でまとめて行う。
+
+- [ ] **Step 1: shareRow を class に変える**
+
+`app.js` の `shareRow()` を書き換える。
+
+```js
+function shareRow() {
+  return `<div class="share-row">
+      <button type="button" class="share-btn line share-line">LINEで送る</button>
+      <button type="button" class="share-btn share-image">画像で共有</button>
+    </div>`;
+}
+```
+
+- [ ] **Step 2: shareError が親要素の中だけを見るようにする**
+
+```js
+// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
+// root はそのパネル（#results / #weekly）。ランキングと週間の共有行が同時に
+// DOM にあるので、document 全体から探すと別パネルを掴んでしまう。
+function shareError(root, message) {
+  const row = root.querySelector(".share-row");
+  if (!row) return;
+  let note = row.querySelector(".share-note");
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "failed share-note";
+    row.appendChild(note);
+  }
+  note.textContent = message;
+}
+```
+
+- [ ] **Step 3: openLineShare と shareImage を payload 駆動にする**
+
+`canShareImageFile()` はそのまま（コメントも含め1文字も変えない）。その前後を書き換える。
+
+```js
+// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
+function openLineShare(root, payload) {
+  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(payload.text)}`, "_blank", "noopener");
+  if (!win) shareError(root, "LINEを開けませんでした");
+}
+```
 
 ```js
 // canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
-async function shareImage(region, date, slot, results) {
+async function shareImage(root, payload) {
   const canvas = document.createElement("canvas");
-  Share.drawShareCard(canvas, {
-    region, date, slot,
-    rows: Share.cardRows(results),
-    count: results.length,
-  });
+  payload.draw(canvas);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-  if (!blob) { shareError("画像を作れませんでした"); return; }
-  const file = new File([blob], `surf-check-${region}-${date}-${slot}.png`, { type: "image/png" });
+  if (!blob) { shareError(root, "画像を作れませんでした"); return; }
+  const file = new File([blob], payload.filename, { type: "image/png" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
-    const lines = Share.shareLines(region, date, slot, results);
     try {
-      await navigator.share({ files: [file], text: `${lines[0]}\n${url}` });
+      await navigator.share({ files: [file], text: `${payload.headline}\n${payload.url}` });
     } catch (e) {
       // 共有シートを閉じただけなので何も出さない。
-      if (e.name !== "AbortError") shareError("画像を共有できませんでした");
+      if (e.name !== "AbortError") shareError(root, "画像を共有できませんでした");
     }
     return;
   }
@@ -693,176 +935,104 @@ async function shareImage(region, date, slot, results) {
 }
 ```
 
-- [x] **Step 3: ボタンに配線してラベルを環境で変える**
+- [ ] **Step 4: wireShareRow を足す**
 
-Task 2 で足した `lineBtn` の配線のすぐ下に追加する。
+`shareImage` の直後に足す。
 
 ```js
-  const imageBtn = el.querySelector("#shareImage");
+// 共有行のボタンを payload につなぐ。ランキングと週間で共通。
+function wireShareRow(root, payload) {
+  const lineBtn = root.querySelector(".share-line");
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(root, payload));
+  const imageBtn = root.querySelector(".share-image");
   if (imageBtn) {
     // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
-    if (!navigator.canShare) imageBtn.textContent = "画像を保存";
-    imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
+    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
+    imageBtn.addEventListener("click", () => shareImage(root, payload));
   }
+}
 ```
 
-- [ ] **Step 4: 生成した画像を確認する**
+- [ ] **Step 5: renderResults を wireShareRow に寄せる**
 
-ブラウザでランキング（エリア「千葉北」など4件以上出るもの）を実行し、「画像で共有」／「画像を保存」を押す。保存されたPNGを開いて確認する。
-
-Run: `sips -g pixelWidth -g pixelHeight ~/Downloads/surf-check-*.png`
-Expected: `pixelWidth: 1080` / `pixelHeight: 1080`
-
-目視で確認する項目:
-
-- 上位3件の順位・名前・点数・波・風がすべて読める
-- 長い名前（`釣ヶ崎（志田下）` `波崎シーサイドパーク` `パイプライン（茅ヶ崎）`）が点数に重ならず、はみ出す場合は `…` で切れている
-- 左下に「ほかN件」、右下にURLが出ている
-- 1位のバッジだけ塗りつぶしになっている
-
-- [ ] **Step 5: 3件未満のときを確認する**
-
-ブラウザのコンソールで1件の絵を作り、余白に描き残しが出ないことを確認する。
+`renderResults` の `el.innerHTML = ...` より後ろ、`drawTideCurves` の手前の部分を書き換える。`el.innerHTML` の組み立て（`shareRow()` を挟む位置を含む）は変えない。
 
 ```js
-const c = document.createElement("canvas");
-Share.drawShareCard(c, {
-  region: "千葉北", date: "2026-09-20", slot: "morning",
-  rows: Share.cardRows([{ spot: { name: "飯岡", bearing: 90 }, scores: { total: 54 },
-    data: { wave_height: 1.4, wind_dir: 225, wind_speed: 5.5 } }]),
-  count: 1,
-});
-c.style.width = "300px";
-document.body.appendChild(c);
+  const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
+  wireShareRow(el, share);
+  drawTideCurves(el, results, date, slot);
+  history.replaceState(null, "", share.url);
 ```
 
-Expected: 1行だけ描かれ、2行目以降の位置に何も残らない。`count` と行数が同じなので「ほかN件」は出ない。
-
-- [x] **Step 6: コミット**
+- [ ] **Step 6: 構文と置き換え漏れを確認する**
 
 ```bash
-git add share.js app.js
-git commit -m "$(printf 'feat: share the ranking as a 1080px card image\n\nThe card is drawn on a 2D canvas rather than screenshotting the DOM, so\nit needs no library and looks the same in every browser. Phones get the\nshare sheet; everywhere else downloads the PNG.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+node --check app.js
+grep -n 'shareLine\|shareImage"' app.js
+grep -c 'document.querySelector(".share-row")' app.js
+```
+
+Expected:
+- `node --check app.js` が何も出力せず終了する（終了コード0）
+- 1つ目の grep が何も出さない（`id="shareLine"` / `id="shareImage"` が消えている）
+- 2つ目の grep が `0`（`shareError` が `document` 全体を見ていない）
+
+- [ ] **Step 7: 既存テストが影響を受けていないことを確認する**
+
+Run: `node --test`
+Expected: PASS。`tests 94` / `pass 94` / `fail 0`。`app.js` はテスト対象外なので件数は Task 3 と同じ。
+
+- [ ] **Step 8: コミット**
+
+```bash
+git add app.js
+git commit -m "$(printf 'refactor: drive the share row from a payload instead of fixed ids\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
 ---
 
-### Task 4: 共有URLの復元
-
-`?region=&date=&slot=` を検証して選択欄に入れ、ランキングを自動実行する。実行後は現在の条件をURLに書き戻す。
+### Task 5: 週間側の配線・mode の復元・ドキュメント
 
 **Files:**
-- Modify: `share.js`（`parseParams` を追加）
-- Modify: `share.test.js`（テストを追加）
-- Modify: `app.js`（`applyParams` を追加、`DOMContentLoaded` から呼ぶ。`renderResults` で `replaceState`）
+- Modify: `app.js`（`renderWeekly` と `applyParams`）
+- Modify: `index.html`（`?v=` を5か所）
+- Modify: `README.md`
 
 **Interfaces:**
-- Consumes: `Share.shareUrl(...)`（Task 2）
-- Produces: `Share.parseParams(search, { regions, slots }) -> { region?, date?, slot? }`
+- Consumes: Task 3 の `Share.weeklyShare(base, region, dates, results)`、Task 4 の `shareRow()` / `wireShareRow(root, payload)`、既存の `setMode(mode)` と `Share.parseParams(search, options)`。
+- Produces: 画面から見える最終形。これ以降のタスクは無い。
 
-- [x] **Step 1: 失敗するテストを書く**
+- [ ] **Step 1: renderWeekly に共有行を足す**
 
-`share.test.js` の末尾に追加する。
-
-```js
-const OPTS = {
-  regions: ["千葉北", "千葉南", "千葉", "湘南", "茨城", "全域"],
-  slots: ["morning", "afternoon", "evening"],
-};
-
-test("parseParams は3つ揃ったクエリをそのまま返す", () => {
-  const got = Sh.parseParams("?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning", OPTS);
-  assert.deepEqual(got, { region: "千葉北", date: "2026-09-20", slot: "morning" });
-});
-
-test("parseParams は一覧に無いエリアだけを捨てて残りは通す", () => {
-  const got = Sh.parseParams("?region=%E3%83%8F%E3%83%AF%E3%82%A4&date=2026-09-20&slot=morning", OPTS);
-  assert.deepEqual(got, { date: "2026-09-20", slot: "morning" });
-});
-
-test("parseParams は過去の日付をそのまま通す", () => {
-  assert.equal(Sh.parseParams("?date=2020-01-01", OPTS).date, "2020-01-01");
-});
-
-test("parseParams は未来の日付をそのまま通す", () => {
-  assert.equal(Sh.parseParams("?date=2030-12-31", OPTS).date, "2030-12-31");
-});
-
-test("parseParams は形式の違う日付を捨てる", () => {
-  assert.deepEqual(Sh.parseParams("?date=2026-9-1", OPTS), {});
-  assert.deepEqual(Sh.parseParams("?date=20260920", OPTS), {});
-  assert.deepEqual(Sh.parseParams("?date=hello", OPTS), {});
-});
-
-test("parseParams は実在しない日付を捨てる", () => {
-  assert.deepEqual(Sh.parseParams("?date=2026-13-45", OPTS), {});
-  assert.deepEqual(Sh.parseParams("?date=2026-02-30", OPTS), {});
-});
-
-test("parseParams は不正な時間帯を捨てる", () => {
-  assert.deepEqual(Sh.parseParams("?slot=midnight", OPTS), {});
-});
-
-test("parseParams はクエリが無ければ空オブジェクトを返す", () => {
-  assert.deepEqual(Sh.parseParams("", OPTS), {});
-  assert.deepEqual(Sh.parseParams("?", OPTS), {});
-});
-```
-
-- [x] **Step 2: テストが失敗することを確認する**
-
-Run: `node --test share.test.js`
-Expected: FAIL（`Sh.parseParams is not a function`）
-
-- [x] **Step 3: share.js に parseParams を足す**
-
-`shareUrl` の下に置く。
+`app.js` の `renderWeekly` を書き換える。`${shareRow()}` を `.results-head` と `.ranking-cards` の間に置く（ランキングと同じ位置）。
 
 ```js
-  // "2026-02-30" のような存在しない日付は Date が繰り上げてしまうので、
-  // 組み立て直して元の文字列と突き合わせる。
-  function isRealDate(value) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-    const d = new Date(`${value}T00:00:00`);
-    if (Number.isNaN(d.getTime())) return false;
-    const back = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-      + `-${String(d.getDate()).padStart(2, "0")}`;
-    return back === value;
+function renderWeekly(el, region, dates, results, failed) {
+  WEEKLY_RESULTS = results;
+  if (results.length === 0) {
+    el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
+    return;
   }
-
-  // 検証を通ったキーだけを含むオブジェクトを返す。日付は過去・未来を問わ
-  // ず通す（共有された日の結果をそのまま見せるため。取得できない範囲かは
-  // API の応答で決まる）。
-  function parseParams(search, options) {
-    const q = new URLSearchParams(search);
-    const out = {};
-    const region = q.get("region");
-    const date = q.get("date");
-    const slot = q.get("slot");
-    if (region && options.regions.includes(region)) out.region = region;
-    if (date && isRealDate(date)) out.date = date;
-    if (slot && options.slots.includes(slot)) out.slot = slot;
-    return out;
-  }
+  const failedNote = failed.length ? `<p class="failed">取得失敗: ${escapeHtml(failed.join(", "))}</p>` : "";
+  el.innerHTML = `
+    <div class="results-head">
+      <h2>${escapeHtml(region)}の週間予報</h2>
+      <span>${escapeHtml(Share.mdLabel(dates[0]))}〜${escapeHtml(Share.mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
+    </div>
+    ${shareRow()}
+    <div class="ranking-cards">
+      ${results.map(weeklyCard).join("")}
+    </div>
+    ${failedNote}`;
+  const share = Share.weeklyShare(location.origin + location.pathname, region, dates, results);
+  wireShareRow(el, share);
+  history.replaceState(null, "", share.url);
+}
 ```
 
-`return` に `parseParams` を足す。
+- [ ] **Step 2: applyParams が mode を復元するようにする**
 
-```js
-  return {
-    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl, drawShareCard, parseParams,
-  };
-```
-
-- [x] **Step 4: テストが通ることを確認する**
-
-Run: `node --test share.test.js`
-Expected: PASS（26件）
-
-- [x] **Step 5: app.js で復元を配線する**
-
-`initDate` の下に置く。
+`app.js` の `applyParams` を書き換える。`setMode` を先に呼ぶので、戻ったあとの `check()` が正しいほうのビューを走らせる。
 
 ```js
 // 共有リンクから来た条件を選択欄に入れる。1つでも入ったら true。
@@ -874,7 +1044,9 @@ function applyParams() {
   const params = Share.parseParams(location.search, {
     regions: Array.from(regionEl.options).map((o) => o.value),
     slots: Object.keys(TIME_SLOTS),
+    modes: ["ranking", "weekly"],
   });
+  if (params.mode) setMode(params.mode);
   if (params.region) regionEl.value = params.region;
   if (params.slot) slotEl.value = params.slot;
   if (params.date) {
@@ -882,156 +1054,202 @@ function applyParams() {
     if (params.date > dateEl.max) dateEl.max = params.date;
     dateEl.value = params.date;
   }
-  return Boolean(params.region || params.date || params.slot);
+  return Boolean(params.region || params.date || params.slot || params.mode);
 }
 ```
 
-- [x] **Step 6: DOMContentLoaded から自動実行する**
-
-`spots.json` を読んだあとでないとランキングを実行できないので、`check` の配線の直後に置く。
-
-```js
-  document.getElementById("check").addEventListener("click", check);
-  document.getElementById("checkTop").addEventListener("click", check);
-  if (applyParams()) check();
-```
-
-- [x] **Step 7: 実行後のURL反映を足す**
-
-`renderResults` の末尾、`drawTideCurves(el, results, date, slot);` の直後に置く。履歴は増やさない（戻るボタンで直前のページに戻れるようにするため）。
-
-```js
-  history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
-```
-
-- [x] **Step 8: 画面で確認する**
-
-ローカルサーバーで次を順に開く（`<今日>` は実行日、`<3日前>` はその3日前）。
-
-| URL | 期待 |
-| --- | --- |
-| `http://localhost:8000/?region=茨城&date=<今日>&slot=evening` | エリア茨城・夕が選ばれ、自動でランキングが出る |
-| `http://localhost:8000/?region=ハワイ&slot=morning` | エリアは既定のまま、朝だけが選ばれて自動実行 |
-| `http://localhost:8000/?date=2026-13-45` | 何も起きない（空状態のまま） |
-| `http://localhost:8000/?region=茨城&date=<3日前>&slot=morning` | その過去日のランキングが出て、日付欄もその日を表示 |
-| `http://localhost:8000/` | 従来どおり空状態で、自動実行しない |
-
-チェックを押したあと、URL欄に `?region=...&date=...&slot=...` が入っていること、戻るボタンで履歴が増えていないことを確認する。
-
-- [x] **Step 9: 共有リンクの往復を確認する**
-
-ランキングを出して「LINEで送る」を押し、本文のURLをコピーして新しいタブに貼る。同じエリア・日付・時間帯のランキングが再現されることを確認する。
-
-- [x] **Step 10: テスト全体を流してコミット**
-
-Run: `node --test`
-Expected: `tests 55` / `pass 55` / `fail 0`
+- [ ] **Step 3: 構文と配線を確認する**
 
 ```bash
-git add share.js share.test.js app.js
-git commit -m "$(printf 'feat: restore a search from the shared link\n\nA shared link carries region, date and slot, so whoever opens it sees the\nsame ranking. Past dates are kept as sent rather than snapped to today;\nOpen-Meteo serves them for about 92 days back.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+node --check app.js
+grep -c 'wireShareRow(el, share)' app.js
+grep -n 'modes: \["ranking", "weekly"\]' app.js
 ```
 
----
+Expected:
+- `node --check app.js` が終了コード0
+- 1つ目の grep が `2`（`renderResults` と `renderWeekly` の両方）
+- 2つ目の grep が `applyParams` の中の1行を出す
 
-### Task 5: ドキュメントと仕上げ
+- [ ] **Step 4: index.html の ?v= を上げる**
 
-**Files:**
-- Modify: `README.md`
-- Modify: `index.html`（`?v=` の日付を上げる）
-- Modify: `tasks/todo.md`（レビュー欄）
-
-- [x] **Step 1: README を更新する**
-
-構成のファイル一覧に `share.js` と `share.test.js` を足し、共有機能（LINE・画像・共有リンク）の説明を1段落足す。テスト件数に触れている箇所があれば実際の数に直す。
-
-- [x] **Step 2: index.html の ?v= を上げる**
-
-5か所すべてを同じ値にする。
+`style.css` と4つの `.js` の **5か所すべて** を `?v=20260923` に揃える。
 
 ```html
-  <link rel="stylesheet" href="style.css?v=20260921" />
+  <link rel="stylesheet" href="style.css?v=20260923" />
   ...
-  <script src="scoring.js?v=20260921"></script>
-  <script src="forecast.js?v=20260921"></script>
-  <script src="share.js?v=20260921"></script>
-  <script src="app.js?v=20260921"></script>
+  <script src="scoring.js?v=20260923"></script>
+  <script src="forecast.js?v=20260923"></script>
+  <script src="share.js?v=20260923"></script>
+  <script src="app.js?v=20260923"></script>
 ```
 
-- [ ] **Step 3: 全体を通しで確認する**
-
-- `node --test` が全件成功する
-- ランキングの表示が Task 1 の前と同じ（共有ボタンの行以外）
-- 週間予報タブの日付・時間帯の表示が変わっていない
-- 375px で横スクロールが出ない
-- 共有リンクを開くと結果が再現される
-- 保存した画像が 1080×1080 である
-
-- [x] **Step 4: レビュー欄を書いてコミット**
-
-`tasks/todo.md` の末尾に `## レビュー` を足し、確認した内容・変更したファイル・残っている懸念を書く（秘密情報は書かない）。
+確認:
 
 ```bash
-git add README.md index.html tasks/todo.md
-git commit -m "$(printf 'docs: describe the share buttons and bump the asset version\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
+grep -c '?v=20260923' index.html
+grep -n '?v=' index.html | grep -v 20260923
+```
+
+Expected: 1つ目が `5`、2つ目が何も出さない。
+
+- [ ] **Step 5: README を更新する**
+
+`## 共有機能` の節に週間予報の共有を1段落足し、`## テスト` の件数を実際の数に直す。書く内容:
+
+- 週間予報タブでも「LINEで送る」「画像で共有」が使えること
+- 共有されるのは各日のベスト（ポイント・時間帯・点数）7行で、週で最も高い日には ★ が付くこと
+- 共有URLは `?region=...&mode=weekly` で、開くと週間予報タブが選ばれた状態で再現されること
+- ランキングの共有URL（`mode` 無し）は従来どおり動くこと
+
+- [ ] **Step 6: 全体を通しで確認する**
+
+ローカルサーバーを立てて確認する。
+
+```bash
+python3 -m http.server 8000
+```
+
+- `node --test` が全件成功する（`tests 94` / `fail 0`）
+- ランキングの表示と共有が Task 4 の前と変わらない（ボタンを押すと LINE が開く／画像が保存できる）
+- 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出る
+- 週間の「LINEで送る」でテキストに7行と ★ が入っている
+- 週間の「画像で共有」（または「画像を保存」）で 1080×1080 の PNG が得られ、7行と期間の見出しが読める
+- 週間の共有URLを別タブで開くと、週間予報タブが選ばれてエリアが入り、同じ内容が再現される
+- ランキングの共有URL（`?region=千葉北&date=2026-09-21&slot=morning`）が今までどおり動く
+- 375px 幅で横スクロールが出ない
+
+- [ ] **Step 7: レビュー欄を書いてコミット**
+
+`tasks/todo.md` の末尾に `## レビュー` を足し、実際に確認した内容・変更したファイル・確認できていないことを分けて書く（推測でチェックを入れない。秘密情報は書かない）。
+
+```bash
+git add app.js index.html README.md tasks/todo.md
+git commit -m "$(printf 'feat: share the weekly forecast by line and image\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
 ```
 
 ---
 
 ## プラン自己レビュー
 
-- **仕様の網羅**: UI・導線 → Task 2 Step 5-7、Task 3 Step 3。共有カード → Task 3 Step 1。画像の共有と保存 → Task 3 Step 2。LINEで送る → Task 2 Step 5。共有URL（生成）→ Task 2 Step 3、（検証と復元）→ Task 4、（`history.replaceState`）→ Task 4 Step 7。モジュール構成 → Task 1〜4。エラー処理 → Task 2 の `shareError`、Task 3 の `AbortError` 無視、Task 4 の不正値切り捨て。テスト → 各タスクの Step 1。確認方法の7項目 → Task 2 Step 8、Task 3 Step 4-5、Task 4 Step 8-9、Task 5 Step 3。
-- **名前の一致**: `cardRows` の返り値 `{ rank, name, score, wave, wind }` を Task 2 の `shareLines` と Task 3 の `drawShareCard` が同じ形で使う。`drawShareCard(canvas, { region, date, slot, rows, count })` は Task 3 Step 2 の呼び出しと一致。`Share.dateParts` / `Share.mdLabel` / `Share.SLOT_SHORT` は Task 1 で定義し、Task 2 の `shareLines` と Task 3 の `longDateLabel` が使う。`share.js` の `return` は Task 1 → 2 → 3 → 4 で積み増し、最終形は11個。
-- **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-01-01` は木曜。`bearing 90` に対し `wind_dir 225` は差45度で `サイドオフ`、`wind_dir 45` なら差135度で `サイドオン`（テスト用の値は225を使う）。`wave_height 1.4` → `カタ〜アタマ`、`2.06` → `オーバーヘッド`（`Scoring.waveSizeLabel` の閾値より）。
-- **テスト件数**: 既存29 + Task 1 で11 + Task 2 で7 + Task 4 で8 = 55。
-
----
+- **設計の網羅**: 共有の単位（各日のベスト7行）→ Task 1 Step 5 の `weeklyRows`。共有テキスト → Task 1 Step 5 の `weeklyShareLines` / `weeklyText`。共有画像 → Task 3 Step 3 の `drawWeeklyCard`。カードの共通部分の切り出し → Task 2。共有URL（生成）→ Task 1 Step 5 の `weeklyUrl`、（検証と復元）→ Task 1 Step 6 と Task 5 Step 2。ボタンの配置 → Task 5 Step 1。id 重複の回避 → Task 4 Step 1-2。`?v=` と README → Task 5 Step 4-5。
+- **名前の一致**: `weeklyRows` の返り値 `{ date, slot, name, score, best }` を Task 1 の `weeklyShareLines`、Task 3 の `drawWeeklyCard` と `WEEK_ROWS` フィクスチャが同じ形で使う。`drawWeeklyCard(canvas, { region, dates, rows, count })` は Task 3 Step 4 の `weeklyShare` の呼び出しと一致。`rankingShare` / `weeklyShare` が返す `{ text, headline, url, filename, draw }` の5つのキーを、Task 4 の `openLineShare`（`text`）・`shareImage`（`draw` / `filename` / `headline` / `url`）と Task 5 の `history.replaceState`（`url`）が使う。`fakeCanvas()` は Task 2 Step 1 で定義し、Task 3 のテストが使う。`WEEK_DATES` は Task 1 Step 1 で定義し、Task 3 のテストが使う。`drawCardFrame` / `drawCardFooter` は Task 2 Step 4 で定義し、Task 3 Step 3 が呼ぶ。
+- **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-09-26` は土曜。`weeklyRows` と `weeklyShareLines` の期待値、`weeklyUrl` の URL エンコード（`千葉北` → `%E5%8D%83%E8%91%89%E5%8C%97`）、`drawWeeklyCard` の日付の y 座標（350 / 446 / 542 / 638 / 734 / 830 / 926）とフッタの位置（1016）、スコア帯の色（62→`#1d9a72` / 48→`#b7791f` / 26→`#b84a3c`）は、実装の試作を `node` で走らせて実測した値。`drawShareCard` の特性テストの期待値も、現在の `share.js` を偽コンテキストで走らせた実測値。
+- **レイアウトの余白**: 7行目の日付のベースラインが y=926、フッタが y=1016 で 90px 空く。日付の欄は `WEEK_DATE_LEFT`(108) から `WEEK_SLOT_LEFT`(294) までの 186px で、最も長い `12/31(木)` が 153px（近似計算）。ポイント名は点数の左端から 24px 手前まで。実在する最長の名前 `パイプライン（茅ヶ崎）`（11文字）は 40px で 440px、収まる枠は約 551px。
+- **テスト件数**: 既存55 + Task 1 で16 + Task 2 で8 + Task 2 の修正ラウンドで2 + Task 3 で13 = 94。修正ラウンドの2件は、切り出した `drawCardFrame` の区切り線と見出しの色・太さを検証するもの。レビューで「移した当の描画が未検証」と指摘され、変異テスト（区切り線を削除しても緑のまま）で実証されたため追加した。
+- **Red-Green の例外**: Task 2 のテストは既存の出荷コードの絵を固定する特性テストなので、最初から通る。これはタスク本文に明記してある。Task 1・3・5 の新しい振る舞いは失敗から始める。
 
 ## レビュー
 
+作業はサブエージェントとして実施。ブラウザを持たないため、コマンドで確認できる範囲のみを実行した（Step 6 の手動確認は「確認できていないこと」に列挙）。
+
+### 実際に確認したこと（コマンドと実際の出力）
+
+1. 構文チェック
+   ```
+   $ node --check app.js
+   (終了コード0、出力なし)
+   ```
+
+2. 配線の確認（Step 3）
+   ```
+   $ grep -c 'wireShareRow(el, share)' app.js
+   2
+   $ grep -n 'modes: \["ranking", "weekly"\]' app.js
+   632:    modes: ["ranking", "weekly"],
+   ```
+   期待どおり（`renderResults` と `renderWeekly` の両方が `wireShareRow(el, share)` を呼んでいる。`applyParams` 内に `modes` オプションの行がある）。
+
+3. `index.html` の `?v=` 確認（Step 4）
+   ```
+   $ grep -c '?v=20260923' index.html
+   5
+   $ grep -n '?v=' index.html | grep -v 20260923
+   7:  <!-- ?v= は更新の取りこぼし防止。CSS / JS を変更したら日付を上げる。
+   ```
+   1つ目は期待どおり `5`。2つ目は、実際のバージョン文字列ではなくコメント内の説明文（`?v=` という記法そのものへの言及）で、今回の変更が入る前から存在していた行（`git diff` で確認済み、差分に含まれない）。5か所の実際の `?v=` はすべて `20260923` に揃っている。
+
+4. テストスイート（Step 3 / Step 6 の一部）
+   ```
+   $ node --test
+   ...
+   tests 94
+   suites 0
+   pass 94
+   fail 0
+   cancelled 0
+   skipped 0
+   todo 0
+   ```
+   期待どおり `tests 94` / `fail 0`。README 編集後にも再実行し、同じ結果を確認した。
+
+5. `git diff --stat` で変更範囲がブリーフの指定ファイルに収まっていることを確認（`app.js` / `index.html` / `README.md`。`tasks/todo.md` はこのレビュー追記のみ）。
+
 ### 変更したファイル
 
-- `README.md`: 構成のファイル一覧に `share.js` / `share.test.js` を追加。「共有機能」の段落を1つ追加（LINE共有・画像共有・共有URLからの復元の3つを説明）。テスト件数を明記した箇所はもともと無かったので、数値の修正は発生していない。
-- `index.html`: `?v=` を5か所すべて `20260920` → `20260922` に統一（`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の読み込み行）。`grep -n '?v=' index.html` で全行が同じ値であることを確認済み。
-- `tasks/todo.md`: Task 1〜5 の各ステップのチェックボックスを更新。実際に完了した36項目を `- [ ]` → `- [x]` にした。Task 3 Step 4・Step 5 と Task 5 Step 3 の3項目（画像の目視確認、375px の目視確認、保存PNGの寸法確認）は、このセッションではブラウザ操作ができず未実施のため、意図的に `- [ ]` のまま残した。本セクションを末尾に追加。
+- `app.js`: `renderWeekly`（`shareRow()` の挿入、`Share.weeklyShare` の呼び出し、`wireShareRow`、`history.replaceState`）と `applyParams`（`Share.parseParams` に `modes: ["ranking", "weekly"]` を追加、`params.mode` を先頭で `setMode` に渡す、戻り値の `Boolean` に `params.mode` を追加）。
+- `index.html`: `style.css` と4つの `.js` の `?v=` を5か所とも `20260922` → `20260923` に更新。
+- `README.md`: `## 共有機能` に週間予報タブの共有についての段落を追加（各日のベスト7行、週最高日に★、共有URLは `?region=...&mode=weekly`、ランキングの共有URLは従来どおり動く旨を記載）。`## テスト` に「現在94件（`tests 94` / `fail 0`）」の1行を追加。
+- `tasks/todo.md`: この `## レビュー` 節を追記。
 
-このタスクでは `app.js` / `share.js` / `style.css` / `scoring.js` / `forecast.js` など、挙動に関わるファイルは一切変更していない。
+`share.js` / `share.test.js` / `style.css` / `renderResults` / `shareRow` / `wireShareRow` / `openLineShare` / `shareImage` / `canShareImageFile` には一切手を触れていない（`git diff --stat` で確認済み）。
 
-### 確認した内容（このセッションで実際に実行して確認）
+### 確認できていないこと（Step 6 の手動確認・すべて未実施）
 
-- `node --test` を実行し、`tests 55` / `pass 55` / `fail 0` を確認した（内訳: 採点12 + 予報17 + 共有26。変更前と同じ件数で、追加・削除したテストは無い）。
-- `grep -n '?v=' index.html` を実行し、`style.css` / `scoring.js` / `forecast.js` / `share.js` / `app.js` の5つの読み込み行がすべて `?v=20260922` で揃っており、古い値の残存が無いことを確認した。
-- 「ランキング・週間予報の表示が共有ボタンの行以外変わっていないこと」は Task 1 で描画結果を byte-for-byte diff して確認済みであり、その review でも独立に再確認されている。今回のセッションで新たに確認したものではなく、その結果を引用している。
+ブラウザ環境がないため、以下はすべて未確認（推測でチェックを入れていない）:
 
-### 未確認（実機で確認してほしいこと）
+- ランキングの表示と共有が Task 4 の前と変わらないこと（ボタンを押すと LINE が開く／画像が保存できる）
+- 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出ること
+- 週間の「LINEで送る」でテキストに7行と★が入っていること（コード上は `weeklyShareLines` / `weeklyText` の実装と既存テストから正しいと推測されるが、実際にボタンを押しての確認はしていない）
+- 週間の「画像で共有」（または「画像を保存」）で 1080×1080 の PNG が得られ、7行と期間の見出しが読めること
+- 週間の共有URLを別タブで開くと、週間予報タブが選ばれてエリアが入り、同じ内容が再現されること
+- ランキングの共有URL（`?region=千葉北&date=2026-09-21&slot=morning`）が今までどおり動くこと
+- 375px 幅で横スクロールが出ないこと
 
-このセッションには Playwright 等のブラウザ自動化が無く、ローカルサーバーも起動していないため、以下は確認できていない。Task 3 Step 4-5 と Task 5 Step 3 のチェックボックスを未完了のまま残しているのはこのためで、コードを読んだだけの推測でチェックを入れることはしていない。
+いずれも `python3 -m http.server` を含む長時間起動コマンドは実行していない（指示どおり）。
 
-1. スマホ（実機、または Chrome DevTools のデバイスモードで 375px 幅）でサイトを開き、ランキングを1回チェックする。結果カードの見た目が「LINEで送る」「画像で共有」の行以外、これまでと同じに見えるか確認する。
-2. 「週間予報」タブに切り替え、日付・時間帯のラベル表示が変わっていないか確認する。
-3. 375px 幅の画面で、結果一覧やボタン行を横に指でスワイプしても横スクロールが発生しないか確認する。
-4. 「LINEで送る」をタップし、LINEのトーク選択画面が開いてテキストとURLが入っているか確認する。次にそのURL（または `?region=千葉北&date=2026-09-21&slot=morning` のような手打ちのURL）を別タブで開き、エリア・日付・時間帯が自動で入り、同じランキングが再現されるか確認する。
-5. 「画像で共有」（`navigator.canShare` が使えない環境では「画像を保存」）をタップして画像を保存し、保存されたPNGのプロパティ（写真アプリの情報表示、またはPCの「情報を見る」）でサイズが 1080×1080 になっているか確認する。
+### 既知の制限（このブランチでは直さない）
 
-### 残っている懸念
+**タブを切り替えただけではURLが追随しない。** 週間予報でチェックするとURLが `?region=...&mode=weekly` になるが、そのあとランキングタブを押しても再チェックは走らないためURLは `mode=weekly` のまま残る。この状態でリロードすると、直前に見ていたランキングではなく週間予報が復元される。
 
-- 上記「未確認」の5項目はいずれも Task 5 で新規に生まれた懸念ではなく、Task 2〜4 の実装時点から持ち越されている実機確認事項である。今回のコミットはドキュメントと `?v=` のみで、挙動を変える変更は無いため、リスクは低いと判断しているが、最終確認は必須。対応する3つのチェックボックス（Task 3 Step 4・Step 5、Task 5 Step 3）は未完了のまま残してあるので、確認でき次第チェックを入れてほしい。
-- 秘密情報（APIキー・認証情報等）は本プロジェクトに存在せず（Open-Meteo はAPIキー不要）、本セクションにも含めていない。
+直さない理由:
 
-## 最終レビューで直したこと
+1. **この差分が作った不具合ではなく、むしろ縮めている。** `main` の時点で `renderResults` は既に `history.replaceState` を呼んでおり（app.js:436）、`renderWeekly` は呼んでいなかった。つまり従来は「週間でチェックしてもURLはランキングのまま」で、リロードすると必ず週間の表示を失っていた。今回の変更後にズレが残るのは「週間でチェック → ランキングタブへ切り替え → リロード」という経路だけになる。
+2. **直す場所がこのプランの範囲外で、かつテストが無い。** 修正はタブのクリックハンドラ（`tab.addEventListener("click", () => setMode(tab.dataset.mode))`）に入るが、`app.js` にはテストが1件も無い。このブランチは「テストできるロジックは `share.js` に寄せる」方針で進めてきたので、最後に検証不能な本番コードを足すのは避ける。
+3. **復旧が容易。** もう一度「チェック」を押せばURLは現在のタブに合う。
 
-ブランチ全体のレビューで2件の指摘があり、どちらも直した。
+直すなら、タブ切り替え時にURLの `mode` を書き換える（週間なら付ける、ランキングなら外す）のが最小の修正。別タスクとして切るのが妥当。
 
-1. **PCのChromeで「画像で共有」と出るのに保存が走っていた**（`app.js`）。
-   ラベルは `navigator.canShare` が有るかどうかだけで決めていたが、実際の分岐は
-   `navigator.canShare({ files: [file] })` で判定していた。PCのChromeは前者が真・後者が偽なので、
-   「押す前に何が起きるか分かる状態にする」という仕様に反して、共有シートを約束しておいて
-   ダウンロードしていた。同じ形のダミーPNGで先に問い合わせる `canShareImageFile()` を足し、
-   ラベルもこれで決めるようにした。4環境（canShare無し / 有るがファイル不可 / ファイル可 / 例外）で
-   期待どおりに分かれることを確認済み。
-2. **`navigator.share` の失敗メッセージ**（設計メモ側を修正）。
-   設計メモでは `canvas.toBlob` の失敗と同じ `画像を作れませんでした` にしていたが、
-   この分岐では画像は作れている。実装の `画像を共有できませんでした` のほうが正しいので、
-   設計メモの表と本文を実装に合わせ、理由も書き添えた。
+### レビューで指摘され、対応しなかったもの
 
-JSを触ったので `?v=` を `20260922` に上げ直した。
+- `applyParams` の中で `setMode` を「先に」呼ぶ理由付けは厳密には過剰（`check()` は `applyParams()` が返ったあとに走るので、関数内での代入順序は結果に影響しない）。ただしこの説明はプラン本文と作業報告の文章にあるだけで、出荷コードにはこの主張のコメントは入っていない。コードの修正は不要。
+
+### 最終レビュー（ブランチ全体）で直したこと
+
+1. **0点と欠測(null)の境界にテストが無かった。** 本番コードは3か所とも `=== null` で正しかったが、`!row.score` に変えても97件中1件も落ちなかった（変異テストで確認）。合計0点は実在する（岸向き13m/s・周期2秒・波5cmで `Scoring.scoreSpot` が0を返すことを総当たりで確認）ため、0点の日が「データなし」に化ける退行を止められない状態だった。`weeklyRows` の週ベスト選択・`weeklyShareLines` の行・`drawWeeklyCard` の描画の3か所にテストを追加し、同じ変異でそれぞれ対応するテストだけが落ちることを再確認した（94件 → 97件）。
+
+2. **LINEの失敗判定が必ず誤検知していた。** `window.open(url, "_blank", "noopener")` は、実際に開けたかどうかによらず仕様上つねに `null` を返す。そのため `if (!win) shareError(...)` は共有が成功するたびに「LINEを開けませんでした」を出していた。LINEが前面に出た直後なので実機確認では気づきにくい。`noopener`（安全側）を残し、判定できない失敗検出のほうを外した。理由はコード内のコメントに書いた。
+
+   失敗検出を戻したい場合は `noopener` を外して `window.open(url, "_blank")` の戻り値で判定し、`win.opener = null` を自前で行う形になる。これは安全性の作り方を変える判断なので、必要ならあらためて決める。
+3. **共有テキストのテストが実装の言い換えだった。** `rankingShare` / `weeklyShare` のテストは `p.text` が `shareText` / `weeklyText` の戻り値と等しいことしか見ていなかった。引数の取り違えは捕まえられるが、実際に送られる文字列が壊れても気づけない。見出し行・1位の行・★の数・末尾のURLを直接押さえるアサーションを足した。期待値はフィクスチャ（波1.4m、風 南西5.5m/s、岸向き90度＝サイドオフ）から決まる値で、実行結果を貼ったものではない（最初に書いた推測値は落ち、フィクスチャから引き直した）。
+
+4. **画像共有をやり直しても前回の失敗表示が残っていた。** `shareError` が作る `.share-note` を消す処理がどこにも無く、一度失敗したあと成功しても「画像を共有できませんでした」が残り続けた。`shareImage` の先頭で消すようにした。
+
+5. **README がテスト件数をハードコードしていた。** テストを足すたびに必ず古くなる（実際このブランチ内で94→97にずれた）。件数を書くのをやめ、「`fail 0` で全件成功すること」に変えた。
+
+### 最終レビューで指摘され、対応しなかったもの（理由つき）
+
+- **`WEEK_DAYS` が7であることとカードの行レイアウトが暗黙に結びついている。** 8行目は y=1024 でフッタ（y=1016）に重なるが、ガードもテストも無い。 → 対応しない。`WEEK_DAYS` は `app.js` の定数1か所で、8を渡す経路が存在しない。使われない分岐を足すほうが読みにくくなる（YAGNI）。7行目のベースライン926とフッタ1016の90px の余白は実測済み。
+- **`weeklyShare` / `rankingShare` が行データを3回計算している。** → 対応しない。7件（または4件）の配列を1回のチェックにつき3回なめるだけで、体感に出る量ではない。速さのためにキャッシュを持たせると、共有のたびに古い行を掴む事故のほうが怖い。
+- **`parseParams` が `modes` だけ `|| []` で守られていて `regions` / `slots` は守られていない。** → 対応しない。これは不統一ではなく仕様で、`modes` を渡さない呼び出し元では `mode` を必ず捨てる、という振る舞いをテストで固定してある（`parseParams は modes を渡さなければ mode を捨てる`）。`regions` / `slots` は全呼び出し元が必ず渡す前提なので、抜けたら黙って全部捨てるより例外で落ちたほうがよい。
+- **`Share` の18個のエクスポートのうち10個はテストのためだけの入口。** → 対応しない。`app.js` にはテストが1件も無く、このブランチは「テストできるロジックを `share.js` に寄せる」方針で進めた。エクスポートはその方針の結果であって、無駄な公開APIではない。
+
+### まだ確認できていないこと（実機・ブラウザが必要）
+
+以下は一度も実行していない。動いたとは書けない。
+
+- 「LINEで送る」で実際にLINEが開き、7行と★が入ったテキストが入ること
+- 「画像で共有」で 1080×1080 のPNGが得られ、7行と期間の見出しが読めること
+- 週間の共有URLを別タブで開いて、週間予報タブが選ばれエリアが入ること
+- 375px 幅で横スクロールが出ないこと
+
