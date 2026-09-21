@@ -570,3 +570,40 @@ test("weeklyShare の draw は週間カードを描く", () => {
   assert.equal(f.texts()[1], "千葉北 / 週間予報");
   assert.ok(f.texts().includes("全2ポイント"));
 });
+
+// 0点は実在する（岸向きの強風・短周期・ベタ凪の日は合計0点になる）。
+// 欠測を表す null と取り違えると、実際には出ている予報が「データなし」に
+// 化けるので、3か所すべての 0 と null の境界を固定しておく。
+test("weeklyRows は0点の日を欠測として捨てず、全日0点でも週ベストを1つ立てる", () => {
+  const flat = weekResult("ベタ凪", Array.from({ length: 7 }, () => [0, 0, 0]));
+  const rows = Sh.weeklyRows(WEEK_DATES, [flat]);
+  assert.equal(rows.length, 7);
+  assert.deepEqual(rows[0], { date: "2026-09-20", slot: "morning", name: "ベタ凪", score: 0, best: true });
+  assert.equal(rows.filter((r) => r.best).length, 1);
+});
+
+test("weeklyShareLines は0点の日を「データなし」にせず0点と書く", () => {
+  const mixed = weekResult("ベタ凪", [
+    [0, 0, 0], [40, 20, 10], [null, null, null],
+    [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+  ]);
+  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [mixed]);
+  assert.equal(lines[1], "9/20(日) 朝 ベタ凪 0点");
+  assert.equal(lines[2], "★9/21(月) 朝 ベタ凪 40点");
+  assert.equal(lines[3], "9/22(火) データなし");
+});
+
+test("drawWeeklyCard は0点の行を「データなし」にせず0点として描く", () => {
+  const rows = [
+    { date: "2026-09-20", slot: "morning", name: "ベタ凪", score: 0, best: false },
+    ...WEEK_ROWS.slice(1),
+  ];
+  const f = drawWeekly(rows, 1);
+  const zero = f.drawn("0");
+  assert.ok(zero, "0点が点数として描かれていない");
+  assert.equal(zero.fillStyle, "#b84a3c"); // scoreBand(0) は "bad"
+  // 「データなし」は欠測の 9/22 の1行だけ。0点の行が混ざってはいけない。
+  assert.equal(f.texts().filter((t) => t === "データなし").length, 1);
+  // 0点の行も時間帯の列を描く（欠測の分岐に入っていない証拠）。
+  assert.equal(f.texts().filter((t) => t === "朝").length, 3);
+});
