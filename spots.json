@@ -53,12 +53,12 @@
   {
     "name": "東浪見",
     "region": "千葉北",
-    "lat": 35.3555,
-    "lon": 140.3919,
+    "lat": 35.3502,
+    "lon": 140.3925,
     "bearing": 105,
     "cams": [
       {
-        "label": "Surfers Ocean",
+        "label": "Surfers Ocean サンライズ・東浪見",
         "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%9D%B1%E6%B5%AA%E8%A6%8B/"
       }
     ]
@@ -88,12 +88,16 @@
     "bearing": 130
   },
   {
-    "name": "サンライズ（白里）",
+    "name": "サンライズ",
     "region": "千葉北",
-    "lat": 35.4842,
-    "lon": 140.4224,
+    "lat": 35.3563,
+    "lon": 140.3918,
     "bearing": 90,
     "cams": [
+      {
+        "label": "Surfers Ocean サンライズ",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%9D%B1%E6%B5%AA%E8%A6%8B/"
+      },
       {
         "label": "BCM サンライズ",
         "url": "https://www.bcm-surfpatrol.com/wave-detail/3/32/"
