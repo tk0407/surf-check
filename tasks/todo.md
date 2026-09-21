@@ -1138,3 +1138,72 @@ git commit -m "$(printf 'feat: share the weekly forecast by line and image\n\nCo
 - **レイアウトの余白**: 7行目の日付のベースラインが y=926、フッタが y=1016 で 90px 空く。日付の欄は `WEEK_DATE_LEFT`(108) から `WEEK_SLOT_LEFT`(294) までの 186px で、最も長い `12/31(木)` が 153px（近似計算）。ポイント名は点数の左端から 24px 手前まで。実在する最長の名前 `パイプライン（茅ヶ崎）`（11文字）は 40px で 440px、収まる枠は約 551px。
 - **テスト件数**: 既存55 + Task 1 で16 + Task 2 で8 + Task 2 の修正ラウンドで2 + Task 3 で13 = 94。修正ラウンドの2件は、切り出した `drawCardFrame` の区切り線と見出しの色・太さを検証するもの。レビューで「移した当の描画が未検証」と指摘され、変異テスト（区切り線を削除しても緑のまま）で実証されたため追加した。
 - **Red-Green の例外**: Task 2 のテストは既存の出荷コードの絵を固定する特性テストなので、最初から通る。これはタスク本文に明記してある。Task 1・3・5 の新しい振る舞いは失敗から始める。
+
+## レビュー
+
+作業はサブエージェントとして実施。ブラウザを持たないため、コマンドで確認できる範囲のみを実行した（Step 6 の手動確認は「確認できていないこと」に列挙）。
+
+### 実際に確認したこと（コマンドと実際の出力）
+
+1. 構文チェック
+   ```
+   $ node --check app.js
+   (終了コード0、出力なし)
+   ```
+
+2. 配線の確認（Step 3）
+   ```
+   $ grep -c 'wireShareRow(el, share)' app.js
+   2
+   $ grep -n 'modes: \["ranking", "weekly"\]' app.js
+   632:    modes: ["ranking", "weekly"],
+   ```
+   期待どおり（`renderResults` と `renderWeekly` の両方が `wireShareRow(el, share)` を呼んでいる。`applyParams` 内に `modes` オプションの行がある）。
+
+3. `index.html` の `?v=` 確認（Step 4）
+   ```
+   $ grep -c '?v=20260923' index.html
+   5
+   $ grep -n '?v=' index.html | grep -v 20260923
+   7:  <!-- ?v= は更新の取りこぼし防止。CSS / JS を変更したら日付を上げる。
+   ```
+   1つ目は期待どおり `5`。2つ目は、実際のバージョン文字列ではなくコメント内の説明文（`?v=` という記法そのものへの言及）で、今回の変更が入る前から存在していた行（`git diff` で確認済み、差分に含まれない）。5か所の実際の `?v=` はすべて `20260923` に揃っている。
+
+4. テストスイート（Step 3 / Step 6 の一部）
+   ```
+   $ node --test
+   ...
+   tests 94
+   suites 0
+   pass 94
+   fail 0
+   cancelled 0
+   skipped 0
+   todo 0
+   ```
+   期待どおり `tests 94` / `fail 0`。README 編集後にも再実行し、同じ結果を確認した。
+
+5. `git diff --stat` で変更範囲がブリーフの指定ファイルに収まっていることを確認（`app.js` / `index.html` / `README.md`。`tasks/todo.md` はこのレビュー追記のみ）。
+
+### 変更したファイル
+
+- `app.js`: `renderWeekly`（`shareRow()` の挿入、`Share.weeklyShare` の呼び出し、`wireShareRow`、`history.replaceState`）と `applyParams`（`Share.parseParams` に `modes: ["ranking", "weekly"]` を追加、`params.mode` を先頭で `setMode` に渡す、戻り値の `Boolean` に `params.mode` を追加）。
+- `index.html`: `style.css` と4つの `.js` の `?v=` を5か所とも `20260922` → `20260923` に更新。
+- `README.md`: `## 共有機能` に週間予報タブの共有についての段落を追加（各日のベスト7行、週最高日に★、共有URLは `?region=...&mode=weekly`、ランキングの共有URLは従来どおり動く旨を記載）。`## テスト` に「現在94件（`tests 94` / `fail 0`）」の1行を追加。
+- `tasks/todo.md`: この `## レビュー` 節を追記。
+
+`share.js` / `share.test.js` / `style.css` / `renderResults` / `shareRow` / `wireShareRow` / `openLineShare` / `shareImage` / `canShareImageFile` には一切手を触れていない（`git diff --stat` で確認済み）。
+
+### 確認できていないこと（Step 6 の手動確認・すべて未実施）
+
+ブラウザ環境がないため、以下はすべて未確認（推測でチェックを入れていない）:
+
+- ランキングの表示と共有が Task 4 の前と変わらないこと（ボタンを押すと LINE が開く／画像が保存できる）
+- 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出ること
+- 週間の「LINEで送る」でテキストに7行と★が入っていること（コード上は `weeklyShareLines` / `weeklyText` の実装と既存テストから正しいと推測されるが、実際にボタンを押しての確認はしていない）
+- 週間の「画像で共有」（または「画像を保存」）で 1080×1080 の PNG が得られ、7行と期間の見出しが読めること
+- 週間の共有URLを別タブで開くと、週間予報タブが選ばれてエリアが入り、同じ内容が再現されること
+- ランキングの共有URL（`?region=千葉北&date=2026-09-21&slot=morning`）が今までどおり動くこと
+- 375px 幅で横スクロールが出ないこと
+
+いずれも `python3 -m http.server` を含む長時間起動コマンドは実行していない（指示どおり）。

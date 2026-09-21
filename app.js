@@ -520,10 +520,14 @@ function renderWeekly(el, region, dates, results, failed) {
       <h2>${escapeHtml(region)}の週間予報</h2>
       <span>${escapeHtml(Share.mdLabel(dates[0]))}〜${escapeHtml(Share.mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
     </div>
+    ${shareRow()}
     <div class="ranking-cards">
       ${results.map(weeklyCard).join("")}
     </div>
     ${failedNote}`;
+  const share = Share.weeklyShare(location.origin + location.pathname, region, dates, results);
+  wireShareRow(el, share);
+  history.replaceState(null, "", share.url);
 }
 
 function weeklyDetail(spot, day, slot) {
@@ -625,7 +629,9 @@ function applyParams() {
   const params = Share.parseParams(location.search, {
     regions: Array.from(regionEl.options).map((o) => o.value),
     slots: Object.keys(TIME_SLOTS),
+    modes: ["ranking", "weekly"],
   });
+  if (params.mode) setMode(params.mode);
   if (params.region) regionEl.value = params.region;
   if (params.slot) slotEl.value = params.slot;
   if (params.date) {
@@ -633,7 +639,7 @@ function applyParams() {
     if (params.date > dateEl.max) dateEl.max = params.date;
     dateEl.value = params.date;
   }
-  return Boolean(params.region || params.date || params.slot);
+  return Boolean(params.region || params.date || params.slot || params.mode);
 }
 
 // Hover layer: crosshair + dot inside the hovered sparkline, one shared
