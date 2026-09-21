@@ -11,6 +11,31 @@
   const SLOT_SHORT = { morning: "朝", afternoon: "昼", evening: "夕" };
   const WEEKDAYS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 
+  // カードに出すライブカメラの本数。spots.json は優先度順（YouTube →
+  // Surfers Ocean → BCM）に並べてあるので、先頭から採る。
+  const CAM_LIMIT = 2;
+
+  // HTML に差し込む値のエスケープ。spots.json はリポジトリ内の静的データ
+  // だが、リンクの href とラベルをそのまま埋めるので通す。
+  function escapeHtml(value) {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  // ライブカメラのリンク行。カメラが無いポイントは行ごと出さない。
+  function camRow(spot) {
+    const cams = (spot && spot.cams) || [];
+    if (cams.length === 0) return "";
+    const links = cams.slice(0, CAM_LIMIT).map((cam) => (
+      `<a class="cam-link" href="${escapeHtml(cam.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(cam.label)}</a>`
+    )).join("");
+    return `<div class="cam-row"><span class="cam-row-label">ライブカメラ</span>${links}</div>`;
+  }
+
   function dateParts(date) {
     const d = new Date(`${date}T00:00:00`);
     return { month: d.getMonth() + 1, day: d.getDate(), weekday: WEEKDAYS_JA[d.getDay()] };
@@ -358,6 +383,7 @@
 
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    escapeHtml, camRow,
     shareLines, shareText, shareUrl, drawShareCard, parseParams,
     weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
     drawWeeklyCard, rankingShare, weeklyShare,

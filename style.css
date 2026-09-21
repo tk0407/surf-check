@@ -518,6 +518,43 @@ h1 {
   gap: 8px;
 }
 
+.cam-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.cam-row-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.cam-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 5px 11px;
+  border: 1px solid var(--sea);
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--deep);
+  font-size: 0.76rem;
+  font-weight: 750;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cam-link:hover {
+  background: var(--sea);
+  color: #fff;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

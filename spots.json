@@ -2,225 +2,490 @@
   {
     "name": "片貝",
     "region": "千葉北",
-    "lat": 35.502,
-    "lon": 140.493,
-    "bearing": 88
+    "lat": 35.5239,
+    "lon": 140.4493,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E7%89%87%E8%B2%9D/"
+      },
+      {
+        "label": "BCM 片貝・漁港",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/28/"
+      }
+    ]
   },
   {
     "name": "一宮",
     "region": "千葉北",
     "lat": 35.367,
-    "lon": 140.398,
-    "bearing": 100
+    "lon": 140.3915,
+    "bearing": 90,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E4%B8%80%E5%AE%AE/"
+      },
+      {
+        "label": "BCM 一宮",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/31/"
+      }
+    ]
   },
   {
     "name": "釣ヶ崎（志田下）",
     "region": "千葉北",
-    "lat": 35.35,
-    "lon": 140.402,
-    "bearing": 100
+    "lat": 35.3358,
+    "lon": 140.3949,
+    "bearing": 100,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%BF%97%E7%94%B0%E4%B8%8B/"
+      },
+      {
+        "label": "BCM 志田下",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/34/"
+      }
+    ]
   },
   {
     "name": "東浪見",
     "region": "千葉北",
-    "lat": 35.33,
-    "lon": 140.398,
-    "bearing": 105
+    "lat": 35.3455,
+    "lon": 140.3931,
+    "bearing": 105,
+    "cams": [
+      {
+        "label": "Surfers Ocean サンライズ・東浪見",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%9D%B1%E6%B5%AA%E8%A6%8B/"
+      }
+    ]
   },
   {
     "name": "太東",
     "region": "千葉北",
-    "lat": 35.298,
-    "lon": 140.388,
-    "bearing": 110
+    "lat": 35.2923,
+    "lon": 140.4072,
+    "bearing": 110,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%A4%AA%E6%9D%B1/"
+      },
+      {
+        "label": "BCM 太東・堤防横",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/35/"
+      }
+    ]
   },
   {
     "name": "木戸",
     "region": "千葉北",
-    "lat": 35.395,
-    "lon": 140.408,
-    "bearing": 95
+    "lat": 35.578,
+    "lon": 140.4977,
+    "bearing": 130
   },
   {
-    "name": "サンライズ（白里）",
+    "name": "サンライズ",
     "region": "千葉北",
-    "lat": 35.46,
-    "lon": 140.458,
-    "bearing": 90
+    "lat": 35.3563,
+    "lon": 140.3918,
+    "bearing": 90,
+    "cams": [
+      {
+        "label": "Surfers Ocean サンライズ",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%9D%B1%E6%B5%AA%E8%A6%8B/"
+      },
+      {
+        "label": "BCM サンライズ",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/32/"
+      }
+    ]
   },
   {
     "name": "飯岡",
     "region": "千葉北",
-    "lat": 35.703,
-    "lon": 140.745,
-    "bearing": 130
+    "lat": 35.7004,
+    "lon": 140.7123,
+    "bearing": 180,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E9%A3%AF%E5%B2%A1/"
+      },
+      {
+        "label": "BCM 飯岡・信号下",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/3/25/"
+      }
+    ]
   },
   {
     "name": "吉崎浜",
     "region": "千葉北",
-    "lat": 35.685,
-    "lon": 140.715,
+    "lat": 35.6725,
+    "lon": 140.6247,
     "bearing": 120
   },
   {
     "name": "野手浜",
     "region": "千葉北",
-    "lat": 35.645,
-    "lon": 140.66,
+    "lat": 35.6576,
+    "lon": 140.6018,
     "bearing": 115
   },
   {
     "name": "白渚",
     "region": "千葉南",
-    "lat": 35.243,
-    "lon": 140.35,
-    "bearing": 105
+    "lat": 35.0331,
+    "lon": 140.0069,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "Surfers Ocean 和田・白渚",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%92%8C%E7%94%B0/"
+      },
+      {
+        "label": "BCM 和田・白渚",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/50/"
+      }
+    ]
+  },
+  {
+    "name": "和田浦",
+    "region": "千葉南",
+    "lat": 35.0399,
+    "lon": 140.0212,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "YouTube 和田浦海岸",
+        "url": "https://www.youtube.com/watch?v=VSwkTmST2Mk"
+      },
+      {
+        "label": "Surfers Ocean 和田・Js前",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%92%8C%E7%94%B0/"
+      }
+    ]
   },
   {
     "name": "御宿",
     "region": "千葉南",
-    "lat": 35.183,
-    "lon": 140.417,
-    "bearing": 115
+    "lat": 35.1819,
+    "lon": 140.3527,
+    "bearing": 160,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%BE%A1%E5%AE%BF/"
+      },
+      {
+        "label": "BCM 御宿・岩和田",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/38/"
+      }
+    ]
   },
   {
     "name": "千歳",
     "region": "千葉南",
-    "lat": 35.145,
-    "lon": 140.215,
-    "bearing": 120
+    "lat": 34.9901,
+    "lon": 139.9718,
+    "bearing": 120,
+    "cams": [
+      {
+        "label": "BCM 千歳",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/54/"
+      }
+    ]
   },
   {
     "name": "花籠ポイント",
     "region": "千葉南",
-    "lat": 35.197,
-    "lon": 140.345,
+    "lat": 35.017,
+    "lon": 139.9868,
     "bearing": 110
   },
   {
     "name": "マルキポイント",
     "region": "千葉南",
-    "lat": 35.091,
-    "lon": 140.082,
-    "bearing": 135
+    "lat": 35.1212,
+    "lon": 140.133,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "Surfers Ocean 鴨川",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E9%B4%A8%E5%B7%9D/"
+      },
+      {
+        "label": "BCM 鴨川・マルキ",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/44/"
+      }
+    ]
   },
   {
     "name": "部原",
     "region": "千葉南",
-    "lat": 35.023,
-    "lon": 140.128,
-    "bearing": 148
+    "lat": 35.159,
+    "lon": 140.3323,
+    "bearing": 115,
+    "cams": [
+      {
+        "label": "YouTube サンセット",
+        "url": "https://www.youtube.com/watch?v=gm1-4Y5qURE"
+      },
+      {
+        "label": "YouTube 部原ビーチ",
+        "url": "https://www.youtube.com/watch?v=G2tN6QaDbJQ"
+      }
+    ]
   },
   {
     "name": "千倉",
     "region": "千葉南",
-    "lat": 34.972,
-    "lon": 139.925,
-    "bearing": 175
+    "lat": 34.9655,
+    "lon": 139.9605,
+    "bearing": 95,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%8D%83%E5%80%89/"
+      },
+      {
+        "label": "BCM 千倉",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/53/"
+      }
+    ]
   },
   {
     "name": "平砂浦",
     "region": "千葉南",
-    "lat": 34.913,
-    "lon": 139.843,
+    "lat": 34.9397,
+    "lon": 139.8174,
     "bearing": 200
   },
   {
     "name": "平井海岸",
     "region": "茨城",
-    "lat": 35.945,
-    "lon": 140.675,
-    "bearing": 90
+    "lat": 35.965,
+    "lon": 140.6859,
+    "bearing": 55,
+    "cams": [
+      {
+        "label": "Surfers Ocean 平井",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%B9%B3%E4%BA%95/"
+      },
+      {
+        "label": "BCM 鹿嶋・平井",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/2/1062/"
+      }
+    ]
   },
   {
     "name": "トップサンテ",
     "region": "茨城",
-    "lat": 35.91,
-    "lon": 140.692,
-    "bearing": 90
+    "lat": 36.086,
+    "lon": 140.609,
+    "bearing": 68,
+    "cams": [
+      {
+        "label": "Surfers Ocean とっぷさんて下",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E3%81%A8%E3%81%A3%E3%81%B7%E3%81%95%E3%82%93%E3%81%A6%E4%B8%8B/"
+      },
+      {
+        "label": "BCM トップサンテ下",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/2/205/"
+      }
+    ]
   },
   {
     "name": "波崎シーサイドパーク",
     "region": "茨城",
-    "lat": 35.815,
-    "lon": 140.82,
-    "bearing": 95
+    "lat": 35.8016,
+    "lon": 140.7911,
+    "bearing": 45,
+    "cams": [
+      {
+        "label": "YouTube 波崎・鹿島灘",
+        "url": "https://www.youtube.com/watch?v=viB8x_vRiv0"
+      },
+      {
+        "label": "Surfers Ocean 波崎",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%B3%A2%E5%B4%8E/"
+      }
+    ]
   },
   {
     "name": "波崎",
     "region": "茨城",
-    "lat": 35.785,
-    "lon": 140.83,
-    "bearing": 95
+    "lat": 35.7719,
+    "lon": 140.8154,
+    "bearing": 45,
+    "cams": [
+      {
+        "label": "YouTube 波崎・鹿島灘",
+        "url": "https://www.youtube.com/watch?v=viB8x_vRiv0"
+      },
+      {
+        "label": "Surfers Ocean 波崎",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E6%B3%A2%E5%B4%8E/"
+      }
+    ]
   },
   {
     "name": "吉浜",
     "region": "湘南",
-    "lat": 35.15,
-    "lon": 139.108,
-    "bearing": 160
+    "lat": 35.144,
+    "lon": 139.1153,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "Surfers Ocean",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%90%89%E6%B5%9C/"
+      },
+      {
+        "label": "BCM 吉浜",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/6/82/"
+      }
+    ]
   },
   {
     "name": "国府津",
     "region": "湘南",
-    "lat": 35.272,
-    "lon": 139.205,
+    "lat": 35.2749,
+    "lon": 139.2044,
     "bearing": 170
   },
   {
     "name": "茅ヶ崎パーク",
     "region": "湘南",
-    "lat": 35.314,
-    "lon": 139.404,
-    "bearing": 185
+    "lat": 35.3182,
+    "lon": 139.4045,
+    "bearing": 185,
+    "cams": [
+      {
+        "label": "YouTube 茅ヶ崎海岸",
+        "url": "https://www.youtube.com/watch?v=FMf4XEP2ZY4"
+      },
+      {
+        "label": "Surfers Ocean 茅ヶ崎海岸",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E8%8C%85%E3%83%B6%E5%B4%8E%E6%B5%B7%E5%B2%B8/"
+      }
+    ]
   },
   {
     "name": "パイプライン（茅ヶ崎）",
     "region": "湘南",
-    "lat": 35.312,
-    "lon": 139.418,
-    "bearing": 185
+    "lat": 35.3174,
+    "lon": 139.4186,
+    "bearing": 185,
+    "cams": [
+      {
+        "label": "YouTube 茅ヶ崎海岸",
+        "url": "https://www.youtube.com/watch?v=FMf4XEP2ZY4"
+      },
+      {
+        "label": "Surfers Ocean 茅ヶ崎海岸",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E8%8C%85%E3%83%B6%E5%B4%8E%E6%B5%B7%E5%B2%B8/"
+      }
+    ]
   },
   {
     "name": "辻堂",
     "region": "湘南",
-    "lat": 35.318,
-    "lon": 139.448,
-    "bearing": 188
+    "lat": 35.3184,
+    "lon": 139.4481,
+    "bearing": 188,
+    "cams": [
+      {
+        "label": "Surfers Ocean 辻堂海岸",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E8%BE%BB%E5%A0%82%E6%B5%B7%E5%B2%B8/"
+      },
+      {
+        "label": "BCM 辻堂",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/5/64/"
+      }
+    ]
   },
   {
     "name": "鵠沼",
     "region": "湘南",
-    "lat": 35.312,
-    "lon": 139.478,
-    "bearing": 190
+    "lat": 35.3136,
+    "lon": 139.4726,
+    "bearing": 190,
+    "cams": [
+      {
+        "label": "YouTube 引地川河口",
+        "url": "https://www.youtube.com/watch?v=i56IM9ecxDc"
+      },
+      {
+        "label": "YouTube 水族館前",
+        "url": "https://www.youtube.com/watch?v=DZWA9Xicaxg"
+      }
+    ]
   },
   {
     "name": "七里ヶ浜",
     "region": "湘南",
     "lat": 35.305,
     "lon": 139.51,
-    "bearing": 200
+    "bearing": 200,
+    "cams": [
+      {
+        "label": "YouTube 七里ヶ浜ワイド",
+        "url": "https://www.youtube.com/watch?v=Y68fcXNwPyo"
+      },
+      {
+        "label": "YouTube 鎌倉高校前",
+        "url": "https://www.youtube.com/watch?v=wq5J3SZSdX8"
+      }
+    ]
   },
   {
     "name": "玉石",
     "region": "湘南",
-    "lat": 35.301,
-    "lon": 139.518,
-    "bearing": 205
+    "lat": 35.3031,
+    "lon": 139.5192,
+    "bearing": 205,
+    "cams": [
+      {
+        "label": "Surfers Ocean 鎌倉",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E9%8E%8C%E5%80%89/"
+      }
+    ]
   },
   {
     "name": "稲村ケ崎",
     "region": "湘南",
-    "lat": 35.299,
+    "lat": 35.3022,
     "lon": 139.525,
-    "bearing": 210
+    "bearing": 210,
+    "cams": [
+      {
+        "label": "YouTube 稲村ケ崎ビュー",
+        "url": "https://www.youtube.com/watch?v=T2dB77dObao"
+      },
+      {
+        "label": "YouTube 江ノ島ビュー",
+        "url": "https://www.youtube.com/watch?v=_ddxDN0eMnA"
+      }
+    ]
   },
   {
     "name": "由比ヶ浜",
     "region": "湘南",
-    "lat": 35.306,
-    "lon": 139.545,
-    "bearing": 190
+    "lat": 35.3084,
+    "lon": 139.5443,
+    "bearing": 190,
+    "cams": [
+      {
+        "label": "YouTube 由比ガ浜・材木座",
+        "url": "https://www.youtube.com/watch?v=hxKBnoLH0uk"
+      },
+      {
+        "label": "Surfers Ocean 鎌倉",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E9%8E%8C%E5%80%89/"
+      }
+    ]
   }
 ]

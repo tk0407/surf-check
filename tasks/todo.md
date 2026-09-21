@@ -1,1255 +1,723 @@
-# 週間予報の共有（LINE・画像）Implementation Plan
+# ライブカメラのリンクを検索結果に出す
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+## 目的
 
-**Goal:** 週間予報タブの結果を、ランキングと同じように LINE のテキストと 1080×1080 の画像カードで共有できるようにする。
+登録している32ポイントについて、公開されているライブカメラを調べ、検索結果の
+カードからワンタップで実際の波を見に行けるようにする。
 
-**Architecture:** 共有の単位は「各日のベスト（ポイント＋時間帯＋点数）を7行」。`share.js` に週間用の純関数（行の組み立て・テキスト・URL・カード描画）を足し、`app.js` は共有の導線を `payload` 駆動に一本化して、ランキングと週間の両方が同じ `wireShareRow` を通るようにする。共有URLは `?region=...&mode=weekly` で、`mode` が無いURLは従来どおりランキングとして動く。
+## 決まっていること（ユーザー判断）
 
-**Tech Stack:** 素の HTML / CSS / JavaScript（ビルド無し・依存無し）。テストは `node --test`。キャンバス描画は `canvas.getContext("2d")`。
+- 表示形式は **リンクだけ**。埋め込みプレイヤーは置かない。
+- BCM のリンク先は **ページ**（静止画の直リンクではない）。
+- カメラが無い／遠いカメラしか無いポイントは **何も出さない**（行ごと省く）。
+- 1ポイントあたり **最大2本**。
+- 採用の優先度は **YouTube → Surfers Ocean → BCM**。
 
-**Spec:** このプランに先立つ設計はチャットで承認済みで、下の「設計（承認済み）」節がその内容。親となる仕様書は `docs/superpowers/specs/2026-09-20-share-results-design.md`（ランキングの共有）で、共有ボタンの文言・エラーメッセージ・`navigator.share` の扱いはそちらを踏襲する。
+## 調査結果（3つの提供元）
 
-## Global Constraints
+| 提供元 | 形 | 無料か | 備考 |
+| --- | --- | --- | --- |
+| YouTube | 24時間ライブ配信 | 無料 | ポイントを名指しで映しているものだけ採用 |
+| Surfers Ocean | ポイント別のまとめページ | 無料 | BCM の静止画と YouTube を1ページに集約している |
+| BCM SurfPatrol | ポイント別の波情報ページ | 無料 | `wave-detail` ページに静止画が載る |
 
-- 依存パッケージを増やさない。`npm install` も CDN の読み込みも行わない。ビルド手順は無いまま維持する。
-- 本番コードに `if (testMode)` のようなテスト用の分岐や、テスト専用のマジックナンバーを入れない。
-- テストは実際の入出力を検証する。`assert.ok(true)` のような無意味なアサーションを書かない。
-- `share.js` は表示ラベルの整形と共有用の値の組み立てだけを持つ。データ取得と採点は `scoring.js` / `forecast.js`、DOM の組み立ては `app.js`。
-- `share.js` の pure な部分（描画を含む）は `node --test` から呼べる状態を保つ。`document` や `window` を参照しない。
-- 既存のエクスポート `SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows, shareLines, shareText, shareUrl, drawShareCard, parseParams` は名前も引数も変えない。既存の55件のテストは1件も書き換えない。
-- 既に共有済みのランキングURL（`?region=...&date=...&slot=...`）は `mode` が無くても従来どおり動く。
-- カードの寸法と色は既存のものを使う。`CARD_SIZE = 1080` / `CARD_PAD = 64` / 地色 `#edf3f5` / 見出し `#124559` / 補助文字 `#687481` / アクセント `#007f8f` / 本文 `#17212b`。
-- スコア帯の色は画面（`style.css`）と揃える。good `#1d9a72` / ok `#b7791f` / bad `#b84a3c`。帯の判定は `Forecast.scoreBand`（50以上 good、30以上 ok、それ未満 bad）を使い、しきい値を `share.js` に書き写さない。
-- コミットメッセージの末尾に次の2行目を付ける（1行空けてから）。
+- BCM のライブカメラ索引（72ページ）を全件たどり、ポイント名 → ページURL の
+  対応表を作った。当初「一部有料」と判断していたが、`wave-detail` ページは
+  「無料波情報」で、静止画も認証なしで表示される。
+- Surfers Ocean のサイトマップから67件のページURLを取得し、うち該当する
+  21ポイントを取得した（robots.txt の `Crawl-Delay: 5` を守って5秒間隔）。
+- YouTube は27本の動画IDについて oembed でタイトル・配信者を取得し、どの浜を
+  映しているか確認した。1本（`S3rWxznFIRI`）は応答が無く不採用。
 
-```
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-```
+### 採用しなかったカメラ
 
-- 秘密情報（APIキー・認証情報・個人情報）をコード・テスト・ドキュメントに書かない。本プロジェクトに秘密情報は存在しない（Open-Meteo は APIキー不要）。
+- `47xoP12hJxs`（長生村一松海岸）: Surfers Ocean が片貝・一宮・東浪見・太東・
+  白子・豊海・志田下の7ページに貼っているが、映しているのは長生村一松海岸の
+  1か所だけ。7ポイントに同じ映像を配ると誤解を招くので使わない。
+- `IvLscoOQclM`（波崎・鹿島灘）: 同じ配信者・同じタイトルの配信が2本あり、
+  Surfers Ocean が現在貼っているほう（`viB8x_vRiv0`）だけを採用。
+- 国府津: 過去に見つけたカメラは3回試して毎回 HTTP 503。名前の一致する
+  生きたカメラが無いので何も出さない。
 
----
+### カメラを出さないポイント（6件）
 
-## 設計（承認済み）
+木戸 / 吉崎浜 / 野手浜 / 花籠ポイント / 平砂浦 / 国府津
 
-### 共有するもの
+## 実装のチェックリスト
 
-週間予報は「エリア × 7日 × 3時間帯 × 最大10ポイント（全域なら32）」なので、ランキングの「1日1時間帯のTOP3」はそのまま移せない。共有の単位は **各日のベスト** とする。7日それぞれについて、そのエリアの全ポイント・全時間帯の中で最も点数の高い1件を選び、7行にする。
-
-### 共有テキスト
-
-```
-千葉北 9/20(日)〜9/26(土)の週間予報
-9/20(日) 朝 志田下 48点
-9/21(月) 夕 志田下 41点
-9/22(火) データなし
-★9/23(水) 朝 志田下 62点
-9/24(木) 朝 一宮 36点
-9/25(金) 昼 志田下 52点
-9/26(土) 夕 志田下 26点
-
-https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly
-```
-
-`★` は週で最も点数の高い1行だけに付く。本文と URL は空行1つで挟む（ランキングの `shareText` と同じ）。
-
-### 共有画像（1080×1080）
-
-上から「SURF CHECK」→「千葉北 / 週間予報」→「9月20日(日) 〜 9月26日(土)」→ 区切り線 → 7行 → 左下「全10ポイント」・右下サイトURL。1行は `★`（週ベストのみ）／日付／時間帯／ポイント名／点数。点数はスコア帯の色で描く。
-
-ヘッダ（kicker・見出し・副見出し・区切り線）とフッタはランキングカードと共通なので `drawCardFrame` / `drawCardFooter` に切り出して両方から呼ぶ。`drawShareCard` は実機確認済みの出荷コードでテストが1件も無いため、切り出しの前に偽の2Dコンテキストによる特性テストを入れて回帰を止める。
-
-### 共有URL
-
-`?region=千葉北&mode=weekly`。`parseParams` に `mode` を足し、`options.modes` に載っている値だけを通す。`mode` の無いURLはランキング扱いのままで、既に共有されたリンクは壊れない。`shareUrl` の引数は変えず、週間用に `weeklyUrl(base, region)` を別に足す。
-
-### app.js の共有導線
-
-ランキングと週間の両パネルは CSS で隠しているだけで同時に DOM に存在するため、`shareRow()` が `id` を出すと重複し、`shareError` の `document.querySelector(".share-row")` が別パネルを掴む。`id` をやめて class にし、`wireShareRow(root, payload)` が `root.querySelector` で閉じる。`payload` は `share.js` が組み立てる `{ text, headline, url, filename, draw }`。
+- [x] `spots.json` に `cams: [{ label, url }]` を追加（26ポイント、最大2本）
+- [x] `share.js` に `escapeHtml` と `camRow(spot)` を足して export
+- [x] `app.js` の `escapeHtml` を `Share.escapeHtml` に寄せる（実体は1か所）
+- [x] `app.js` の `resultCard` の `reason-row` の直後に `Share.camRow` を差す
+- [x] `app.js` の `fetch("spots.json")` に `?v=` を付ける（データ更新の取りこぼし防止）
+- [x] `style.css` に `.cam-row` / `.cam-row-label` / `.cam-link`
+- [x] `index.html` の `?v=` を8か所すべて `20260924` に上げる
+- [x] `share.test.js` に `camRow` / `escapeHtml` のテストを追加
+- [x] `spots.test.js` を新設してデータの形を固定
+- [x] `node --test` 全件成功
+- [x] 変異テストで新しいテストが効いていることを実証
+- [x] ローカルサーバーで全アセットの配信を確認
+- [x] README を更新
 
 ---
-
-## File Structure
-
-| ファイル | 責務 | この計画での変更 |
-|---|---|---|
-| `share.js` | 表示ラベルの整形、共有テキスト・URL・カードの組み立て | 週間用の純関数とカード描画、カードの共通部分の切り出し、`parseParams` の `mode`、payload の組み立て |
-| `share.test.js` | `share.js` の検証 | 週間用の関数とカード描画のテストを追加 |
-| `app.js` | DOM の組み立てと配線 | 共有導線の payload 化、週間側への配線、`mode` の復元 |
-| `index.html` | 画面の骨格と読み込み | `?v=` の日付を上げる（5か所） |
-| `style.css` | 見た目 | 変更なしの見込み（`.share-row` をそのまま再利用） |
-| `README.md` | 説明 | 共有機能の節に週間予報を足す、テスト件数を直す |
-
-`forecast.js` と `scoring.js` は変更しない。
-
----
-
-### Task 1: 週間共有の純関数（行・テキスト・URL・mode）
-
-**Files:**
-- Modify: `share.js`
-- Test: `share.test.js`
-
-**Interfaces:**
-- Consumes: `Forecast.SLOT_ORDER`（`["morning", "afternoon", "evening"]`）、`Forecast.scoreBand(total)`。`share.js` は今まで `Scoring` だけを受け取っていたので、ファクトリの引数に `Forecast` を足す。
-- Produces:
-  - `Share.weeklyRows(dates, results)` → 7要素の配列。各要素は `{ date, slot, name, score, best }`。データが1つも無い日は `{ date, slot: null, name: null, score: null, best: false }`。
-  - `Share.weeklyShareLines(region, dates, results)` → 文字列の配列（見出し1行 + 日ごとに1行）。
-  - `Share.weeklyText(region, dates, results, url)` → 本文と URL を空行で挟んだ文字列。
-  - `Share.weeklyUrl(base, region)` → `?region=...&mode=weekly` の URL 文字列。
-  - `Share.parseParams(search, options)` が `options.modes` を見て `out.mode` を足す。
-- `results` の形（`app.js` の `weeklySpot` が返すもの）: `{ spot: { name, region, bearing }, days, best }`。`days[i]` は `dates[i]` に対応し、`{ date, slots: { morning, afternoon, evening }, maxWaveHeight, tide }`。各 `slots[slot]` は `{ data, scores }` または `null`。
-
-- [ ] **Step 1: テスト用のフィクスチャを足す**
-
-`share.test.js` の末尾に追記する。既存の `result()` ヘルパーとテストは触らない。
-
-```js
-// 週間1ポイント分。app.js の weeklySpot が返す形のうち、共有に使う部分だけ。
-// totals は7日分で、1日は [朝, 昼, 夕] の点数。null はデータの無いセル。
-const WEEK_DATES = ["2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23",
-  "2026-09-24", "2026-09-25", "2026-09-26"];
-
-function weekResult(name, totals) {
-  return {
-    spot: { name, region: "千葉北", bearing: 90 },
-    days: totals.map((day, i) => ({
-      date: WEEK_DATES[i],
-      slots: {
-        morning: day[0] === null ? null : { data: {}, scores: { total: day[0] } },
-        afternoon: day[1] === null ? null : { data: {}, scores: { total: day[1] } },
-        evening: day[2] === null ? null : { data: {}, scores: { total: day[2] } },
-      },
-      maxWaveHeight: 1.4,
-      tide: [],
-    })),
-  };
-}
-
-// 2026-09-20 は日曜。9/22 は両ポイントともデータ無し、9/21 の夕は同点
-// （並び順の先勝ちを見る）、9/24 の朝は一宮のほうが高い。
-const SHIDA = weekResult("志田下",
-  [[48, 30, 22], [20, 25, 41], [null, null, null], [62, 50, 44],
-   [35, 33, 30], [28, 52, 40], [18, 20, 26]]);
-const ICHINOMIYA = weekResult("一宮",
-  [[40, 30, 20], [20, 25, 41], [null, null, null], [55, 50, 44],
-   [36, 33, 30], [28, 49, 40], [24, 20, 26]]);
-```
-
-- [ ] **Step 2: 失敗するテストを書く**
-
-`share.test.js` の末尾に追記する。
-
-```js
-test("weeklyRows は各日のベストを1行ずつ返す", () => {
-  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.equal(rows.length, 7);
-  assert.deepEqual(rows[0], { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false });
-  assert.deepEqual(rows[3], { date: "2026-09-23", slot: "morning", name: "志田下", score: 62, best: true });
-  assert.deepEqual(rows[5], { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false });
-});
-
-test("weeklyRows は全時間帯のデータが無い日を空の行にする", () => {
-  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.deepEqual(rows[2], { date: "2026-09-22", slot: null, name: null, score: null, best: false });
-});
-
-test("weeklyRows は点数が高いポイントを日ごとに選び直す", () => {
-  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  // 9/24 の朝は 一宮36 > 志田下35
-  assert.equal(rows[4].name, "一宮");
-  assert.equal(rows[4].score, 36);
-});
-
-test("weeklyRows は同点なら朝・昼・夕の順で先の時間帯を採る", () => {
-  const tie = weekResult("同点", [[40, 40, 40], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
-  const rows = Sh.weeklyRows(WEEK_DATES, [tie]);
-  assert.equal(rows[0].slot, "morning");
-});
-
-test("weeklyRows は同点なら results の並び順で先のポイントを採る", () => {
-  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  // 9/21 の夕は両方 41 点
-  assert.equal(rows[1].score, 41);
-  assert.equal(rows[1].slot, "evening");
-  assert.equal(rows[1].name, "志田下");
-});
-
-test("weeklyRows は週で最も高い1行だけに best を立てる", () => {
-  const rows = Sh.weeklyRows(WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.deepEqual(rows.map((r) => r.best), [false, false, false, true, false, false, false]);
-});
-
-test("weeklyRows は週ベストが同点なら早い日に best を立てる", () => {
-  const twice = weekResult("同点", [[0, 0, 0], [70, 0, 0], [0, 0, 0], [70, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]);
-  const rows = Sh.weeklyRows(WEEK_DATES, [twice]);
-  assert.equal(rows[1].best, true);
-  assert.equal(rows[3].best, false);
-});
-
-test("weeklyRows はデータが1つも無ければ best を立てない", () => {
-  const empty = weekResult("無", Array.from({ length: 7 }, () => [null, null, null]));
-  const rows = Sh.weeklyRows(WEEK_DATES, [empty]);
-  assert.equal(rows.filter((r) => r.best).length, 0);
-  assert.equal(rows.length, 7);
-});
-
-test("weeklyShareLines の1行目はエリアと期間", () => {
-  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.equal(lines[0], "千葉北 9/20(日)〜9/26(土)の週間予報");
-});
-
-test("weeklyShareLines は7日分を順に並べ、週ベストに★を付ける", () => {
-  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.deepEqual(lines.slice(1), [
-    "9/20(日) 朝 志田下 48点",
-    "9/21(月) 夕 志田下 41点",
-    "9/22(火) データなし",
-    "★9/23(水) 朝 志田下 62点",
-    "9/24(木) 朝 一宮 36点",
-    "9/25(金) 昼 志田下 52点",
-    "9/26(土) 夕 志田下 26点",
-  ]);
-});
-
-test("weeklyText は本文とURLを空行で挟んでつなぐ", () => {
-  const text = Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA], "https://example.test/?region=x&mode=weekly");
-  const lines = Sh.weeklyShareLines("千葉北", WEEK_DATES, [SHIDA]);
-  assert.equal(text, `${lines.join("\n")}\n\nhttps://example.test/?region=x&mode=weekly`);
-  assert.ok(text.includes("\n\nhttps://"));
-});
-
-test("weeklyUrl は region と mode=weekly をクエリにする", () => {
-  assert.equal(
-    Sh.weeklyUrl("https://tk0407.github.io/surf-check/", "千葉北"),
-    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly"
-  );
-});
-
-test("weeklyUrl は base に付いていた既存のクエリを捨ててハッシュは残す", () => {
-  assert.equal(
-    Sh.weeklyUrl("https://tk0407.github.io/surf-check/?region=%E6%B9%98%E5%8D%97&date=2026-09-20&slot=morning#x", "千葉北"),
-    "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly#x"
-  );
-});
-
-test("parseParams は modes に載っている mode を通す", () => {
-  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
-  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北", mode: "weekly" });
-  assert.deepEqual(Sh.parseParams("?mode=ranking", opts), { mode: "ranking" });
-});
-
-test("parseParams は modes に無い mode を捨てる", () => {
-  const opts = { regions: ["千葉北"], slots: ["morning"], modes: ["ranking", "weekly"] };
-  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=admin", opts), { region: "千葉北" });
-  assert.deepEqual(Sh.parseParams("?mode=__proto__", opts), {});
-});
-
-test("parseParams は modes を渡さなければ mode を捨てる", () => {
-  const opts = { regions: ["千葉北"], slots: ["morning"] };
-  assert.deepEqual(Sh.parseParams("?region=千葉北&mode=weekly", opts), { region: "千葉北" });
-});
-```
-
-- [ ] **Step 3: テストが失敗することを確認する**
-
-Run: `node --test`
-Expected: FAIL。`Sh.weeklyRows is not a function` などで新しい16件が落ち、既存の55件は通る。
-
-- [ ] **Step 4: share.js のファクトリに Forecast を足す**
-
-`share.js` の先頭（UMD の部分）を書き換える。`index.html` の読み込み順は `scoring.js` → `forecast.js` → `share.js` → `app.js` なので、`root.Forecast` は `share.js` の実行時に既に存在する。
-
-```js
-(function (root, factory) {
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = factory(require("./scoring.js"), require("./forecast.js"));
-  } else {
-    root.Share = factory(root.Scoring, root.Forecast);
-  }
-})(typeof self !== "undefined" ? self : this, function (Scoring, Forecast) {
-```
-
-- [ ] **Step 5: 週間用の関数を書く**
-
-`share.js` の `parseParams` の直前に足す。
-
-```js
-  // 週間予報の共有。7日それぞれについて、エリア内の全ポイント・全時間帯の
-  // 中で最も点数の高い1件を選ぶ。同点は時間帯順（朝→昼→夕）、次に results
-  // の並び順で先に見つけたほうを採る（strict ">" で先勝ち）。
-  // results は app.js の weeklySpot が返す { spot, days, best } の配列で、
-  // days[i] が dates[i] に対応する。
-  function weeklyRows(dates, results) {
-    const rows = dates.map((date, dayIndex) => {
-      let found = null;
-      for (const slot of Forecast.SLOT_ORDER) {
-        for (const r of results) {
-          const day = r.days[dayIndex];
-          const cell = day && day.slots[slot];
-          if (cell && (!found || cell.scores.total > found.score)) {
-            found = { slot, name: r.spot.name, score: cell.scores.total };
-          }
-        }
-      }
-      return found
-        ? { date, slot: found.slot, name: found.name, score: found.score, best: false }
-        : { date, slot: null, name: null, score: null, best: false };
-    });
-    // 週で最も高い1行にだけ印を付ける。同点なら早い日。
-    let bestIndex = -1;
-    rows.forEach((row, i) => {
-      if (row.score !== null && (bestIndex === -1 || row.score > rows[bestIndex].score)) bestIndex = i;
-    });
-    if (bestIndex !== -1) rows[bestIndex].best = true;
-    return rows;
-  }
-
-  function weeklyShareLines(region, dates, results) {
-    const head = `${region} ${mdLabel(dates[0])}〜${mdLabel(dates[dates.length - 1])}の週間予報`;
-    const rows = weeklyRows(dates, results).map((row) => (
-      row.score === null
-        ? `${mdLabel(row.date)} データなし`
-        : `${row.best ? "★" : ""}${mdLabel(row.date)} ${SLOT_SHORT[row.slot]} ${row.name} ${row.score}点`
-    ));
-    return [head, ...rows];
-  }
-
-  function weeklyText(region, dates, results, url) {
-    return `${weeklyShareLines(region, dates, results).join("\n")}\n\n${url}`;
-  }
-
-  // 週間には日付も時間帯も無いので、エリアと mode だけを載せる。
-  function weeklyUrl(base, region) {
-    const u = new URL(base);
-    u.search = new URLSearchParams({ region, mode: "weekly" }).toString();
-    return u.toString();
-  }
-```
-
-- [ ] **Step 6: parseParams に mode を足す**
-
-`parseParams` の中を書き換える。`options.modes` を渡さない呼び出し（既存のテスト）でも落ちないように `|| []` で受ける。
-
-```js
-  function parseParams(search, options) {
-    const q = new URLSearchParams(search);
-    const out = {};
-    const region = q.get("region");
-    const date = q.get("date");
-    const slot = q.get("slot");
-    const mode = q.get("mode");
-    if (region && options.regions.includes(region)) out.region = region;
-    if (date && isRealDate(date)) out.date = date;
-    if (slot && options.slots.includes(slot)) out.slot = slot;
-    if (mode && (options.modes || []).includes(mode)) out.mode = mode;
-    return out;
-  }
-```
-
-- [ ] **Step 7: エクスポートに足す**
-
-`share.js` 末尾の `return { ... }` を書き換える。
-
-```js
-  return {
-    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl, drawShareCard, parseParams,
-    weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
-  };
-```
-
-- [ ] **Step 8: テストが通ることを確認する**
-
-Run: `node --test`
-Expected: PASS。`tests 71` / `pass 71` / `fail 0`（既存55 + 追加16）。
-
-- [ ] **Step 9: コミット**
-
-```bash
-git add share.js share.test.js
-git commit -m "$(printf 'feat: build the weekly share lines, text and url\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
-
----
-
-### Task 2: カード描画のテスト土台と共通部分の切り出し
-
-**Files:**
-- Modify: `share.js`
-- Test: `share.test.js`
-
-**Interfaces:**
-- Consumes: 既存の `drawShareCard(canvas, info)`。
-- Produces: `share.js` 内部（エクスポートしない）の `drawCardFrame(ctx, title, subtitle)` と `drawCardFooter(ctx, note)`。Task 3 の `drawWeeklyCard` がこの2つを呼ぶ。`drawShareCard` の外から見える振る舞いは一切変えない。
-
-**このタスクのテストについて:** ここで足すのは「いま出ている絵を固定する」特性テスト（characterization test）であり、最初から通る。失敗から始める Red-Green-Refactor は新しい振る舞いを足すとき（Task 1・3・5）の規則で、既存の出荷コードを壊さずに切り出すこのタスクには当てはまらない。もし Step 3 でテストが落ちたら、それは `drawShareCard` のバグではなく偽コンテキストの作りが間違っている。
-
-- [ ] **Step 1: 偽の2Dコンテキストを書く**
-
-`share.test.js` の末尾に追記する。
-
-```js
-// canvas は node に無いので、描画の呼び出しを記録する偽の2Dコンテキストで
-// 確認する。measureText は「半角0.5em・全角1em」の近似で、fitText が末尾を
-// 切る条件を再現できる程度の精度があればよい（実機の字幅とは一致しない）。
-function fakeCanvas() {
-  const calls = [];
-  const ctx = {
-    fillStyle: "", strokeStyle: "", font: "16px sans-serif",
-    textAlign: "left", textBaseline: "alphabetic", lineWidth: 0,
-    fillRect(...args) { calls.push({ op: "fillRect", args }); },
-    fillText(text, x, y) {
-      calls.push({ op: "fillText", text, x, y, fillStyle: this.fillStyle, font: this.font, textAlign: this.textAlign });
-    },
-    beginPath() { calls.push({ op: "beginPath" }); },
-    moveTo(...args) { calls.push({ op: "moveTo", args }); },
-    lineTo(...args) { calls.push({ op: "lineTo", args }); },
-    stroke() { calls.push({ op: "stroke", strokeStyle: this.strokeStyle }); },
-    arc(...args) { calls.push({ op: "arc", args }); },
-    fill() { calls.push({ op: "fill", fillStyle: this.fillStyle }); },
-    measureText(text) {
-      const size = parseFloat(/(\d+(?:\.\d+)?)px/.exec(this.font)[1]);
-      let width = 0;
-      for (const ch of text) width += (ch.codePointAt(0) < 128 ? 0.5 : 1) * size;
-      return { width };
-    },
-  };
-  return {
-    canvas: { width: 0, height: 0, getContext: () => ctx },
-    calls,
-    texts: () => calls.filter((c) => c.op === "fillText").map((c) => c.text),
-    drawn: (text) => calls.find((c) => c.op === "fillText" && c.text === text),
-  };
-}
-
-const CARD_RESULTS = [
-  result("志田下", 62), result("一宮", 55),
-  result("パイプライン（茅ヶ崎）", 48), result("片貝", 40),
-];
-
-function drawRanking(results) {
-  const f = fakeCanvas();
-  Sh.drawShareCard(f.canvas, {
-    region: "千葉北", date: "2026-09-20", slot: "morning",
-    rows: Sh.cardRows(results), count: results.length,
-  });
-  return f;
-}
-```
-
-- [ ] **Step 2: 既存カードの特性テストを書く**
-
-`share.test.js` の末尾に追記する。
-
-```js
-test("drawShareCard は1080×1080のcanvasに描く", () => {
-  const f = drawRanking(CARD_RESULTS);
-  assert.equal(f.canvas.width, 1080);
-  assert.equal(f.canvas.height, 1080);
-});
-
-test("drawShareCard はエリア・日付・時間帯を見出しにする", () => {
-  const f = drawRanking(CARD_RESULTS);
-  const texts = f.texts();
-  assert.equal(texts[0], "SURF CHECK");
-  assert.equal(texts[1], "千葉北 / 9月20日(日)");
-  assert.equal(texts[2], "朝 07-10時");
-});
-
-test("drawShareCard は上位3件の順位・名前・点数を描く", () => {
-  const texts = drawRanking(CARD_RESULTS).texts();
-  assert.deepEqual(texts.filter((t) => ["1", "2", "3"].includes(t)), ["1", "2", "3"]);
-  assert.ok(texts.includes("志田下"));
-  assert.ok(texts.includes("一宮"));
-  assert.ok(texts.includes("パイプライン（茅ヶ崎）"));
-  assert.ok(texts.includes("62"));
-  assert.equal(texts.filter((t) => t === "/85").length, 3);
-  // 4件目は載らない
-  assert.ok(!texts.includes("片貝"));
-});
-
-test("drawShareCard は1位のバッジだけを塗りつぶす", () => {
-  const f = drawRanking(CARD_RESULTS);
-  assert.equal(f.calls.filter((c) => c.op === "arc").length, 3);
-  assert.deepEqual(f.calls.filter((c) => c.op === "fill").map((c) => c.fillStyle),
-    ["#124559", "#ffffff", "#ffffff"]);
-});
-
-test("drawShareCard は枠に収まらないポイント名を…で切る", () => {
-  const long = result("あいうえおかきくけこさしすせそたちつてと", 62);
-  const texts = drawRanking([long, result("一宮", 55), result("片貝", 48)]).texts();
-  const drawnName = texts.find((t) => t.startsWith("あいうえお"));
-  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
-  assert.ok(drawnName.length < "あいうえおかきくけこさしすせそたちつてと".length);
-});
-
-test("drawShareCard は4件以上なら「ほかN件」を描く", () => {
-  assert.ok(drawRanking(CARD_RESULTS).texts().includes("ほか1件"));
-});
-
-test("drawShareCard は3件ちょうどなら「ほか」を描かない", () => {
-  const texts = drawRanking(CARD_RESULTS.slice(0, 3)).texts();
-  assert.equal(texts.filter((t) => t.startsWith("ほか")).length, 0);
-});
-
-test("drawShareCard はサイトのURLを右下に描く", () => {
-  const f = drawRanking(CARD_RESULTS);
-  const url = f.drawn("tk0407.github.io/surf-check");
-  assert.equal(url.textAlign, "right");
-  assert.equal(url.x, 1016);
-  assert.equal(url.y, 1016);
-});
-```
-
-- [ ] **Step 3: テストが通ることを確認する（切り出し前の基準）**
-
-Run: `node --test`
-Expected: PASS。`tests 79` / `pass 79` / `fail 0`（Task 1 の71 + 追加8）。落ちた場合は偽コンテキストの作りを直す。`share.js` は触らない。
-
-- [ ] **Step 4: 共通部分を切り出す**
-
-`share.js` の `drawShareCard` の直前に足す。中身は `drawShareCard` の先頭と末尾から動かしたもので、文も順番も変えない。
-
-```js
-  // ランキングカードと週間カードで共通の、上の見出しと区切り線。
-  function drawCardFrame(ctx, title, subtitle) {
-    ctx.fillStyle = "#edf3f5";
-    ctx.fillRect(0, 0, CARD_SIZE, CARD_SIZE);
-    ctx.textBaseline = "alphabetic";
-    ctx.textAlign = "left";
-
-    ctx.fillStyle = "#007f8f";
-    ctx.font = `800 30px ${CARD_FONT}`;
-    ctx.fillText("SURF CHECK", CARD_PAD, CARD_PAD + 30);
-
-    ctx.fillStyle = "#124559";
-    ctx.font = `800 54px ${CARD_FONT}`;
-    ctx.fillText(title, CARD_PAD, CARD_PAD + 104);
-    ctx.fillStyle = "#687481";
-    ctx.font = `700 38px ${CARD_FONT}`;
-    ctx.fillText(subtitle, CARD_PAD, CARD_PAD + 160);
-
-    ctx.strokeStyle = "#dce5eb";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(CARD_PAD, CARD_PAD + 200);
-    ctx.lineTo(CARD_SIZE - CARD_PAD, CARD_PAD + 200);
-    ctx.stroke();
-  }
-
-  // 左下の補足（空文字なら描かない）と、右下のサイトURL。
-  function drawCardFooter(ctx, note) {
-    ctx.fillStyle = "#687481";
-    ctx.font = `700 30px ${CARD_FONT}`;
-    if (note) ctx.fillText(note, CARD_PAD, CARD_SIZE - CARD_PAD);
-    ctx.textAlign = "right";
-    ctx.fillText("tk0407.github.io/surf-check", CARD_SIZE - CARD_PAD, CARD_SIZE - CARD_PAD);
-    ctx.textAlign = "left";
-  }
-```
-
-- [ ] **Step 5: drawShareCard を切り出した関数で書き直す**
-
-`drawShareCard` の先頭（`canvas.width` から区切り線の `ctx.stroke()` まで）と末尾（`const rest` から最後の `ctx.textAlign = "left"` まで）を差し替える。`info.rows.forEach(...)` の中身は1文字も変えない。
-
-```js
-  function drawShareCard(canvas, info) {
-    canvas.width = CARD_SIZE;
-    canvas.height = CARD_SIZE;
-    const ctx = canvas.getContext("2d");
-    drawCardFrame(ctx, `${info.region} / ${longDateLabel(info.date)}`, SLOT_LONG[info.slot]);
-
-    info.rows.forEach((row, i) => {
-      // ...（既存のまま。順位バッジ・点数・ポイント名・波と風）
-    });
-
-    const rest = info.count - info.rows.length;
-    drawCardFooter(ctx, rest > 0 ? `ほか${rest}件` : "");
-  }
-```
-
-- [ ] **Step 6: 切り出しで絵が変わっていないことを確認する**
-
-Run: `node --test`
-Expected: PASS。`tests 79` / `pass 79` / `fail 0`。Step 3 と同じ結果になること。1件でも落ちたら切り出しで振る舞いが変わっている。
-
-- [ ] **Step 7: コミット**
-
-```bash
-git add share.js share.test.js
-git commit -m "$(printf 'refactor: pull the shared card frame out of drawShareCard\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
-
----
-
-### Task 3: 週間カードの描画と共有 payload
-
-**Files:**
-- Modify: `share.js`
-- Test: `share.test.js`
-
-**Interfaces:**
-- Consumes: Task 1 の `weeklyRows` / `weeklyShareLines` / `weeklyText` / `weeklyUrl`、Task 2 の `drawCardFrame(ctx, title, subtitle)` / `drawCardFooter(ctx, note)`、既存の `mdLabel` / `longDateLabel` / `fitText` / `cardRows` / `shareLines` / `shareText` / `shareUrl` / `drawShareCard`、`Forecast.scoreBand(total)`。Task 2 の `fakeCanvas()` ヘルパーがテストにある。
-- Produces:
-  - `Share.drawWeeklyCard(canvas, info)`。`info` は `{ region, dates, rows, count }`。`rows` は `weeklyRows` の返り値、`count` はポイント数。
-  - `Share.rankingShare(base, region, date, slot, results)` → `{ text, headline, url, filename, draw }`。
-  - `Share.weeklyShare(base, region, dates, results)` → 同じ形。
-  - `draw` は `(canvas) => void` で、渡された canvas に対応するカードを描く。`app.js` はこの5つのキーだけを見る。
-
-- [ ] **Step 1: 失敗するテストを書く**
-
-`share.test.js` の末尾に追記する。
-
-```js
-const WEEK_ROWS = [
-  { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false },
-  { date: "2026-09-21", slot: "evening", name: "志田下", score: 41, best: false },
-  { date: "2026-09-22", slot: null, name: null, score: null, best: false },
-  { date: "2026-09-23", slot: "morning", name: "パイプライン（茅ヶ崎）", score: 62, best: true },
-  { date: "2026-09-24", slot: "morning", name: "一宮", score: 36, best: false },
-  { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false },
-  { date: "2026-09-26", slot: "evening", name: "片貝", score: 26, best: false },
-];
-
-function drawWeekly(rows, count) {
-  const f = fakeCanvas();
-  Sh.drawWeeklyCard(f.canvas, { region: "千葉北", dates: WEEK_DATES, rows, count });
-  return f;
-}
-
-test("drawWeeklyCard は1080×1080のcanvasに描く", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  assert.equal(f.canvas.width, 1080);
-  assert.equal(f.canvas.height, 1080);
-});
-
-test("drawWeeklyCard はエリアと期間を見出しにする", () => {
-  const texts = drawWeekly(WEEK_ROWS, 10).texts();
-  assert.equal(texts[0], "SURF CHECK");
-  assert.equal(texts[1], "千葉北 / 週間予報");
-  assert.equal(texts[2], "9月20日(日) 〜 9月26日(土)");
-});
-
-test("drawWeeklyCard は7日分の日付を縦に並べる", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  const dates = f.calls.filter((c) => c.op === "fillText" && /^\d+\/\d+\(.\)$/.test(c.text));
-  assert.deepEqual(dates.map((c) => c.text), [
-    "9/20(日)", "9/21(月)", "9/22(火)", "9/23(水)", "9/24(木)", "9/25(金)", "9/26(土)",
-  ]);
-  // 1行96pxずつ下がり、最後の行はフッタ（y=1016）にかからない
-  assert.deepEqual(dates.map((c) => c.y), [350, 446, 542, 638, 734, 830, 926]);
-});
-
-test("drawWeeklyCard は週ベストの行にだけ★を描く", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  const stars = f.calls.filter((c) => c.op === "fillText" && c.text === "★");
-  assert.equal(stars.length, 1);
-  // 4行目（9/23）と同じ高さ
-  assert.equal(stars[0].y, 638);
-});
-
-test("drawWeeklyCard はデータなしの日に点数を描かない", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  assert.ok(f.texts().includes("データなし"));
-  // 点数の「/85」は7行のうちデータのある6行だけ
-  assert.equal(f.texts().filter((t) => t === "/85").length, 6);
-});
-
-test("drawWeeklyCard は点数をスコア帯の色で描く", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  assert.equal(f.drawn("62").fillStyle, "#1d9a72"); // good (50以上)
-  assert.equal(f.drawn("48").fillStyle, "#b7791f"); // ok (30以上)
-  assert.equal(f.drawn("26").fillStyle, "#b84a3c"); // bad
-});
-
-test("drawWeeklyCard は枠に収まらないポイント名を…で切る", () => {
-  const rows = WEEK_ROWS.map((r, i) => (
-    i === 0 ? { ...r, name: "あいうえおかきくけこさしすせそたちつてと" } : r
-  ));
-  const drawnName = drawWeekly(rows, 10).texts().find((t) => t.startsWith("あいうえお"));
-  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
-});
-
-test("drawWeeklyCard はポイント数とサイトのURLを下に描く", () => {
-  const f = drawWeekly(WEEK_ROWS, 10);
-  const note = f.drawn("全10ポイント");
-  assert.equal(note.x, 64);
-  assert.equal(note.y, 1016);
-  const url = f.drawn("tk0407.github.io/surf-check");
-  assert.equal(url.textAlign, "right");
-  assert.equal(url.y, 1016);
-});
-
-test("rankingShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
-  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
-  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
-  assert.equal(p.headline, "千葉北 9/20(日) 朝のサーフチェック");
-  assert.equal(p.text, Sh.shareText("千葉北", "2026-09-20", "morning", CARD_RESULTS, p.url));
-  assert.equal(p.filename, "surf-check-千葉北-2026-09-20-morning.png");
-});
-
-test("rankingShare の draw はランキングカードを描く", () => {
-  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
-  const f = fakeCanvas();
-  p.draw(f.canvas);
-  assert.equal(f.canvas.width, 1080);
-  assert.equal(f.texts()[1], "千葉北 / 9月20日(日)");
-  assert.ok(f.texts().includes("ほか1件"));
-});
-
-test("weeklyShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
-  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly");
-  assert.equal(p.headline, "千葉北 9/20(日)〜9/26(土)の週間予報");
-  assert.equal(p.text, Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA], p.url));
-  assert.equal(p.filename, "surf-check-千葉北-weekly-2026-09-20.png");
-});
-
-test("weeklyShare の draw は週間カードを描く", () => {
-  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
-  const f = fakeCanvas();
-  p.draw(f.canvas);
-  assert.equal(f.canvas.width, 1080);
-  assert.equal(f.texts()[1], "千葉北 / 週間予報");
-  assert.ok(f.texts().includes("全2ポイント"));
-});
-```
-
-- [ ] **Step 2: テストが失敗することを確認する**
-
-Run: `node --test`
-Expected: FAIL。`Sh.drawWeeklyCard is not a function` などで新しい13件が落ち、既存の81件は通る。
-
-- [ ] **Step 3: 週間カードを描く**
-
-`share.js` の `drawShareCard` の直後に足す。`BAND_COLORS` と行の座標は `SLOT_LONG` の近くの定数と並べて置く。
-
-```js
-  // 画面（style.css の .wk-cell）と同じスコア帯の色。帯の判定そのものは
-  // Forecast.scoreBand に任せ、しきい値をここに書き写さない。
-  const BAND_COLORS = { good: "#1d9a72", ok: "#b7791f", bad: "#b84a3c" };
-  // 行は上から96pxおき。左の44pxは週ベストの★のために空けてある。
-  const WEEK_ROW_TOP = CARD_PAD + 250;
-  const WEEK_ROW_STEP = 96;
-  const WEEK_DATE_LEFT = CARD_PAD + 44;
-  const WEEK_SLOT_LEFT = CARD_PAD + 230;
-  const WEEK_NAME_LEFT = CARD_PAD + 290;
-
-  function drawWeeklyCard(canvas, info) {
-    canvas.width = CARD_SIZE;
-    canvas.height = CARD_SIZE;
-    const ctx = canvas.getContext("2d");
-    const last = info.dates[info.dates.length - 1];
-    drawCardFrame(ctx, `${info.region} / 週間予報`,
-      `${longDateLabel(info.dates[0])} 〜 ${longDateLabel(last)}`);
-
-    info.rows.forEach((row, i) => {
-      const top = WEEK_ROW_TOP + i * WEEK_ROW_STEP;
-
-      if (row.best) {
-        ctx.fillStyle = "#007f8f";
-        ctx.font = `900 34px ${CARD_FONT}`;
-        ctx.fillText("★", CARD_PAD, top + 36);
-      }
-
-      ctx.fillStyle = "#124559";
-      ctx.font = `700 34px ${CARD_FONT}`;
-      ctx.fillText(mdLabel(row.date), WEEK_DATE_LEFT, top + 36);
-
-      if (row.score === null) {
-        ctx.fillStyle = "#687481";
-        ctx.font = `600 32px ${CARD_FONT}`;
-        ctx.fillText("データなし", WEEK_SLOT_LEFT, top + 36);
-        return;
-      }
-
-      // 点数は右端から逆算して置く（ランキングカードと同じ）
-      ctx.font = `900 48px ${CARD_FONT}`;
-      const scoreText = String(row.score);
-      const scoreWidth = ctx.measureText(scoreText).width;
-      ctx.font = `700 26px ${CARD_FONT}`;
-      const suffixWidth = ctx.measureText("/85").width;
-      const scoreLeft = CARD_SIZE - CARD_PAD - scoreWidth - suffixWidth;
-      ctx.fillStyle = BAND_COLORS[Forecast.scoreBand(row.score)];
-      ctx.font = `900 48px ${CARD_FONT}`;
-      ctx.fillText(scoreText, scoreLeft, top + 40);
-      ctx.fillStyle = "#687481";
-      ctx.font = `700 26px ${CARD_FONT}`;
-      ctx.fillText("/85", scoreLeft + scoreWidth, top + 40);
-
-      ctx.fillStyle = "#687481";
-      ctx.font = `700 34px ${CARD_FONT}`;
-      ctx.fillText(SLOT_SHORT[row.slot], WEEK_SLOT_LEFT, top + 36);
-
-      // ポイント名は点数の手前まで
-      ctx.fillStyle = "#17212b";
-      ctx.font = `800 40px ${CARD_FONT}`;
-      ctx.fillText(fitText(ctx, row.name, scoreLeft - WEEK_NAME_LEFT - 24), WEEK_NAME_LEFT, top + 38);
-    });
-
-    drawCardFooter(ctx, `全${info.count}ポイント`);
-  }
-```
-
-- [ ] **Step 4: 共有 payload の組み立てを書く**
-
-`share.js` の `drawWeeklyCard` の直後に足す。`app.js` がこの2つだけを呼べば済むようにする。
-
-```js
-  // app.js が共有に必要とする値を1か所で組み立てる。draw は canvas を受け
-  // 取って対応するカードを描く。
-  function rankingShare(base, region, date, slot, results) {
-    const url = shareUrl(base, region, date, slot);
-    return {
-      text: shareText(region, date, slot, results, url),
-      headline: shareLines(region, date, slot, results)[0],
-      url,
-      filename: `surf-check-${region}-${date}-${slot}.png`,
-      draw: (canvas) => drawShareCard(canvas, {
-        region, date, slot, rows: cardRows(results), count: results.length,
-      }),
-    };
-  }
-
-  function weeklyShare(base, region, dates, results) {
-    const url = weeklyUrl(base, region);
-    return {
-      text: weeklyText(region, dates, results, url),
-      headline: weeklyShareLines(region, dates, results)[0],
-      url,
-      filename: `surf-check-${region}-weekly-${dates[0]}.png`,
-      draw: (canvas) => drawWeeklyCard(canvas, {
-        region, dates, rows: weeklyRows(dates, results), count: results.length,
-      }),
-    };
-  }
-```
-
-- [ ] **Step 5: エクスポートに足す**
-
-```js
-  return {
-    SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
-    shareLines, shareText, shareUrl, drawShareCard, parseParams,
-    weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
-    drawWeeklyCard, rankingShare, weeklyShare,
-  };
-```
-
-- [ ] **Step 6: テストが通ることを確認する**
-
-Run: `node --test`
-Expected: PASS。`tests 94` / `pass 94` / `fail 0`（Task 2 の81 + 追加13）。
-
-- [ ] **Step 7: コミット**
-
-```bash
-git add share.js share.test.js
-git commit -m "$(printf 'feat: draw the weekly share card and assemble share payloads\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
-
----
-
-### Task 4: 共有導線を payload 駆動にする（ランキングの挙動は不変）
-
-**Files:**
-- Modify: `app.js:339-440`（`shareRow` から `renderResults` まで）
-
-**Interfaces:**
-- Consumes: Task 3 の `Share.rankingShare(base, region, date, slot, results)`。
-- Produces: `app.js` 内部の `shareRow()`（class を出す）、`shareError(root, message)`、`canShareImageFile()`（変更なし）、`openLineShare(root, payload)`、`shareImage(root, payload)`、`wireShareRow(root, payload)`。Task 5 の `renderWeekly` が `wireShareRow` を呼ぶ。
-
-**なぜ id をやめるか:** ランキングと週間の両パネルは CSS（`.app-shell[data-mode=...]`）で隠しているだけで、同時に DOM に存在する。両方が `id="shareLine"` を出すと id が重複し、`shareError` の `document.querySelector(".share-row")` は常に先に現れるランキング側を掴んで、週間側のエラーが出ない・別パネルに出る。`root.querySelector` に閉じることでこれを防ぐ。
-
-**このタスクの検証:** `app.js` は DOM を触るので `node --test` の対象外（jsdom を入れない＝依存を増やさない方針）。構文チェックと文字列検査で機械的に確認し、目視確認は Task 5 の通し確認でまとめて行う。
-
-- [ ] **Step 1: shareRow を class に変える**
-
-`app.js` の `shareRow()` を書き換える。
-
-```js
-function shareRow() {
-  return `<div class="share-row">
-      <button type="button" class="share-btn line share-line">LINEで送る</button>
-      <button type="button" class="share-btn share-image">画像で共有</button>
-    </div>`;
-}
-```
-
-- [ ] **Step 2: shareError が親要素の中だけを見るようにする**
-
-```js
-// 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
-// root はそのパネル（#results / #weekly）。ランキングと週間の共有行が同時に
-// DOM にあるので、document 全体から探すと別パネルを掴んでしまう。
-function shareError(root, message) {
-  const row = root.querySelector(".share-row");
-  if (!row) return;
-  let note = row.querySelector(".share-note");
-  if (!note) {
-    note = document.createElement("p");
-    note.className = "failed share-note";
-    row.appendChild(note);
-  }
-  note.textContent = message;
-}
-```
-
-- [ ] **Step 3: openLineShare と shareImage を payload 駆動にする**
-
-`canShareImageFile()` はそのまま（コメントも含め1文字も変えない）。その前後を書き換える。
-
-```js
-// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
-function openLineShare(root, payload) {
-  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(payload.text)}`, "_blank", "noopener");
-  if (!win) shareError(root, "LINEを開けませんでした");
-}
-```
-
-```js
-// canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
-async function shareImage(root, payload) {
-  const canvas = document.createElement("canvas");
-  payload.draw(canvas);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-  if (!blob) { shareError(root, "画像を作れませんでした"); return; }
-  const file = new File([blob], payload.filename, { type: "image/png" });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], text: `${payload.headline}\n${payload.url}` });
-    } catch (e) {
-      // 共有シートを閉じただけなので何も出さない。
-      if (e.name !== "AbortError") shareError(root, "画像を共有できませんでした");
-    }
-    return;
-  }
-  const href = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = file.name;
-  a.click();
-  URL.revokeObjectURL(href);
-}
-```
-
-- [ ] **Step 4: wireShareRow を足す**
-
-`shareImage` の直後に足す。
-
-```js
-// 共有行のボタンを payload につなぐ。ランキングと週間で共通。
-function wireShareRow(root, payload) {
-  const lineBtn = root.querySelector(".share-line");
-  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(root, payload));
-  const imageBtn = root.querySelector(".share-image");
-  if (imageBtn) {
-    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
-    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
-    imageBtn.addEventListener("click", () => shareImage(root, payload));
-  }
-}
-```
-
-- [ ] **Step 5: renderResults を wireShareRow に寄せる**
-
-`renderResults` の `el.innerHTML = ...` より後ろ、`drawTideCurves` の手前の部分を書き換える。`el.innerHTML` の組み立て（`shareRow()` を挟む位置を含む）は変えない。
-
-```js
-  const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
-  wireShareRow(el, share);
-  drawTideCurves(el, results, date, slot);
-  history.replaceState(null, "", share.url);
-```
-
-- [ ] **Step 6: 構文と置き換え漏れを確認する**
-
-```bash
-node --check app.js
-grep -n 'shareLine\|shareImage"' app.js
-grep -c 'document.querySelector(".share-row")' app.js
-```
-
-Expected:
-- `node --check app.js` が何も出力せず終了する（終了コード0）
-- 1つ目の grep が何も出さない（`id="shareLine"` / `id="shareImage"` が消えている）
-- 2つ目の grep が `0`（`shareError` が `document` 全体を見ていない）
-
-- [ ] **Step 7: 既存テストが影響を受けていないことを確認する**
-
-Run: `node --test`
-Expected: PASS。`tests 94` / `pass 94` / `fail 0`。`app.js` はテスト対象外なので件数は Task 3 と同じ。
-
-- [ ] **Step 8: コミット**
-
-```bash
-git add app.js
-git commit -m "$(printf 'refactor: drive the share row from a payload instead of fixed ids\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
-
----
-
-### Task 5: 週間側の配線・mode の復元・ドキュメント
-
-**Files:**
-- Modify: `app.js`（`renderWeekly` と `applyParams`）
-- Modify: `index.html`（`?v=` を5か所）
-- Modify: `README.md`
-
-**Interfaces:**
-- Consumes: Task 3 の `Share.weeklyShare(base, region, dates, results)`、Task 4 の `shareRow()` / `wireShareRow(root, payload)`、既存の `setMode(mode)` と `Share.parseParams(search, options)`。
-- Produces: 画面から見える最終形。これ以降のタスクは無い。
-
-- [ ] **Step 1: renderWeekly に共有行を足す**
-
-`app.js` の `renderWeekly` を書き換える。`${shareRow()}` を `.results-head` と `.ranking-cards` の間に置く（ランキングと同じ位置）。
-
-```js
-function renderWeekly(el, region, dates, results, failed) {
-  WEEKLY_RESULTS = results;
-  if (results.length === 0) {
-    el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
-    return;
-  }
-  const failedNote = failed.length ? `<p class="failed">取得失敗: ${escapeHtml(failed.join(", "))}</p>` : "";
-  el.innerHTML = `
-    <div class="results-head">
-      <h2>${escapeHtml(region)}の週間予報</h2>
-      <span>${escapeHtml(Share.mdLabel(dates[0]))}〜${escapeHtml(Share.mdLabel(dates[dates.length - 1]))} / ${results.length}件</span>
-    </div>
-    ${shareRow()}
-    <div class="ranking-cards">
-      ${results.map(weeklyCard).join("")}
-    </div>
-    ${failedNote}`;
-  const share = Share.weeklyShare(location.origin + location.pathname, region, dates, results);
-  wireShareRow(el, share);
-  history.replaceState(null, "", share.url);
-}
-```
-
-- [ ] **Step 2: applyParams が mode を復元するようにする**
-
-`app.js` の `applyParams` を書き換える。`setMode` を先に呼ぶので、戻ったあとの `check()` が正しいほうのビューを走らせる。
-
-```js
-// 共有リンクから来た条件を選択欄に入れる。1つでも入ったら true。
-// 日付が min/max の外なら、入力欄の表示と制約が食い違わないよう制約を広げる。
-function applyParams() {
-  const regionEl = document.getElementById("region");
-  const dateEl = document.getElementById("date");
-  const slotEl = document.getElementById("slot");
-  const params = Share.parseParams(location.search, {
-    regions: Array.from(regionEl.options).map((o) => o.value),
-    slots: Object.keys(TIME_SLOTS),
-    modes: ["ranking", "weekly"],
-  });
-  if (params.mode) setMode(params.mode);
-  if (params.region) regionEl.value = params.region;
-  if (params.slot) slotEl.value = params.slot;
-  if (params.date) {
-    if (params.date < dateEl.min) dateEl.min = params.date;
-    if (params.date > dateEl.max) dateEl.max = params.date;
-    dateEl.value = params.date;
-  }
-  return Boolean(params.region || params.date || params.slot || params.mode);
-}
-```
-
-- [ ] **Step 3: 構文と配線を確認する**
-
-```bash
-node --check app.js
-grep -c 'wireShareRow(el, share)' app.js
-grep -n 'modes: \["ranking", "weekly"\]' app.js
-```
-
-Expected:
-- `node --check app.js` が終了コード0
-- 1つ目の grep が `2`（`renderResults` と `renderWeekly` の両方）
-- 2つ目の grep が `applyParams` の中の1行を出す
-
-- [ ] **Step 4: index.html の ?v= を上げる**
-
-`style.css` と4つの `.js` の **5か所すべて** を `?v=20260923` に揃える。
-
-```html
-  <link rel="stylesheet" href="style.css?v=20260923" />
-  ...
-  <script src="scoring.js?v=20260923"></script>
-  <script src="forecast.js?v=20260923"></script>
-  <script src="share.js?v=20260923"></script>
-  <script src="app.js?v=20260923"></script>
-```
-
-確認:
-
-```bash
-grep -c '?v=20260923' index.html
-grep -n '?v=' index.html | grep -v 20260923
-```
-
-Expected: 1つ目が `5`、2つ目が何も出さない。
-
-- [ ] **Step 5: README を更新する**
-
-`## 共有機能` の節に週間予報の共有を1段落足し、`## テスト` の件数を実際の数に直す。書く内容:
-
-- 週間予報タブでも「LINEで送る」「画像で共有」が使えること
-- 共有されるのは各日のベスト（ポイント・時間帯・点数）7行で、週で最も高い日には ★ が付くこと
-- 共有URLは `?region=...&mode=weekly` で、開くと週間予報タブが選ばれた状態で再現されること
-- ランキングの共有URL（`mode` 無し）は従来どおり動くこと
-
-- [ ] **Step 6: 全体を通しで確認する**
-
-ローカルサーバーを立てて確認する。
-
-```bash
-python3 -m http.server 8000
-```
-
-- `node --test` が全件成功する（`tests 94` / `fail 0`）
-- ランキングの表示と共有が Task 4 の前と変わらない（ボタンを押すと LINE が開く／画像が保存できる）
-- 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出る
-- 週間の「LINEで送る」でテキストに7行と ★ が入っている
-- 週間の「画像で共有」（または「画像を保存」）で 1080×1080 の PNG が得られ、7行と期間の見出しが読める
-- 週間の共有URLを別タブで開くと、週間予報タブが選ばれてエリアが入り、同じ内容が再現される
-- ランキングの共有URL（`?region=千葉北&date=2026-09-21&slot=morning`）が今までどおり動く
-- 375px 幅で横スクロールが出ない
-
-- [ ] **Step 7: レビュー欄を書いてコミット**
-
-`tasks/todo.md` の末尾に `## レビュー` を足し、実際に確認した内容・変更したファイル・確認できていないことを分けて書く（推測でチェックを入れない。秘密情報は書かない）。
-
-```bash
-git add app.js index.html README.md tasks/todo.md
-git commit -m "$(printf 'feat: share the weekly forecast by line and image\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>')"
-```
-
----
-
-## プラン自己レビュー
-
-- **設計の網羅**: 共有の単位（各日のベスト7行）→ Task 1 Step 5 の `weeklyRows`。共有テキスト → Task 1 Step 5 の `weeklyShareLines` / `weeklyText`。共有画像 → Task 3 Step 3 の `drawWeeklyCard`。カードの共通部分の切り出し → Task 2。共有URL（生成）→ Task 1 Step 5 の `weeklyUrl`、（検証と復元）→ Task 1 Step 6 と Task 5 Step 2。ボタンの配置 → Task 5 Step 1。id 重複の回避 → Task 4 Step 1-2。`?v=` と README → Task 5 Step 4-5。
-- **名前の一致**: `weeklyRows` の返り値 `{ date, slot, name, score, best }` を Task 1 の `weeklyShareLines`、Task 3 の `drawWeeklyCard` と `WEEK_ROWS` フィクスチャが同じ形で使う。`drawWeeklyCard(canvas, { region, dates, rows, count })` は Task 3 Step 4 の `weeklyShare` の呼び出しと一致。`rankingShare` / `weeklyShare` が返す `{ text, headline, url, filename, draw }` の5つのキーを、Task 4 の `openLineShare`（`text`）・`shareImage`（`draw` / `filename` / `headline` / `url`）と Task 5 の `history.replaceState`（`url`）が使う。`fakeCanvas()` は Task 2 Step 1 で定義し、Task 3 のテストが使う。`WEEK_DATES` は Task 1 Step 1 で定義し、Task 3 のテストが使う。`drawCardFrame` / `drawCardFooter` は Task 2 Step 4 で定義し、Task 3 Step 3 が呼ぶ。
-- **検算した値**: `2026-09-20` は日曜（`9/20(日)`）、`2026-09-26` は土曜。`weeklyRows` と `weeklyShareLines` の期待値、`weeklyUrl` の URL エンコード（`千葉北` → `%E5%8D%83%E8%91%89%E5%8C%97`）、`drawWeeklyCard` の日付の y 座標（350 / 446 / 542 / 638 / 734 / 830 / 926）とフッタの位置（1016）、スコア帯の色（62→`#1d9a72` / 48→`#b7791f` / 26→`#b84a3c`）は、実装の試作を `node` で走らせて実測した値。`drawShareCard` の特性テストの期待値も、現在の `share.js` を偽コンテキストで走らせた実測値。
-- **レイアウトの余白**: 7行目の日付のベースラインが y=926、フッタが y=1016 で 90px 空く。日付の欄は `WEEK_DATE_LEFT`(108) から `WEEK_SLOT_LEFT`(294) までの 186px で、最も長い `12/31(木)` が 153px（近似計算）。ポイント名は点数の左端から 24px 手前まで。実在する最長の名前 `パイプライン（茅ヶ崎）`（11文字）は 40px で 440px、収まる枠は約 551px。
-- **テスト件数**: 既存55 + Task 1 で16 + Task 2 で8 + Task 2 の修正ラウンドで2 + Task 3 で13 = 94。修正ラウンドの2件は、切り出した `drawCardFrame` の区切り線と見出しの色・太さを検証するもの。レビューで「移した当の描画が未検証」と指摘され、変異テスト（区切り線を削除しても緑のまま）で実証されたため追加した。
-- **Red-Green の例外**: Task 2 のテストは既存の出荷コードの絵を固定する特性テストなので、最初から通る。これはタスク本文に明記してある。Task 1・3・5 の新しい振る舞いは失敗から始める。
 
 ## レビュー
 
-作業はサブエージェントとして実施。ブラウザを持たないため、コマンドで確認できる範囲のみを実行した（Step 6 の手動確認は「確認できていないこと」に列挙）。
-
 ### 実際に確認したこと（コマンドと実際の出力）
 
-1. 構文チェック
-   ```
-   $ node --check app.js
-   (終了コード0、出力なし)
-   ```
+**1. URLの生存確認** — 採用した43本すべて。YouTube は oembed、他は本体に GET。
 
-2. 配線の確認（Step 3）
-   ```
-   $ grep -c 'wireShareRow(el, share)' app.js
-   2
-   $ grep -n 'modes: \["ranking", "weekly"\]' app.js
-   632:    modes: ["ranking", "weekly"],
-   ```
-   期待どおり（`renderResults` と `renderWeekly` の両方が `wireShareRow(el, share)` を呼んでいる。`applyParams` 内に `modes` オプションの行がある）。
+```
+ユニークURL:       43 本
+異常: 0 本
+```
 
-3. `index.html` の `?v=` 確認（Step 4）
-   ```
-   $ grep -c '?v=20260923' index.html
-   5
-   $ grep -n '?v=' index.html | grep -v 20260923
-   7:  <!-- ?v= は更新の取りこぼし防止。CSS / JS を変更したら日付を上げる。
-   ```
-   1つ目は期待どおり `5`。2つ目は、実際のバージョン文字列ではなくコメント内の説明文（`?v=` という記法そのものへの言及）で、今回の変更が入る前から存在していた行（`git diff` で確認済み、差分に含まれない）。5か所の実際の `?v=` はすべて `20260923` に揃っている。
+**2. テスト全件** — `node --test`
 
-4. テストスイート（Step 3 / Step 6 の一部）
-   ```
-   $ node --test
-   ...
-   tests 94
-   suites 0
-   pass 94
-   fail 0
-   cancelled 0
-   skipped 0
-   todo 0
-   ```
-   期待どおり `tests 94` / `fail 0`。README 編集後にも再実行し、同じ結果を確認した。
+```
+ℹ tests 118
+ℹ pass 118
+ℹ fail 0
+```
 
-5. `git diff --stat` で変更範囲がブリーフの指定ファイルに収まっていることを確認（`app.js` / `index.html` / `README.md`。`tasks/todo.md` はこのレビュー追記のみ）。
+（この変更の前は97件。`camRow` / `escapeHtml` で11件、`spots.test.js` で10件増えた。）
+
+**3. 変異テスト（`share.js`）** — スクラッチにコピーして壊し、必ず赤くなることを確認。
+リポジトリのファイルには触れていない。
+
+| 壊した箇所 | 結果 | 落ちたテスト |
+| --- | --- | --- |
+| `rel="noopener noreferrer"` を削除 | pass 78 / fail 1 | target と rel を付ける |
+| URL のエスケープをやめる | pass 78 / fail 1 | URL の引用符と山括弧をエスケープ |
+| ラベルのエスケープをやめる | pass 78 / fail 1 | ラベルの山括弧とアンパサンド |
+| `CAM_LIMIT` を 2 → 3 | pass 78 / fail 1 | 先頭2本だけに切る |
+| 空配列でも行を出す | pass 76 / fail 3 | 空文字を返す系3件 |
+| 復元 | pass 79 / fail 0 | — |
+
+**4. 変異テスト（`spots.json`）** — 10通り壊して、10通りとも狙ったテストが落ちた。
+
+| 壊した箇所 | 落ちたテスト |
+| --- | --- |
+| url を `http://` にする | https の url を持つ |
+| カメラを3本にする | 1〜2本 |
+| エリアをまたいでURLを使い回す | 同一エリア内に限る |
+| 同一ポイントでURLを重複 | 2回出さない |
+| `cams` を空配列にする | 1〜2本 |
+| ラベルの提供元を消す | 提供元が分かる接頭辞 |
+| 未調査ホストを混ぜる | ホストは3つに限る |
+| `bearing` を 360 にする | 型が正しい |
+| ポイント名を重複させる | 名前は重複しない |
+| 全ポイントから `cams` を削除 | どのエリアにもカメラ付きが1つ以上 |
+
+復元後は pass 10 / fail 0。
+
+**5. 配信の確認** — `python3 -m http.server 8777`
+
+```
+index.html                 200
+style.css?v=20260924       200
+app.js?v=20260924          200
+share.js?v=20260924        200
+spots.json?v=20260924      200
+配信された spots.json: 32 件 / cams あり 26 件
+配信CSSの cam-link 出現: 2
+```
+
+**6. 全32ポイントのカメラ行を描画** — `<a>` の開閉一致を確認したうえで、
+26ポイントに行が出て、6ポイントは空文字になることを確認した。
 
 ### 変更したファイル
 
-- `app.js`: `renderWeekly`（`shareRow()` の挿入、`Share.weeklyShare` の呼び出し、`wireShareRow`、`history.replaceState`）と `applyParams`（`Share.parseParams` に `modes: ["ranking", "weekly"]` を追加、`params.mode` を先頭で `setMode` に渡す、戻り値の `Boolean` に `params.mode` を追加）。
-- `index.html`: `style.css` と4つの `.js` の `?v=` を5か所とも `20260922` → `20260923` に更新。
-- `README.md`: `## 共有機能` に週間予報タブの共有についての段落を追加（各日のベスト7行、週最高日に★、共有URLは `?region=...&mode=weekly`、ランキングの共有URLは従来どおり動く旨を記載）。`## テスト` に「現在94件（`tests 94` / `fail 0`）」の1行を追加。
-- `tasks/todo.md`: この `## レビュー` 節を追記。
+- `spots.json` — 26ポイントに `cams` を追加
+- `share.js` — `CAM_LIMIT` / `escapeHtml` / `camRow` を追加、export に2つ追加
+- `app.js` — `escapeHtml` を `Share.escapeHtml` に置き換え、`resultCard` に
+  カメラ行を追加、`spots.json` の fetch に `?v=`
+- `style.css` — `.cam-row` / `.cam-row-label` / `.cam-link`
+- `index.html` — `?v=` を8か所
+- `share.test.js` — 11件追加
+- `spots.test.js` — 新規10件
+- `README.md` — ライブカメラの節を追加
 
-`share.js` / `share.test.js` / `style.css` / `renderResults` / `shareRow` / `wireShareRow` / `openLineShare` / `shareImage` / `canShareImageFile` には一切手を触れていない（`git diff --stat` で確認済み）。
+### 確認できていないこと
 
-### 確認できていないこと（Step 6 の手動確認・すべて未実施）
+- 実機のブラウザでの見た目（リンクの折り返し、375px 幅での横スクロール）。
+  このマシンにヘッドレスブラウザが無いため、HTMLとCSSの生成までしか確認して
+  いない。
+- 各カメラが「今この瞬間、波が見える画を配信しているか」。HTTP 200 と
+  YouTube の oembed が返ることまでは確認したが、映像の中身は見ていない。
+- ライブ配信は止まることがある。URLが死んだときは行が出たままリンク切れに
+  なる（画面側では検知していない）。
 
-ブラウザ環境がないため、以下はすべて未確認（推測でチェックを入れていない）:
+### 座標の修正（3件）
 
-- ランキングの表示と共有が Task 4 の前と変わらないこと（ボタンを押すと LINE が開く／画像が保存できる）
-- 週間予報タブでチェックすると、見出しの下に共有ボタンの行が出ること
-- 週間の「LINEで送る」でテキストに7行と★が入っていること（コード上は `weeklyShareLines` / `weeklyText` の実装と既存テストから正しいと推測されるが、実際にボタンを押しての確認はしていない）
-- 週間の「画像で共有」（または「画像を保存」）で 1080×1080 の PNG が得られ、7行と期間の見出しが読めること
-- 週間の共有URLを別タブで開くと、週間予報タブが選ばれてエリアが入り、同じ内容が再現されること
-- ランキングの共有URL（`?region=千葉北&date=2026-09-21&slot=morning`）が今までどおり動くこと
-- 375px 幅で横スクロールが出ないこと
+ライブカメラを調べている途中で、`spots.json` の座標が別の市町村を指している
+ものが3件見つかったので直した。
 
-いずれも `python3 -m http.server` を含む長時間起動コマンドは実行していない（指示どおり）。
+| ポイント | 旧座標（逆ジオコーディング結果） | 新座標（修正後） |
+| --- | --- | --- |
+| 白渚 | `35.243, 140.35` → いすみ市長志 | `35.033, 140.007` → 南房総市和田町白渚 |
+| 千歳 | `35.145, 140.215` → 勝浦市台宿 | `34.99, 139.972` → 南房総市千倉町白子 |
+| トップサンテ | `35.91, 140.692` → 神栖市東和田 | `36.086, 140.609` → 鉾田市上幡木 |
 
-### 既知の制限（このブランチでは直さない）
+**どうやって確かめたか** — 国土地理院の2つの公開API（認証なし）を使った。
 
-**タブを切り替えただけではURLが追随しない。** 週間予報でチェックするとURLが `?region=...&mode=weekly` になるが、そのあとランキングタブを押しても再チェックは走らないためURLは `mode=weekly` のまま残る。この状態でリロードすると、直前に見ていたランキングではなく週間予報が復元される。
+1. 逆ジオコーディング（`mreversegeocoder.gsi.go.jp`）で旧座標の市町村を取得し、
+   3件とも本来の所在地と違うことを確認。
+2. 住所検索（`msearch.gsi.go.jp`）で正しい大字の代表点を取得。
+3. 逆ジオコーディングは海上では `results` が `null` になる。これを陸／海の
+   判定に使い、緯度を3本とって二分探索で汀線の経度を割り出した。真ん中の
+   汀線をそのポイントの座標として採用している。
 
-直さない理由:
+`千歳` だけは地理院に「千歳」という大字が無い。Surfers Ocean のページに
+「千歳① （南房総市千倉町白子・ライブ画像：ＢＣＭ提供）」と書いてあるのを
+根拠に千倉町白子とした。`白渚` は登録済みカメラのラベルが「YouTube 和田浦海岸」
+で、和田町という修正先と一致している。
 
-1. **この差分が作った不具合ではなく、むしろ縮めている。** `main` の時点で `renderResults` は既に `history.replaceState` を呼んでおり（app.js:436）、`renderWeekly` は呼んでいなかった。つまり従来は「週間でチェックしてもURLはランキングのまま」で、リロードすると必ず週間の表示を失っていた。今回の変更後にズレが残るのは「週間でチェック → ランキングタブへ切り替え → リロード」という経路だけになる。
-2. **直す場所がこのプランの範囲外で、かつテストが無い。** 修正はタブのクリックハンドラ（`tab.addEventListener("click", () => setMode(tab.dataset.mode))`）に入るが、`app.js` にはテストが1件も無い。このブランチは「テストできるロジックは `share.js` に寄せる」方針で進めてきたので、最後に検証不能な本番コードを足すのは避ける。
-3. **復旧が容易。** もう一度「チェック」を押せばURLは現在のタブに合う。
+**動くことの確認** — 旧座標と新座標の両方で `app.js` の `fetchSpotData` →
+`slotConditions` → `scoreSpot` と同じ手順を実際のAPIに対して走らせた。
 
-直すなら、タブ切り替え時にURLの `mode` を書き換える（週間なら付ける、ランキングなら外す）のが最小の修正。別タスクとして切るのが妥当。
+```
+=== 白渚 ===
+  旧 35.243 ,140.35   合計  37  波高 3.24m  周期 7.85s  うねり 146°  風 2.49m/s 112°  潮汐イベント 3件
+  新 35.033 ,140.007  合計  45  波高 4.02m  周期 8.75s  うねり 157°  風 3.04m/s  32°  潮汐イベント 3件
+=== 千歳 ===
+  旧 35.145 ,140.215  合計  48  波高 3.32m  周期 7.97s  うねり 148°  風 1.69m/s  70°  潮汐イベント 3件
+  新 34.99  ,139.972  合計  50  波高 3.81m  周期 8.47s  うねり 155°  風 4.82m/s  43°  潮汐イベント 3件
+=== トップサンテ ===
+  旧 35.91  ,140.692  合計  41  波高 1.72m  周期 6.95s  うねり 102°  風 2.81m/s  50°  潮汐イベント 3件
+  新 36.086 ,140.609  合計  41  波高 1.88m  周期 6.50s  うねり 119°  風 7.82m/s  43°  潮汐イベント 3件
+```
 
-### レビューで指摘され、対応しなかったもの
+3件とも波高・周期・うねり・風・潮汐がそろって返り、スコアが出ている。
+`node --test` は 118/118 のまま。
 
-- `applyParams` の中で `setMode` を「先に」呼ぶ理由付けは厳密には過剰（`check()` は `applyParams()` が返ったあとに走るので、関数内での代入順序は結果に影響しない）。ただしこの説明はプラン本文と作業報告の文章にあるだけで、出荷コードにはこの主張のコメントは入っていない。コードの修正は不要。
+### 方位（bearing）は触っていない
 
-### 最終レビュー（ブランチ全体）で直したこと
+座標を直したポイントについて、汀線から海向きの法線を実測すると
+白渚 141°、千歳 104°、トップサンテ 69°（基線の長さを片側0.7km／1.3km／6.7kmで
+変えても 65〜69° で安定）になる。登録値はそれぞれ 105 / 120 / 90 なので合わない。
 
-1. **0点と欠測(null)の境界にテストが無かった。** 本番コードは3か所とも `=== null` で正しかったが、`!row.score` に変えても97件中1件も落ちなかった（変異テストで確認）。合計0点は実在する（岸向き13m/s・周期2秒・波5cmで `Scoring.scoreSpot` が0を返すことを総当たりで確認）ため、0点の日が「データなし」に化ける退行を止められない状態だった。`weeklyRows` の週ベスト選択・`weeklyShareLines` の行・`drawWeeklyCard` の描画の3か所にテストを追加し、同じ変異でそれぞれ対応するテストだけが落ちることを再確認した（94件 → 97件）。
+ただしこれは今回の3件に限った話ではない。既存データ全体が幾何学的な法線とは
+系統的にずれている。
 
-2. **LINEの失敗判定が必ず誤検知していた。** `window.open(url, "_blank", "noopener")` は、実際に開けたかどうかによらず仕様上つねに `null` を返す。そのため `if (!win) shareError(...)` は共有が成功するたびに「LINEを開けませんでした」を出していた。LINEが前面に出た直後なので実機確認では気づきにくい。`noopener`（安全側）を残し、判定できない失敗検出のほうを外した。理由はコード内のコメントに書いた。
+| ポイント | 登録値 | 実測の法線 |
+| --- | --- | --- |
+| 片貝・サンライズ（九十九里） | 88 / 90 | 約 125 |
+| 平井海岸・波崎（鹿島灘） | 90 / 95 | 約 69 |
+| 辻堂・七里ヶ浜（湘南） | 188 / 200 | ほぼ一致 |
 
-   失敗検出を戻したい場合は `noopener` を外して `window.open(url, "_blank")` の戻り値で判定し、`win.opener = null` を自前で行う形になる。これは安全性の作り方を変える判断なので、必要ならあらためて決める。
-3. **共有テキストのテストが実装の言い換えだった。** `rankingShare` / `weeklyShare` のテストは `p.text` が `shareText` / `weeklyText` の戻り値と等しいことしか見ていなかった。引数の取り違えは捕まえられるが、実際に送られる文字列が壊れても気づけない。見出し行・1位の行・★の数・末尾のURLを直接押さえるアサーションを足した。期待値はフィクスチャ（波1.4m、風 南西5.5m/s、岸向き90度＝サイドオフ）から決まる値で、実行結果を貼ったものではない（最初に書いた推測値は落ち、フィクスチャから引き直した）。
+九十九里は登録値のほうが北寄り、鹿島灘は南寄りで、湘南は合っている。
+`bearing` は `scoring.js` で「うねりが来る方位」と「オフショアの逆」の両方に
+使われるので、採点の効き方そのものを変える値になる。エリアごとに取り決めが
+違うのか単なる誤差なのか判断できないため、3件だけ実測値に差し替えると残り29件と
+食い違う。**今回は座標だけを直し、方位は全件そのままにした。**
 
-4. **画像共有をやり直しても前回の失敗表示が残っていた。** `shareError` が作る `.share-note` を消す処理がどこにも無く、一度失敗したあと成功しても「画像を共有できませんでした」が残り続けた。`shareImage` の先頭で消すようにした。
+32件すべての方位を汀線から測り直して揃えるかどうかは、別途決めたい。
 
-5. **README がテスト件数をハードコードしていた。** テストを足すたびに必ず古くなる（実際このブランチ内で94→97にずれた）。件数を書くのをやめ、「`fail 0` で全件成功すること」に変えた。
+## 追加作業：和田浦の分離と方位の全件見直し
 
-### 最終レビューで指摘され、対応しなかったもの（理由つき）
+白渚に付けていた YouTube カメラは和田浦（Js前）のもので、別ポイントだった。
+ユーザー判断で (1) 和田浦を新ポイントとして追加し、(2) 方位を32件すべて見直す。
 
-- **`WEEK_DAYS` が7であることとカードの行レイアウトが暗黙に結びついている。** 8行目は y=1024 でフッタ（y=1016）に重なるが、ガードもテストも無い。 → 対応しない。`WEEK_DAYS` は `app.js` の定数1か所で、8を渡す経路が存在しない。使われない分岐を足すほうが読みにくくなる（YAGNI）。7行目のベースライン926とフッタ1016の90px の余白は実測済み。
-- **`weeklyShare` / `rankingShare` が行データを3回計算している。** → 対応しない。7件（または4件）の配列を1回のチェックにつき3回なめるだけで、体感に出る量ではない。速さのためにキャッシュを持たせると、共有のたびに古い行を掴む事故のほうが怖い。
-- **`parseParams` が `modes` だけ `|| []` で守られていて `regions` / `slots` は守られていない。** → 対応しない。これは不統一ではなく仕様で、`modes` を渡さない呼び出し元では `mode` を必ず捨てる、という振る舞いをテストで固定してある（`parseParams は modes を渡さなければ mode を捨てる`）。`regions` / `slots` は全呼び出し元が必ず渡す前提なので、抜けたら黙って全部捨てるより例外で落ちたほうがよい。
-- **`Share` の18個のエクスポートのうち10個はテストのためだけの入口。** → 対応しない。`app.js` にはテストが1件も無く、このブランチは「テストできるロジックを `share.js` に寄せる」方針で進めた。エクスポートはその方針の結果であって、無駄な公開APIではない。
+### 決まっていること（ユーザー判断）
 
-### まだ確認できていないこと（実機・ブラウザが必要）
+- 和田浦海岸は **新ポイントとして追加**する。
+- 方位（bearing）は **32件すべて見直す**。
 
-以下は一度も実行していない。動いたとは書けない。
+### チェックリスト
 
-- 「LINEで送る」で実際にLINEが開き、7行と★が入ったテキストが入ること
-- 「画像で共有」で 1080×1080 のPNGが得られ、7行と期間の見出しが読めること
-- 週間の共有URLを別タブで開いて、週間予報タブが選ばれエリアが入ること
-- 375px 幅で横スクロールが出ないこと
+- [x] 白渚のカメラを差し替え（YouTube和田浦 → Surfers Ocean 和田・白渚 ＋ BCM 和田・白渚）
+- [x] Surfers Ocean の未取得ページを取得（志田下・部原・平砂浦・鎌倉・茅ヶ崎海岸 の5件、いずれも HTTP 200）
+- [x] 「◯◯Ｐは△向き」「◯◯Ｐは△がオフショア」を全件抽出（22件）し、登録ポイントに対応付ける
+- [x] 全ポイントの汀線から海向き法線を国土地理院APIで実測する
+- [x] 登録値・SOの記述・実測の3つを突き合わせて各ポイントの方位を決める
+- [x] 和田浦を spots.json に追加（座標・方位・カメラ2本）
+- [x] spots.json の方位を更新（8件）
+- [x] `node --test` 全件成功（118/118）
+- [x] 根拠を本ファイルに表で残す
+- [x] コミットして PR #6 の本文を更新
 
+### 判断の基準
+
+Surfers Ocean の記述は16方位の丸めなので ±11.25° の粒度しかない。一方で実測は
+汀線の法線であって、離岸堤・河口・岬の影響までは映さない。両方が近ければその値を、
+食い違う場合はポイントページの本文を読んで文脈で決める。どちらの根拠も無い
+ポイントは登録値を据え置く。
+
+### 実際にやったこと
+
+1. Surfers Ocean の未取得5ページを取得し、全26ページから「◯◯Ｐは△向き」
+   「◯◯Ｐは△がオフショア」を機械抽出した。18件中16件で両者が正確に逆方位
+   （向き＋180°＝オフショア風向）になっており、抽出は信頼できる。
+2. 国土地理院の逆ジオコーディング（`LonLatToAddress`、海上では `results` が
+   null になる性質を陸／海の判定に使う）で、各ポイントの周囲36方位を半径約
+   1.3km で探査し、海側の方向の円平均から汀線の海向き法線を求めた。
+   座標が浜から離れている場合は先に汀線へスナップしてから測っている。
+3. 実測の精度は、SO が向きを公開している6ポイントで検証した。直線的な海岸では
+   ±5°だが、湾では七里ヶ浜 −17°、飯岡 −20° とずれる。この検証結果が
+   「単独では採用しない」という判断の根拠になっている。
+
+### 結果：方位の根拠表（33件）
+
+`登録`＝変更前の値、`SO`＝Surfers Ocean が公開しているビーチの向き、
+`実測`＝国土地理院の逆ジオコーディングで汀線の海向き法線を測った値。
+
+| ポイント | 登録 | SO | 実測 | 採用 | 判断 |
+|---|---:|---:|---:|---:|---|
+| 片貝 | 88° | 135° | 125° | **135°** | **変更**（SOと実測が10°以内で一致） |
+| 一宮 | 100° | 90° | 85° | **90°** | **変更**（SOと実測が5°以内で一致） |
+| 釣ヶ崎（志田下） | 100° | 68° | 85° | **100°** | 据え置き（SOと実測が17°食い違う） |
+| 東浪見 | 105° | — | 60° | **105°** | 据え置き（SOに記述なし・実測のみ） |
+| 太東 | 110° | 68° | 110° | **110°** | 据え置き（SOと実測が42°食い違う） |
+| 木戸 | 95° | — | 105° | **95°** | 据え置き（SOに記述なし・実測のみ） |
+| サンライズ | 90° | — | 115° | **90°** | 据え置き（実測90°、差0°） |
+| 飯岡 | 130° | 180° | 165° | **180°** | **変更**（SOと実測が15°以内で一致） |
+| 吉崎浜 | 120° | — | 200° | **120°** | 据え置き（SOに記述なし・実測のみ） |
+| 野手浜 | 115° | — | 145° | **115°** | 据え置き（SOに記述なし・実測のみ） |
+| 白渚 | 105° | 135° | 145° | **135°** | **変更**（SOと実測が10°以内で一致） |
+| 御宿 | 115° | 158° | 110° | **115°** | 据え置き（SOと実測が48°食い違う） |
+| 千歳 | 120° | — | 105° | **120°** | 据え置き（SOに記述なし・実測のみ） |
+| 花籠ポイント | 110° | — | 160° | **110°** | 据え置き（SOに記述なし・実測のみ） |
+| マルキポイント | 135° | 135° | 130° | **135°** | 据え置き（SO・実測とも登録値とほぼ同じ） |
+| 部原 | 148° | 135° | — | **148°** | 据え置き（座標が浜から外れ実測できず） |
+| 千倉 | 175° | 90° | — | **175°** | 据え置き（座標が浜から外れ実測できず） |
+| 平砂浦 | 200° | 225° | 190° | **200°** | 据え置き（SOと実測が35°食い違う） |
+| 平井海岸 | 90° | 45° | 65° | **90°** | 据え置き（SOと実測が20°食い違う） |
+| トップサンテ | 90° | 68° | 65° | **68°** | **変更**（SOと実測が3°以内で一致） |
+| 波崎シーサイドパーク | 95° | 45° | 60° | **45°** | **変更**（SOと実測が15°以内で一致） |
+| 波崎 | 95° | 45° | 55° | **45°** | **変更**（SOと実測が10°以内で一致） |
+| 吉浜 | 160° | 135° | 135° | **135°** | **変更**（SOと実測が0°以内で一致） |
+| 国府津 | 170° | — | 140° | **170°** | 据え置き（SOに記述なし・実測のみ） |
+| 茅ヶ崎パーク | 185° | — | 180° | **185°** | 据え置き（SOに記述なし・実測のみ） |
+| パイプライン（茅ヶ崎） | 185° | — | 180° | **185°** | 据え置き（SOに記述なし・実測のみ） |
+| 辻堂 | 188° | — | 190° | **188°** | 据え置き（SOに記述なし・実測のみ） |
+| 鵠沼 | 190° | — | 212° | **190°** | 据え置き（SOに記述なし・実測のみ） |
+| 七里ヶ浜 | 200° | 202° | 190° | **200°** | 据え置き（SO・実測とも登録値とほぼ同じ） |
+| 玉石 | 205° | — | 185° | **205°** | 据え置き（SOに記述なし・実測のみ） |
+| 稲村ケ崎 | 210° | — | 170° | **210°** | 据え置き（SOに記述なし・実測のみ） |
+| 由比ヶ浜 | 190° | — | 205° | **190°** | 据え置き（SOに記述なし・実測のみ） |
+| 和田浦（新規） | — | 135° | — | **135°** | 新ポイント。SO「和田・Js前 … ビーチの向き＝南東」 |
+
+変更したのは **8件**。いずれも SO の記述と実測が15°以内で一致し、かつ登録値が
+それらから離れていたもの。
+
+| ポイント | 変更 | 9/21朝のスコア |
+|---|---|---|
+| 片貝 | 88° → 135° | 34 → 40 |
+| 一宮 | 100° → 90° | 37 → 37 |
+| 飯岡 | 130° → 180° | 48 → 51 |
+| 白渚 | 105° → 135° | 45 → 56 |
+| トップサンテ | 90° → 68° | 41 → 32 |
+| 波崎シーサイドパーク | 95° → 45° | 34 → 28 |
+| 波崎 | 95° → 45° | 34 → 28 |
+| 吉浜 | 160° → 135° | 65 → 59 |
+
+スコアは `forecast.js` の `slotConditions` と `scoring.js` の `scoreSpot` を
+実際の Open-Meteo のデータに対して呼んで比べた。9件すべてで波高・周期・うねり
+向き・風の4項目が欠損なく揃うことも同時に確認している。
+
+### 追加した和田浦
+
+| 項目 | 値 | 根拠 |
+|---|---|---|
+| 座標 | 35.04, 140.021 | 逆ジオで「和田町仁我浦」。白渚（和田町白渚）とは別の浜 |
+| 方位 | 135° | SO「和田・Js前 … ビーチの向き＝南東」 |
+| カメラ1 | YouTube 和田浦海岸 | oEmbed のタイトルが「南房総ライブカメラ　和田浦海岸」で一致 |
+| カメラ2 | Surfers Ocean 和田・Js前 | 白渚と同じページだがエリアが同じなのでテストの制約を満たす |
+
+SO のページは和田町の2ポイントを明確に区別している。
+
+- 和田・Js前（南房総市和田町**仁我浦**・YouTubeライブ動画 南房総市提供）
+- 和田・白渚（南房総市和田町**白渚**・ライブ画像 ＢＣＭ提供）
+
+これを読み落として YouTube カメラを白渚に付けていたのが今回の誤り。
+
+### 方位を変えなかった25件について
+
+- **SOと実測が食い違った6件**（釣ヶ崎・太東・御宿・平砂浦・平井海岸、および
+  測定不能の部原・千倉）。とくに九十九里は全長60kmでほぼ一定の弧なのに、SO の
+  値は志田下68°から片貝135°まで散らばる。SO の「向き」は汀線の法線ではなく
+  ブレイク単位の向きか狙ううねりの方位を指しているらしく、単独の根拠にできない。
+- **SOに記述が無い15件**。実測しかなく、その実測は湾では±20°ずれることが
+  分かっているので、登録値を覆す根拠としては弱い。
+
+### 副産物：座標の疑わしいポイント
+
+方位の実測中に、方位とは別の問題として見つかったもの。**後述の「追加作業：座標を浜の上へ直す」で全件直した。**
+
+| ポイント | 登録座標 | 症状 |
+|---|---|---|
+| 部原 | 35.023, 140.128 | 半径5kmの全方位が海。沖に置かれている |
+| 千倉 | 34.972, 139.925 | 半径3km以内に海が無い。約4km内陸 |
+| 片貝 | 35.502, 140.493 | 汀線まで4.67km |
+| 野手浜 | 35.616, 140.633 | 汀線まで4.32km |
+| サンライズ | 35.46, 140.458 | 汀線まで4.03km。実際は一宮町東浪見（後述） |
+| 御宿 | 35.183, 140.4 | 汀線まで3.08km |
+| 波崎シーサイドパーク | 35.815, 140.685 | 汀線まで3.02km |
+
+Open-Meteo は最寄りの海グリッドに丸めるので数km程度ならデータは返るが、
+浜がどこを指しているかが曖昧になる。とくに部原と千倉は浜の上に無かった。
+
+### 既知の制限
+
+- `波崎シーサイドパーク` と `波崎`、`茅ヶ崎パーク` と `パイプライン（茅ヶ崎）`
+  は同じカメラを共有している。隣り合う同じ浜なので誤りではないが、カードを
+  並べると同じリンクが2回出る。テストは「同一エリア内なら共有してよい」で
+  固定してある。
+- `玉石` と `由比ヶ浜` の Surfers Ocean のリンク先はどちらも「鎌倉」ページ。
+  あのページが七里ヶ浜・稲村ケ崎・由比ヶ浜をまとめて載せているため。
+
+---
+
+## 追加作業：座標を浜の上へ直す
+
+ユーザーの指示「直して欲しい」（部原と千倉が浜を指していない件）を受けた作業。
+調べ始めてすぐ、浜の上に無いポイントは2件ではなく広範囲だと分かったので、33件すべてを対象にした。
+
+### チェックリスト
+
+- [x] 33件すべてについて、登録座標を逆ジオコーディングして所在の大字を出す
+- [x] Surfers Ocean が各ページに書いている住所と突き合わせ、「別の浜に居る」ものを洗い出す
+- [x] 別の浜に居るものは、正しい住所を国土地理院の住所検索で座標化してから汀線へ出す
+- [x] 正しい浜に居るものは、浜の向きに沿って直交に汀線へ寄せる
+- [x] 新座標を逆ジオコーディングして、期待した大字に入ったか1件ずつ確認する
+- [x] 座標が大きく動いたポイントは方位も測り直す
+- [x] 33件すべてを Open-Meteo の実APIに通し、4指標が揃うことを確認する
+- [x] `node --test` が 118/118 のままであることを確認する
+
+### 方法
+
+2段構えにした。単に「今の座標を最寄りの汀線へ寄せる」だけだと、白渚のときと同じ
+「別の浜に寄せてしまう」誤りを繰り返すため。
+
+1. **所在の判定** — 国土地理院の逆ジオコーダ（`LonLatToAddress`）は海の上では
+   `results` が `null` になる。これを陸／海の判定に使い、同時に陸なら大字名が取れる。
+   登録座標をこれにかけ、Surfers Ocean の各ページが書いている住所と一致するかを見た。
+   一致すれば「同じ浜の上で沖にずれているだけ」、違えば「別の浜に居る」。
+2. **汀線への出し方** — 浜が向く方位に沿ってまっすぐ150m刻みで進み、陸→海が
+   入れ替わった区間を11回二分して、陸側の点を採る。方位に沿って進むので
+   岸沿いの位置がずれない。出発点が海なら逆向き（内陸側）へ進む。
+   入り江など方位が海岸線と直交しない場所では、代わりに全方位を探して最寄りの汀線を採った。
+
+### 結果：1km以上動かしたポイント（17件）
+
+| ポイント | 旧座標 | 新座標 | 移動 | 逆ジオコーディング | 理由 |
+|---|---|---|---|---|---|
+| 花籠ポイント | 35.197, 140.345 | 35.017, 139.9869 | 38.25km | 和田町海発 | 移設：登録値は御宿町岩和田の沖。SOは白渚･花篭前･千倉の順に並べる＝和田町南部へ約38km |
+| 部原 | 35.023, 140.128 | 35.159, 140.3323 | 23.98km | 部原 | 移設：登録値は南房総市江見の沖。勝浦市部原へ約24km |
+| 木戸 | 35.395, 140.408 | 35.578, 140.4977 | 21.95km | 木戸 | 移設：登録値は長生村一松。山武市木戸(木戸浜)へ約23km |
+| 吉崎浜 | 35.685, 140.715 | 35.6725, 140.6247 | 8.33km | 東小笹 | 移設：登録値は旭市行内。匝瑳市吉崎の沖側の汀線へ約9km |
+| 御宿 | 35.183, 140.417 | 35.1819, 140.3527 | 5.85km | 浜 | 移設：登録値は岩和田の沖。御宿町浜(中央海水浴場)へ |
+| 野手浜 | 35.645, 140.66 | 35.6576, 140.6018 | 5.48km | 野手 | 移設：登録値は匝瑳市神宮寺の沖。匝瑳市野手へ |
+| 片貝 | 35.502, 140.493 | 35.5239, 140.4493 | 4.66km | 九十九里町片貝 | 移設：登録値は大網白里市南今泉(白里海岸)の沖。SOの住所は九十九里町片貝 |
+| サンライズ | 35.46, 140.458 | 35.3563, 140.3918 | 12.34km | 東浪見 | 移設：登録値は白子町牛込の沖。ユーザー提供の住所（一宮町東浪見7450-1）を番地で座標化 |
+| 平砂浦 | 34.913, 139.843 | 34.9397, 139.8174 | 3.78km | 洲宮 | 移設：登録値は南房総市白浜町滝口の沖。館山市平砂浦海岸へ |
+| 千倉 | 34.972, 139.925 | 34.9655, 139.9605 | 3.31km | 千倉町北朝夷 | 移設：登録値は千倉町瀬戸の内陸。千倉海岸(北朝夷)へ |
+| 波崎シーサイドパーク | 35.815, 140.82 | 35.8016, 140.7911 | 3.02km | 矢田部 | 直交：沖から汀線へ3.1km |
+| 飯岡 | 35.703, 140.745 | 35.7004, 140.7123 | 2.99km | 横根 | 移設：登録値は旭市上永井(飯岡漁港の東)。飯岡海岸(横根)へ |
+| 東浪見 | 35.33, 140.398 | 35.3455, 140.3931 | 1.85km | 東浪見 | 移設：登録値はいすみ市岬町中原(太東)。ユーザー提供の住所（一宮町東浪見7500-8）を番地で座標化 |
+| マルキポイント | 35.091, 140.082 | 35.1212, 140.133 | 4.32km | 東町 | 移設：ユーザー提供の住所（鴨川市東町994-20 坂下駐車場隣）を番地で座標化 |
+| 平井海岸 | 35.945, 140.675 | 35.965, 140.6859 | 2.44km | 大字平井 | 移設：登録値は鹿嶋市内陸。平井海岸の汀線へ |
+| 波崎 | 35.785, 140.83 | 35.7719, 140.8154 | 1.97km | 波崎 | 直交：沖から汀線へ2.0km |
+| 太東 | 35.298, 140.388 | 35.2923, 140.4072 | 1.86km | 岬町和泉 | 直交：沖1.9kmから汀線へ |
+
+### 汀線へ寄せただけのポイント（14件）
+
+| ポイント | 新座標 | 移動 | 逆ジオコーディング |
+|---|---|---|---|
+| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 1.35km | 東浪見 |
+| 吉浜 | 35.144, 139.1153 | 0.94km | 吉浜 |
+| パイプライン（茅ヶ崎） | 35.3174, 139.4186 | 0.6km | 菱沼海岸 |
+| 一宮 | 35.367, 140.3915 | 0.59km | 一宮 |
+| 鵠沼 | 35.3136, 139.4726 | 0.52km | 鵠沼海岸一丁目 |
+| 茅ヶ崎パーク | 35.3182, 139.4045 | 0.47km | 中海岸三丁目 |
+| 稲村ケ崎 | 35.3022, 139.525 | 0.36km | 稲村ガ崎一丁目 |
+| 国府津 | 35.2749, 139.2044 | 0.33km | 国府津一丁目 |
+| 由比ヶ浜 | 35.3084, 139.5443 | 0.27km | 由比ガ浜四丁目 |
+| 玉石 | 35.3031, 139.5192 | 0.26km | 稲村ガ崎三丁目 |
+| 辻堂 | 35.3184, 139.4481 | 0.05km | 辻堂西海岸三丁目 |
+| 和田浦 | 35.0399, 140.0212 | 0.02km | 和田町仁我浦 |
+| 千歳 | 34.9901, 139.9718 | 0.02km | 千倉町白子 |
+| 白渚 | 35.0331, 140.0069 | 0.01km | 和田町白渚 |
+
+変更なし：トップサンテ、七里ヶ浜
+
+### 座標の移動にともなって直した方位（5件）
+
+旧座標が別の海岸を指していたため、旧方位もその別の海岸の向きだった。新座標で汀線法線を測り直し、差が30°を超えた5件だけ実測値に合わせた。
+
+| ポイント | 旧方位 | 新方位 | 新座標での実測法線 |
+|---|---|---|---|
+| 木戸 | 95 | 130 | 130 |
+| 御宿 | 115 | 160 | 160 |
+| 部原 | 148 | 115 | 115 |
+| 千倉 | 175 | 95 | 95 |
+| 平井海岸 | 90 | 55 | 55 |
+
+### 判断に迷った3件（うち2件はユーザーから住所をもらって確定）
+
+- **花籠ポイント（確定）** — ユーザーから住所をもらった。
+  〒299-2712 千葉県南房総市和田町海発1591-2。
+  Surfers Ocean の並び順（「白渚･花篭前･千倉」）から南房総市和田町海発と推定していたが、
+  大字はその推定どおりだった。国土地理院に和田町海発の地番データが無く、1591番地は
+  解決せず大字の代表点 `35.018497, 139.981873` に落ちるため、座標は推定時のまま
+  `35.017, 139.9868`。**大字までは住所で確定、浜に沿った位置は代表点から出したまま。**
+  38km動かした判断そのものは正しかったことになる。
+- **マルキポイント（確定）** — ユーザーから住所をもらった。
+  〒296-0041 千葉県鴨川市東町994-20 坂下駐車場隣。
+  Surfers Ocean は鴨川ページで「鴨川市東町」、和田ページの本文では「マルキ(勝浦市)」と
+  書いていて食い違っていた。鴨川ページのほうが正しかった。
+  ただし自分は東町を前原海岸のことだと取り違えて前原の汀線に置いており、これも誤りだった。
+  国土地理院の住所検索で994番地を座標化すると `35.122055, 140.131256`（逆ジオコーディングで「東町」）で、
+  前原海岸より約4km北東。ここから方位120°に沿って0.3km出た `35.1212, 140.1330` を採用した。
+- **サンライズ（確定）** — ユーザーから2回住所をもらった。1回目の
+  「大網白里市南今泉4881-1」は誤りで、正しくは
+  **〒299-4303 千葉県長生郡一宮町東浪見7450-1**。
+  つまり登録名にあった「（白里）」は最初から誤りで、Surfers Ocean の
+  一宮町東浪見の「サンライズ」と同じポイントだった。名前から「（白里）」を外した。
+  7450番地を座標化すると `35.356945, 140.388992`、そこから方位105°に沿って汀線まで出し、
+  陸側の `35.3563, 140.3918`（逆ジオコーディングで「東浪見」）を採用した。
+  → 詳細は「追加作業：サンライズの住所訂正」。
+
+### 大字が期待と違ったが採用した3件
+
+汀線ぎわの細長い大字が、内陸側の大字と別名になっているケース。
+
+| ポイント | 内陸側 | 汀線の大字 | 判断 |
+|---|---|---|---|
+| 吉崎浜 | 匝瑳市吉崎 | 東小笹 | 吉崎の真沖。吉崎は汀線まで届いていない |
+| 平砂浦 | 館山市布沼 | 洲宮 | 洲宮も平砂浦海岸に面している |
+| 波崎シーサイドパーク | 神栖市波崎 | 矢田部 | 波崎の北隣。波崎本体と4km離れ、別ポイントとして成立する |
+
+### 検証（実際の出力）
+
+`node --test` → `ℹ pass 118 / ℹ fail 0`。
+
+33件すべてを Open-Meteo の marine / forecast 両APIに通し、`slotConditions` →
+`scoreSpot` まで流して4指標（波高・周期・うねり向き・風）が揃うことを確認した。
+欠損はゼロ件。スコアは片貝46点、飯岡56点、平砂浦59点、鵠沼65点、由比ヶ浜65点など。
+
+海の格子までの距離は0.8〜16.6km。Open-Meteo の波浪モデルは格子が粗く、
+陸寄りの点は最寄りの海格子に丸められるため、これは座標を直しても残る。
+ただし風は陸の格子をそのまま使うので、浜の上に置いた分だけ実際の浜の風に近づいた。
+
+### 今回やらなかったこと
+
+- 方位は、座標が別の浜へ移った5件（木戸・御宿・部原・千倉・平井海岸）だけ直した。
+  差が30°以下の28件は触っていない。実測法線は直線的な海岸では±5°だが、
+  湾や岬では最大20°ほど浅く出ることが前のフェーズで分かっているため。
+- 「サンライズ（白里）」の名前は、次の節で「サンライズ」に直した。
+
+---
+
+## 追加作業：サンライズの住所訂正
+
+ユーザーから訂正。1回目にもらった「大網白里市南今泉4881-1」は誤りで、
+正しくは **〒299-4303 千葉県長生郡一宮町東浪見7450-1**。
+
+### チェックリスト
+
+- [x] 住所を座標化し、汀線の陸側まで出す
+- [x] 「サンライズ（白里）」と東浪見が90mで重なる問題を解く
+- [x] 名前から誤りの「（白里）」を外す
+- [x] カメラの割り当てを実態に合わせる
+- [x] 逆ジオコーディングと実データで検証する
+- [x] `node --test`
+
+### 何が起きていたか
+
+前のフェーズで「（白里）」という登録名を住所の裏付けとして信用し、
+白里海岸に置いた。名前自体が誤りだったので、裏付けにならなかった。
+
+正しい住所で置き直すと `35.3563, 140.3918`。これは登録済みの東浪見
+`35.3555, 140.3919` から **約90m** しかなく、実質同じ点になってしまう。
+
+### 東浪見をどう扱ったか
+
+Surfers Ocean の「東浪見」URL のページは、実体がタイトル「サンライズ(一宮町)」で、
+カメラも「サンライズ･東浪見ライブカメラ」、エリアを
+「シーサイドオーツカ･サンライズ･東浪見」とひとまとめにしている。
+⑦の駐車場一覧に載る東浪見7449 / 7432 / 7397-2 はすべて「サンライズ駐車場」で、
+東浪見という名前の駐車場は無い。つまり SO 側には東浪見の独立した位置の手がかりが無い。
+
+一方、BCM の採番は一宮 3/31・サンライズ 3/32・志田下 3/34 で、間の 3/33 が空いている。
+一宮エリアで北から一宮→サンライズ→東浪見→志田下→太東と並ぶ並びは、
+白渚と和田浦のときと同じく「同じ大字に別のブレイクがある」ケースなので、分けたまま残した。
+
+東浪見は、住所で確定したサンライズと志田下の中間から汀線へ出して暫定的に置いた。
+**この時点では住所の裏付けが無い推定だった。**
+→ 直後にユーザーから住所をもらい、次の節で確定させている。
+
+### 変更後の一宮エリア
+
+| ポイント | 座標 | 方位 | 隣との距離 | カメラ |
+| --- | --- | --- | --- | --- |
+| 一宮 | 35.367, 140.3915 | 90 | — | 2 |
+| サンライズ | 35.3563, 140.3918 | 90 | 1.19km | 2 |
+| 東浪見 | 35.3455, 140.3931 | 105 | 1.21km | 1 |
+| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 100 | 1.09km | 2 |
+| 太東 | 35.2923, 140.4072 | 110 | 4.97km | 2 |
+
+### 名前とカメラ
+
+- `サンライズ（白里）` → **`サンライズ`**。「（白里）」は誤りと判明したため外した。
+- サンライズのカメラを2本にした。Surfers Ocean のサンライズページ（実体が
+  「東浪見」URL のもの）と、元から付いていた BCM サンライズ `wave-detail/3/32/`。
+  優先度は YouTube → Surfers Ocean → BCM なので SO を先に置いた。
+- 東浪見は同じ SO ページを共有する。カメラ名が「サンライズ･東浪見ライブカメラ」で
+  東浪見を名指ししているため。1つのURLを隣接ポイントで共有するのは
+  白渚/和田浦・波崎/波崎シーサイドパーク・茅ヶ崎パーク/パイプライン・玉石/由比ヶ浜と同じ扱いで、
+  `spots.test.js` の「共有URLは同一リージョン内に限る」も満たしている（どちらも千葉北）。
+
+### 方位
+
+サンライズは実測法線90°で登録値90°と差0°、東浪見は実測85°で登録値105°と差20°。
+どちらも「差が30°を超えたときだけ直す」という基準に掛からないので据え置いた。
+
+### 検証（実際の出力）
+
+```
+東浪見     35.3502,140.3925 大字=東浪見 スコア=37/39/39
+サンライズ   35.3563,140.3918 大字=東浪見 スコア=37/39/39
+
+33ポイント中 欠損あり=0件
+ℹ pass 118
+ℹ fail 0
+```
+
+座標を決める途中で `35.3563, 140.3919` が逆ジオコーディングで「海上」に落ちたため、
+西へ10m寄せて `140.3918` にした。
+
+※ このとき「他の32件と同じく陸側に揃えている」と書いたが、これは誤りだった。
+33件を全部逆ジオコーディングすると11件（飯岡・吉崎浜・野手浜・マルキ・千倉・平井海岸・
+波崎・吉浜・茅ヶ崎パーク・辻堂・七里ヶ浜）が「海上」を返す。座標を小数4桁（約10m）に
+丸めた時点で汀線のどちら側に落ちるかが決まるだけで、揃ってはいない。
+Open-Meteo は波浪を最寄りの海格子、風を最寄りの陸格子から取り、どちらも格子が
+10m より遥かに粗いので実害は無い。揃えるために11件を動かすことはしていない。
+
+---
+
+## 追加作業：東浪見と花籠の住所確定、志田下の連鎖修正
+
+ユーザーから残り2件の住所をもらった。
+
+- 東浪見：〒299-4303 千葉県長生郡一宮町東浪見7500-8
+- 花籠：〒299-2712 千葉県南房総市和田町海発1591-2
+
+### チェックリスト
+
+- [x] 2件の住所を座標化して汀線へ出す
+- [x] 東浪見が志田下と11mで重なる問題を解く
+- [x] 志田下の位置を独立した根拠で決め直す
+- [x] 全33件を逆ジオコーディングと実データで検証する
+- [x] `node --test`
+
+### 東浪見（確定）
+
+7500番地は国土地理院で解決した（`35.346275, 140.389618`「千葉県一宮町東浪見７５００番地」）。
+そこから方位105°で汀線へ出して `35.3455, 140.3931`（逆ジオコーディングで「東浪見」）。
+
+前の節で暫定的に置いた `35.3502` から0.53km南。これで東浪見は推定ではなくなった。
+
+### 花籠（大字まで確定、座標は据え置き）
+
+国土地理院に**和田町海発の地番データが無い**。1591 でも 1500 でも 1700 でも
+同じ大字の代表点 `35.018497, 139.981873` を返し、`title` も「番地」が付かない
+「千葉県南房総市和田町海発」のままなので、番地は解決していない。
+
+ただし大字「和田町海発」はユーザーの住所と一致しており、これは Surfers Ocean の
+並び順から推定していたとおりだった。代表点から出した汀線も既存値とまったく同じ
+（移動 0.00km）。座標は `35.017, 139.9868` のまま据え置いた。
+
+和田町海発の汀線は約35.0165〜35.025の約1kmで、浜に沿った位置の不確かさはこの範囲。
+
+### 志田下を1.1km南へ（連鎖）
+
+東浪見の新座標 `35.3455, 140.3931` は、登録済みの釣ヶ崎（志田下）`35.3456, 140.3931`
+から**11m**。両方が正しいことはあり得ないので、志田下のほうを独立した根拠で確かめた。
+
+| 根拠 | 内容 |
+| --- | --- |
+| Wikipedia の座標 | 「釣ヶ崎海岸」= `35.33588889, 140.39463889` |
+| Wikipedia のリダイレクト | 「志田下」→「釣ヶ崎海岸」。SOのページ名「志田下(釣ヶ崎)」と一致 |
+| Wikipedia の本文 | 「九十九里浜の**南端**に位置する海岸」 |
+| 大字の境界（実測） | 汀線を南へ辿ると 35.3320 までが東浪見、35.3305 からいすみ市岬町中原。東浪見の南端は約35.331 |
+
+4つとも「東浪見大字の南の端」を指しており、登録値 35.3456 は1.1km北すぎた。
+Wikipedia の点から方位100°で汀線へ出し、`35.3358, 140.3949`（逆ジオコーディングで
+「東浪見」）を採用した。
+
+なお SO が志田下の駐車場として載せる「一宮町東浪見6961-7」は国土地理院で解決せず
+大字の代表点に落ちるため、根拠には使っていない。番地が解決したかどうかは
+`title` に「番地」が付くかで判定している。
+
+### 番地が解決したもの・しなかったもの
+
+| 住所 | 結果 |
+| --- | --- |
+| 東浪見7449（SO・サンライズ駐車場） | ✓ `35.355904, 140.389099` |
+| 東浪見7450（ユーザー・サンライズ） | ✓ `35.356945, 140.388992` |
+| 東浪見7500（ユーザー・東浪見） | ✓ `35.346275, 140.389618` |
+| 東浪見7700 | ✓ `35.342079, 140.381851` |
+| 東浪見6961-7 / 7432 / 7397-2 | ✗ 大字の代表点 |
+| 和田町海発1591-2 ほか | ✗ 大字の代表点（地番データ自体が無い） |
+
+解決した4件は番地が大きいほど南で、7450（サンライズ）→7500（東浪見）→7700 の順に
+並ぶ。ユーザーの2つの住所が北から順に並ぶことと矛盾しない。
+
+### 変更後の一宮エリア
+
+| ポイント | 座標 | 方位 | 隣との距離 | 根拠 |
+| --- | --- | --- | --- | --- |
+| 一宮 | 35.367, 140.3915 | 90 | — | 既存 |
+| サンライズ | 35.3563, 140.3918 | 90 | 1.19km | 住所（東浪見7450-1） |
+| 東浪見 | 35.3455, 140.3931 | 105 | 1.21km | 住所（東浪見7500-8） |
+| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 100 | 1.09km | Wikipedia + 大字の境界 |
+| 太東 | 35.2923, 140.4072 | 110 | 4.97km | 既存 |
+
+5点がほぼ1km等間隔に並び、実際の一宮エリアのブレイクの並びと合う。
+
+### 方位
+
+| ポイント | 登録 | 実測法線 | 差 | 判断 |
+| --- | --- | --- | --- | --- |
+| 東浪見 | 105 | 80 | 25° | 据え置き（30°以下） |
+| 釣ヶ崎（志田下） | 100 | 70 | 30° | 据え置き（30°超ではない。海率15/36で太東崎の影響を受けている） |
+| 花籠ポイント | 110 | 130 | 20° | 据え置き（30°以下） |
+
+### 検証（実際の出力）
+
+```
+釣ヶ崎（志田下）  35.3358,140.3949 大字=東浪見      スコア=37/39/39
+東浪見       35.3455,140.3931 大字=東浪見      スコア=37/39/39
+花籠ポイント    35.017,139.9868  大字=和田町海発   スコア=45/37/34
+
+33ポイント中 欠損あり=0件
+全33件で最も近い2点: 玉石／稲村ケ崎 = 0.54km
+ℹ pass 119
+ℹ fail 0
+```
+
+一番近い2点が湘南の玉石／稲村ケ崎の0.54kmになり、一宮エリアの重なりは解消した。
+
+### 追加したテスト
+
+`spots.test.js` に「別のポイント同士が同じ地点に重ならない（100m以上離れている）」を足した。
+今回の2つの重なり（サンライズと東浪見の90m、東浪見と志田下の11m）は、どちらも
+spots.json だけを見れば外部データ無しで分かる矛盾だったのに、指摘されるまで気づかなかった。
+
+閾値100mは現実の最小間隔（玉石と稲村ケ崎の約540m）より十分小さく、正しいデータを
+落とさずに座標の取り違えだけを捕まえる。テストを通すために閾値を選んだのではなく、
+90mの重なりも捕まる値にしてある。
+
+赤→緑も確認した。東浪見の座標を志田下と同じにすると
+`AssertionError: 釣ヶ崎（志田下） と 東浪見 が 0m しか離れていない` で落ち、
+正しいデータに戻すと 119/119 通る。
+
+これで `node --test` は **119件**（この節の前は118件）。
+
+### 残っている推定
+
+**無し。** 33件すべてが住所・外部の座標・実測のいずれかで裏付けられた。
+唯一、花籠ポイントだけは大字までの確定で、浜に沿った約1kmの範囲内の位置は
+大字の代表点から出したままである。
