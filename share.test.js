@@ -440,3 +440,116 @@ test("drawShareCard は見出しの色と太さを描き分ける", () => {
   assert.equal(subtitle.fillStyle, "#687481");
   assert.ok(subtitle.font.startsWith("700 38px"));
 });
+
+const WEEK_ROWS = [
+  { date: "2026-09-20", slot: "morning", name: "志田下", score: 48, best: false },
+  { date: "2026-09-21", slot: "evening", name: "志田下", score: 41, best: false },
+  { date: "2026-09-22", slot: null, name: null, score: null, best: false },
+  { date: "2026-09-23", slot: "morning", name: "パイプライン（茅ヶ崎）", score: 62, best: true },
+  { date: "2026-09-24", slot: "morning", name: "一宮", score: 36, best: false },
+  { date: "2026-09-25", slot: "afternoon", name: "志田下", score: 52, best: false },
+  { date: "2026-09-26", slot: "evening", name: "片貝", score: 26, best: false },
+];
+
+function drawWeekly(rows, count) {
+  const f = fakeCanvas();
+  Sh.drawWeeklyCard(f.canvas, { region: "千葉北", dates: WEEK_DATES, rows, count });
+  return f;
+}
+
+test("drawWeeklyCard は1080×1080のcanvasに描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.canvas.height, 1080);
+});
+
+test("drawWeeklyCard はエリアと期間を見出しにする", () => {
+  const texts = drawWeekly(WEEK_ROWS, 10).texts();
+  assert.equal(texts[0], "SURF CHECK");
+  assert.equal(texts[1], "千葉北 / 週間予報");
+  assert.equal(texts[2], "9月20日(日) 〜 9月26日(土)");
+});
+
+test("drawWeeklyCard は7日分の日付を縦に並べる", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const dates = f.calls.filter((c) => c.op === "fillText" && /^\d+\/\d+\(.\)$/.test(c.text));
+  assert.deepEqual(dates.map((c) => c.text), [
+    "9/20(日)", "9/21(月)", "9/22(火)", "9/23(水)", "9/24(木)", "9/25(金)", "9/26(土)",
+  ]);
+  // 1行96pxずつ下がり、最後の行はフッタ(y=1016)にかからない
+  assert.deepEqual(dates.map((c) => c.y), [350, 446, 542, 638, 734, 830, 926]);
+});
+
+test("drawWeeklyCard は週ベストの行にだけ★を描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const stars = f.calls.filter((c) => c.op === "fillText" && c.text === "★");
+  assert.equal(stars.length, 1);
+  // 4行目(9/23)と同じ高さ
+  assert.equal(stars[0].y, 638);
+});
+
+test("drawWeeklyCard はデータなしの日に点数を描かない", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.ok(f.texts().includes("データなし"));
+  // 点数の「/85」は7行のうちデータのある6行だけ
+  assert.equal(f.texts().filter((t) => t === "/85").length, 6);
+});
+
+test("drawWeeklyCard は点数をスコア帯の色で描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  assert.equal(f.drawn("62").fillStyle, "#1d9a72"); // good (50以上)
+  assert.equal(f.drawn("48").fillStyle, "#b7791f"); // ok (30以上)
+  assert.equal(f.drawn("26").fillStyle, "#b84a3c"); // bad
+});
+
+test("drawWeeklyCard は枠に収まらないポイント名を…で切る", () => {
+  const rows = WEEK_ROWS.map((r, i) => (
+    i === 0 ? { ...r, name: "あいうえおかきくけこさしすせそたちつてと" } : r
+  ));
+  const drawnName = drawWeekly(rows, 10).texts().find((t) => t.startsWith("あいうえお"));
+  assert.ok(drawnName.endsWith("…"), `末尾が…で切れていない: ${drawnName}`);
+});
+
+test("drawWeeklyCard はポイント数とサイトのURLを下に描く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+  const note = f.drawn("全10ポイント");
+  assert.equal(note.x, 64);
+  assert.equal(note.y, 1016);
+  const url = f.drawn("tk0407.github.io/surf-check");
+  assert.equal(url.textAlign, "right");
+  assert.equal(url.y, 1016);
+});
+
+test("rankingShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
+  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
+  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
+  assert.equal(p.headline, "千葉北 9/20(日) 朝のサーフチェック");
+  assert.equal(p.text, Sh.shareText("千葉北", "2026-09-20", "morning", CARD_RESULTS, p.url));
+  assert.equal(p.filename, "surf-check-千葉北-2026-09-20-morning.png");
+});
+
+test("rankingShare の draw はランキングカードを描く", () => {
+  const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
+  const f = fakeCanvas();
+  p.draw(f.canvas);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.texts()[1], "千葉北 / 9月20日(日)");
+  assert.ok(f.texts().includes("ほか1件"));
+});
+
+test("weeklyShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
+  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly");
+  assert.equal(p.headline, "千葉北 9/20(日)〜9/26(土)の週間予報");
+  assert.equal(p.text, Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA], p.url));
+  assert.equal(p.filename, "surf-check-千葉北-weekly-2026-09-20.png");
+});
+
+test("weeklyShare の draw は週間カードを描く", () => {
+  const p = Sh.weeklyShare("https://tk0407.github.io/surf-check/", "千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA]);
+  const f = fakeCanvas();
+  p.draw(f.canvas);
+  assert.equal(f.canvas.width, 1080);
+  assert.equal(f.texts()[1], "千葉北 / 週間予報");
+  assert.ok(f.texts().includes("全2ポイント"));
+});

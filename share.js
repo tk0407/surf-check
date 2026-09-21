@@ -263,9 +263,103 @@
     drawCardFooter(ctx, rest > 0 ? `ほか${rest}件` : "");
   }
 
+  // 画面（style.css の .wk-cell）と同じスコア帯の色。帯の判定そのものは
+  // Forecast.scoreBand に任せ、しきい値をここに書き写さない。
+  const BAND_COLORS = { good: "#1d9a72", ok: "#b7791f", bad: "#b84a3c" };
+  // 行は上から96pxおき。左の44pxは週ベストの★のために空けてある。
+  const WEEK_ROW_TOP = CARD_PAD + 250;
+  const WEEK_ROW_STEP = 96;
+  const WEEK_DATE_LEFT = CARD_PAD + 44;
+  const WEEK_SLOT_LEFT = CARD_PAD + 230;
+  const WEEK_NAME_LEFT = CARD_PAD + 290;
+
+  function drawWeeklyCard(canvas, info) {
+    canvas.width = CARD_SIZE;
+    canvas.height = CARD_SIZE;
+    const ctx = canvas.getContext("2d");
+    const last = info.dates[info.dates.length - 1];
+    drawCardFrame(ctx, `${info.region} / 週間予報`,
+      `${longDateLabel(info.dates[0])} 〜 ${longDateLabel(last)}`);
+
+    info.rows.forEach((row, i) => {
+      const top = WEEK_ROW_TOP + i * WEEK_ROW_STEP;
+
+      if (row.best) {
+        ctx.fillStyle = "#007f8f";
+        ctx.font = `900 34px ${CARD_FONT}`;
+        ctx.fillText("★", CARD_PAD, top + 36);
+      }
+
+      ctx.fillStyle = "#124559";
+      ctx.font = `700 34px ${CARD_FONT}`;
+      ctx.fillText(mdLabel(row.date), WEEK_DATE_LEFT, top + 36);
+
+      if (row.score === null) {
+        ctx.fillStyle = "#687481";
+        ctx.font = `600 32px ${CARD_FONT}`;
+        ctx.fillText("データなし", WEEK_SLOT_LEFT, top + 36);
+        return;
+      }
+
+      // 点数は右端から逆算して置く（ランキングカードと同じ）
+      ctx.font = `900 48px ${CARD_FONT}`;
+      const scoreText = String(row.score);
+      const scoreWidth = ctx.measureText(scoreText).width;
+      ctx.font = `700 26px ${CARD_FONT}`;
+      const suffixWidth = ctx.measureText("/85").width;
+      const scoreLeft = CARD_SIZE - CARD_PAD - scoreWidth - suffixWidth;
+      ctx.fillStyle = BAND_COLORS[Forecast.scoreBand(row.score)];
+      ctx.font = `900 48px ${CARD_FONT}`;
+      ctx.fillText(scoreText, scoreLeft, top + 40);
+      ctx.fillStyle = "#687481";
+      ctx.font = `700 26px ${CARD_FONT}`;
+      ctx.fillText("/85", scoreLeft + scoreWidth, top + 40);
+
+      ctx.fillStyle = "#687481";
+      ctx.font = `700 34px ${CARD_FONT}`;
+      ctx.fillText(SLOT_SHORT[row.slot], WEEK_SLOT_LEFT, top + 36);
+
+      // ポイント名は点数の手前まで
+      ctx.fillStyle = "#17212b";
+      ctx.font = `800 40px ${CARD_FONT}`;
+      ctx.fillText(fitText(ctx, row.name, scoreLeft - WEEK_NAME_LEFT - 24), WEEK_NAME_LEFT, top + 38);
+    });
+
+    drawCardFooter(ctx, `全${info.count}ポイント`);
+  }
+
+  // app.js が共有に必要とする値を1か所で組み立てる。draw は canvas を受け
+  // 取って対応するカードを描く。
+  function rankingShare(base, region, date, slot, results) {
+    const url = shareUrl(base, region, date, slot);
+    return {
+      text: shareText(region, date, slot, results, url),
+      headline: shareLines(region, date, slot, results)[0],
+      url,
+      filename: `surf-check-${region}-${date}-${slot}.png`,
+      draw: (canvas) => drawShareCard(canvas, {
+        region, date, slot, rows: cardRows(results), count: results.length,
+      }),
+    };
+  }
+
+  function weeklyShare(base, region, dates, results) {
+    const url = weeklyUrl(base, region);
+    return {
+      text: weeklyText(region, dates, results, url),
+      headline: weeklyShareLines(region, dates, results)[0],
+      url,
+      filename: `surf-check-${region}-weekly-${dates[0]}.png`,
+      draw: (canvas) => drawWeeklyCard(canvas, {
+        region, dates, rows: weeklyRows(dates, results), count: results.length,
+      }),
+    };
+  }
+
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
     shareLines, shareText, shareUrl, drawShareCard, parseParams,
     weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,
+    drawWeeklyCard, rankingShare, weeklyShare,
   };
 });
