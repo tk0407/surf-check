@@ -378,8 +378,15 @@ function canShareImageFile() {
   }
 }
 
+// 前回の失敗表示を消す。消さないと、あとで共有に成功しても古いエラーが残る。
+function clearShareNote(root) {
+  const note = root.querySelector(".share-note");
+  if (note) note.remove();
+}
+
 // canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
 async function shareImage(root, payload) {
+  clearShareNote(root);
   const canvas = document.createElement("canvas");
   payload.draw(canvas);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));

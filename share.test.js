@@ -542,6 +542,10 @@ test("rankingShare は共有テキスト・URL・ファイル名をまとめて�
   assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
   assert.equal(p.headline, "千葉北 9/20(日) 朝のサーフチェック");
   assert.equal(p.text, Sh.shareText("千葉北", "2026-09-20", "morning", CARD_RESULTS, p.url));
+  // 上の1行は shareText の言い換えなので、実際に送られる文字列そのものも押さえる。
+  assert.equal(p.text.split("\n")[0], "千葉北 9/20(日) 朝のサーフチェック");
+  assert.equal(p.text.split("\n")[1], "1位 志田下 62点（1.4m / 南西5.5m/s サイドオフ）");
+  assert.ok(p.text.endsWith(`\n\n${p.url}`), "共有テキストの末尾がURLで終わっていない");
   assert.equal(p.filename, "surf-check-千葉北-2026-09-20-morning.png");
 });
 
@@ -559,6 +563,10 @@ test("weeklyShare は共有テキスト・URL・ファイル名をまとめて�
   assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&mode=weekly");
   assert.equal(p.headline, "千葉北 9/20(日)〜9/26(土)の週間予報");
   assert.equal(p.text, Sh.weeklyText("千葉北", WEEK_DATES, [SHIDA, ICHINOMIYA], p.url));
+  // 上の1行は weeklyText の言い換えなので、実際に送られる文字列そのものも押さえる。
+  assert.equal(p.text.split("\n")[0], "千葉北 9/20(日)〜9/26(土)の週間予報");
+  assert.equal(p.text.split("\n").filter((l) => l.startsWith("★")).length, 1);
+  assert.ok(p.text.endsWith(`\n\n${p.url}`), "共有テキストの末尾がURLで終わっていない");
   assert.equal(p.filename, "surf-check-千葉北-weekly-2026-09-20.png");
 });
 
