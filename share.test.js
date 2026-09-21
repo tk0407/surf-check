@@ -520,6 +520,23 @@ test("drawWeeklyCard はポイント数とサイトのURLを下に描く", () =>
   assert.equal(url.y, 1016);
 });
 
+test("drawWeeklyCard は日付・時間帯・ポイント名を3つの列に分けて置く", () => {
+  const f = drawWeekly(WEEK_ROWS, 10);
+
+  // 時間帯はテキストで選ぶ（「データなし」も時間帯列と同じxに描かれるため）。
+  const slots = f.calls.filter((c) => c.op === "fillText" && ["朝", "昼", "夕"].includes(c.text));
+  assert.deepEqual(slots.map((c) => c.text), ["朝", "夕", "朝", "朝", "昼", "夕"]);
+  assert.ok(slots.every((c) => c.x === 294));
+
+  const dates = f.calls.filter((c) => c.op === "fillText" && /^\d+\/\d+\(.\)$/.test(c.text));
+  assert.ok(dates.every((c) => c.x === 108));
+
+  const names = f.calls.filter((c) => c.op === "fillText"
+    && ["志田下", "パイプライン（茅ヶ崎）", "一宮", "片貝"].includes(c.text));
+  assert.equal(names.length, 6);
+  assert.ok(names.every((c) => c.x === 354));
+});
+
 test("rankingShare は共有テキスト・URL・ファイル名をまとめて返す", () => {
   const p = Sh.rankingShare("https://tk0407.github.io/surf-check/", "千葉北", "2026-09-20", "morning", CARD_RESULTS);
   assert.equal(p.url, "https://tk0407.github.io/surf-check/?region=%E5%8D%83%E8%91%89%E5%8C%97&date=2026-09-20&slot=morning");
