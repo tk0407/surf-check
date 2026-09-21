@@ -108,14 +108,8 @@ async function rankSpot(spot, date, slot) {
   return { spot, scores, data, tide, tideTrend, tideSeries };
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+// HTML エスケープは共有カードと同じものを使う。
+const escapeHtml = Share.escapeHtml;
 
 function waveIconClass(height) {
   if (height < 0.8) return "small";
@@ -314,6 +308,7 @@ function resultCard(result, index) {
     </div>
 
     <div class="reason-row">${reasonChips(result)}</div>
+    ${Share.camRow(result.spot)}
   </article>`;
 }
 
@@ -723,7 +718,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });
   document.getElementById("weekly").addEventListener("click", onWeeklyClick);
-  const r = await fetch("spots.json");
+  const r = await fetch("spots.json?v=20260924");
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", check);
   document.getElementById("checkTop").addEventListener("click", check);

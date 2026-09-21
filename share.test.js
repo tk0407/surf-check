@@ -615,3 +615,86 @@ test("drawWeeklyCard は0点の行を「データなし」にせず0点として
   // 0点の行も時間帯の列を描く（欠測の分岐に入っていない証拠）。
   assert.equal(f.texts().filter((t) => t === "朝").length, 3);
 });
+
+// --- camRow: 検索結果カードに出すライブカメラのリンク行 ---
+
+// href の値だけを出現順に取り出す。属性の並びに依存しないよう属性単位で拾う。
+function hrefs(html) {
+  return Array.from(html.matchAll(/href="([^"]*)"/g)).map((m) => m[1]);
+}
+
+// リンクの表示文字（<a ...>ここ</a>）を出現順に取り出す。
+function linkTexts(html) {
+  return Array.from(html.matchAll(/<a\b[^>]*>([^<]*)<\/a>/g)).map((m) => m[1]);
+}
+
+const CAM_A = { label: "YouTube 部原ビーチ", url: "https://www.youtube.com/watch?v=G2tN6QaDbJQ" };
+const CAM_B = { label: "BCM 部原・メイン", url: "https://www.bcm-surfpatrol.com/wave-detail/4/41/" };
+const CAM_C = { label: "Surfers Ocean 部原", url: "https://www.surfers-ocean.com/x/" };
+
+test("camRow は cams が無いポイントで空文字を返す（行ごと出さない）", () => {
+  assert.equal(Sh.camRow({ name: "木戸" }), "");
+});
+
+test("camRow は cams が空配列のポイントで空文字を返す", () => {
+  assert.equal(Sh.camRow({ name: "平砂浦", cams: [] }), "");
+});
+
+test("camRow は spot が undefined でも例外を投げず空文字を返す", () => {
+  assert.equal(Sh.camRow(undefined), "");
+});
+
+test("camRow はカメラ1本なら a 要素を1つ、URLとラベルをそのまま出す", () => {
+  const html = Sh.camRow({ name: "部原", cams: [CAM_A] });
+  assert.deepEqual(hrefs(html), [CAM_A.url]);
+  assert.deepEqual(linkTexts(html), [CAM_A.label]);
+  assert.ok(html.includes("ライブカメラ"), "行の見出しが出ていない");
+});
+
+test("camRow はカメラ2本を spots.json の並び順どおりに出す", () => {
+  const html = Sh.camRow({ name: "部原", cams: [CAM_A, CAM_B] });
+  assert.deepEqual(hrefs(html), [CAM_A.url, CAM_B.url]);
+  assert.deepEqual(linkTexts(html), [CAM_A.label, CAM_B.label]);
+});
+
+test("camRow はカメラ3本以上でも先頭2本だけに切る", () => {
+  const html = Sh.camRow({ name: "部原", cams: [CAM_A, CAM_B, CAM_C] });
+  assert.deepEqual(hrefs(html), [CAM_A.url, CAM_B.url]);
+  assert.ok(!html.includes(CAM_C.url), "3本目が出ている");
+  assert.ok(!html.includes(CAM_C.label), "3本目のラベルが出ている");
+});
+
+test("camRow は各リンクに target=_blank と rel=noopener noreferrer を付ける", () => {
+  const html = Sh.camRow({ name: "部原", cams: [CAM_A, CAM_B] });
+  const anchors = html.match(/<a\b[^>]*>/g);
+  assert.equal(anchors.length, 2);
+  for (const a of anchors) {
+    assert.ok(a.includes('target="_blank"'), `target が無い: ${a}`);
+    assert.ok(a.includes('rel="noopener noreferrer"'), `rel が無い: ${a}`);
+  }
+});
+
+test("camRow は URL の引用符と山括弧をエスケープして属性を閉じさせない", () => {
+  const html = Sh.camRow({
+    name: "罠", cams: [{ label: "x", url: '" onerror="alert(1)' }],
+  });
+  assert.ok(!html.includes('" onerror='), "href から属性が抜け出している");
+  assert.deepEqual(hrefs(html), ["&quot; onerror=&quot;alert(1)"]);
+});
+
+test("camRow はラベルの山括弧とアンパサンドをエスケープする", () => {
+  const html = Sh.camRow({
+    name: "罠", cams: [{ label: '<img src=x onerror=alert(1)>&', url: "https://example.com/" }],
+  });
+  assert.ok(!html.includes("<img"), "ラベルから要素が生えている");
+  assert.deepEqual(linkTexts(html), ["&lt;img src=x onerror=alert(1)&gt;&amp;"]);
+});
+
+test("escapeHtml は5種類の文字をすべて実体参照に置き換える", () => {
+  assert.equal(Sh.escapeHtml(`&<>"'`), "&amp;&lt;&gt;&quot;&#39;");
+});
+
+test("escapeHtml は文字列以外を文字列にしてから処理する", () => {
+  assert.equal(Sh.escapeHtml(0), "0");
+  assert.equal(Sh.escapeHtml(null), "null");
+});
