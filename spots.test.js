@@ -29,6 +29,28 @@ test("ポイント名は重複しない（app.js が名前で結果を引くた�
   assert.equal(new Set(names).size, names.length, `重複: ${names.filter((n, i) => names.indexOf(n) !== i)}`);
 });
 
+test("別のポイント同士が同じ地点に重ならない（100m以上離れている）", () => {
+  // 住所を取り違えると、隣のブレイクの座標へ寄ってしまい2件が実質同じ点になる。
+  // 過去に東浪見とサンライズが90m、東浪見と志田下が11mまで寄った。
+  // 100m は現実の最小間隔（玉石と稲村ケ崎の約540m）より十分小さく、
+  // 正しいデータを落とさずに座標の取り違えだけを捕まえる。
+  const MIN_KM = 0.1;
+  const distanceKm = (a, b) => {
+    const dy = (a.lat - b.lat) * 111.32;
+    const dx = (a.lon - b.lon) * 111.32 * Math.cos((a.lat * Math.PI) / 180);
+    return Math.sqrt(dy * dy + dx * dx);
+  };
+  for (let i = 0; i < SPOTS.length; i += 1) {
+    for (let j = i + 1; j < SPOTS.length; j += 1) {
+      const km = distanceKm(SPOTS[i], SPOTS[j]);
+      assert.ok(
+        km >= MIN_KM,
+        `${SPOTS[i].name} と ${SPOTS[j].name} が ${Math.round(km * 1000)}m しか離れていない`
+      );
+    }
+  }
+});
+
 test("cams があるポイントは1〜2本で、各カメラが label と https の url を持つ", () => {
   for (const s of SPOTS) {
     if (!("cams" in s)) continue;
