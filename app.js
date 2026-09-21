@@ -338,22 +338,16 @@ function drawTideCurves(el, results, date, slot) {
 // 共有ボタンの行。結果が1件以上あるときだけ描く。
 function shareRow() {
   return `<div class="share-row">
-      <button type="button" id="shareLine" class="share-btn line">LINEで送る</button>
-      <button type="button" id="shareImage" class="share-btn">画像で共有</button>
+      <button type="button" class="share-btn line share-line">LINEで送る</button>
+      <button type="button" class="share-btn share-image">画像で共有</button>
     </div>`;
 }
 
-// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
-function openLineShare(region, date, slot, results) {
-  const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
-  const text = Share.shareText(region, date, slot, results, url);
-  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, "_blank", "noopener");
-  if (!win) shareError("LINEを開けませんでした");
-}
-
 // 共有ボタンの下に1行だけ出すエラー。次の共有でメッセージを差し替える。
-function shareError(message) {
-  const row = document.querySelector(".share-row");
+// root はそのパネル（#results / #weekly）。ランキングと週間の共有行が同時に
+// DOM にあるので、document 全体から探すと別パネルを掴んでしまう。
+function shareError(root, message) {
+  const row = root.querySelector(".share-row");
   if (!row) return;
   let note = row.querySelector(".share-note");
   if (!note) {
@@ -362,6 +356,12 @@ function shareError(message) {
     row.appendChild(note);
   }
   note.textContent = message;
+}
+
+// LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
+function openLineShare(root, payload) {
+  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(payload.text)}`, "_blank", "noopener");
+  if (!win) shareError(root, "LINEを開けませんでした");
 }
 
 // 押す前にラベルを決めたいので、同じ形のダミーPNGで共有可否を先に聞く。
@@ -377,24 +377,18 @@ function canShareImageFile() {
 }
 
 // canvas -> PNG。ファイル共有ができる端末は共有シート、それ以外は保存。
-async function shareImage(region, date, slot, results) {
+async function shareImage(root, payload) {
   const canvas = document.createElement("canvas");
-  Share.drawShareCard(canvas, {
-    region, date, slot,
-    rows: Share.cardRows(results),
-    count: results.length,
-  });
+  payload.draw(canvas);
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-  if (!blob) { shareError("画像を作れませんでした"); return; }
-  const file = new File([blob], `surf-check-${region}-${date}-${slot}.png`, { type: "image/png" });
+  if (!blob) { shareError(root, "画像を作れませんでした"); return; }
+  const file = new File([blob], payload.filename, { type: "image/png" });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    const url = Share.shareUrl(location.origin + location.pathname, region, date, slot);
-    const lines = Share.shareLines(region, date, slot, results);
     try {
-      await navigator.share({ files: [file], text: `${lines[0]}\n${url}` });
+      await navigator.share({ files: [file], text: `${payload.headline}\n${payload.url}` });
     } catch (e) {
       // 共有シートを閉じただけなので何も出さない。
-      if (e.name !== "AbortError") shareError("画像を共有できませんでした");
+      if (e.name !== "AbortError") shareError(root, "画像を共有できませんでした");
     }
     return;
   }
@@ -404,6 +398,18 @@ async function shareImage(region, date, slot, results) {
   a.download = file.name;
   a.click();
   URL.revokeObjectURL(href);
+}
+
+// 共有行のボタンを payload につなぐ。ランキングと週間で共通。
+function wireShareRow(root, payload) {
+  const lineBtn = root.querySelector(".share-line");
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(root, payload));
+  const imageBtn = root.querySelector(".share-image");
+  if (imageBtn) {
+    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
+    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
+    imageBtn.addEventListener("click", () => shareImage(root, payload));
+  }
 }
 
 function renderResults(el, region, date, slot, results, failed) {
@@ -424,16 +430,10 @@ function renderResults(el, region, date, slot, results, failed) {
       ${results.map(resultCard).join("")}
     </div>
     ${failedNote}`;
-  const lineBtn = el.querySelector("#shareLine");
-  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(region, date, slot, results));
-  const imageBtn = el.querySelector("#shareImage");
-  if (imageBtn) {
-    // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
-    if (!canShareImageFile()) imageBtn.textContent = "画像を保存";
-    imageBtn.addEventListener("click", () => shareImage(region, date, slot, results));
-  }
+  const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
+  wireShareRow(el, share);
   drawTideCurves(el, results, date, slot);
-  history.replaceState(null, "", Share.shareUrl(location.origin + location.pathname, region, date, slot));
+  history.replaceState(null, "", share.url);
 }
 
 // Runs fn for every spot in parallel; spots whose promise rejects are
