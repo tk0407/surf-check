@@ -359,9 +359,11 @@ function shareError(root, message) {
 }
 
 // LINEはURLスキームでテキストしか受け取れないので、画像とは別の導線になる。
-function openLineShare(root, payload) {
-  const win = window.open(`https://line.me/R/msg/text/?${encodeURIComponent(payload.text)}`, "_blank", "noopener");
-  if (!win) shareError(root, "LINEを開けませんでした");
+// noopener を付けた window.open は、実際に開けたかどうかによらず仕様上つねに
+// null を返す。つまり戻り値で失敗は判定できず、判定を残すと共有が成功するたび
+// にエラー行が出る。noopener のほうを優先して、失敗の検出は行わない。
+function openLineShare(payload) {
+  window.open(`https://line.me/R/msg/text/?${encodeURIComponent(payload.text)}`, "_blank", "noopener");
 }
 
 // 押す前にラベルを決めたいので、同じ形のダミーPNGで共有可否を先に聞く。
@@ -403,7 +405,7 @@ async function shareImage(root, payload) {
 // 共有行のボタンを payload につなぐ。ランキングと週間で共通。
 function wireShareRow(root, payload) {
   const lineBtn = root.querySelector(".share-line");
-  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(root, payload));
+  if (lineBtn) lineBtn.addEventListener("click", () => openLineShare(payload));
   const imageBtn = root.querySelector(".share-image");
   if (imageBtn) {
     // ファイル共有ができない環境では、押す前に「保存」だと分かるようにする。
