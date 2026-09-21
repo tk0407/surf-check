@@ -4,7 +4,7 @@
     "region": "千葉北",
     "lat": 35.502,
     "lon": 140.493,
-    "bearing": 88,
+    "bearing": 135,
     "cams": [
       {
         "label": "Surfers Ocean",
@@ -21,7 +21,7 @@
     "region": "千葉北",
     "lat": 35.367,
     "lon": 140.398,
-    "bearing": 100,
+    "bearing": 90,
     "cams": [
       {
         "label": "Surfers Ocean",
@@ -105,7 +105,7 @@
     "region": "千葉北",
     "lat": 35.703,
     "lon": 140.745,
-    "bearing": 130,
+    "bearing": 180,
     "cams": [
       {
         "label": "Surfers Ocean",
@@ -136,14 +136,31 @@
     "region": "千葉南",
     "lat": 35.033,
     "lon": 140.007,
-    "bearing": 105,
+    "bearing": 135,
+    "cams": [
+      {
+        "label": "Surfers Ocean 和田・白渚",
+        "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%92%8C%E7%94%B0/"
+      },
+      {
+        "label": "BCM 和田・白渚",
+        "url": "https://www.bcm-surfpatrol.com/wave-detail/4/50/"
+      }
+    ]
+  },
+  {
+    "name": "和田浦",
+    "region": "千葉南",
+    "lat": 35.04,
+    "lon": 140.021,
+    "bearing": 135,
     "cams": [
       {
         "label": "YouTube 和田浦海岸",
         "url": "https://www.youtube.com/watch?v=VSwkTmST2Mk"
       },
       {
-        "label": "Surfers Ocean 和田",
+        "label": "Surfers Ocean 和田・Js前",
         "url": "https://www.surfers-ocean.com/%E3%82%B5%E3%83%BC%E3%83%95%E3%82%A3%E3%83%B3%E6%B3%A2%E6%83%85%E5%A0%B1/%E5%92%8C%E7%94%B0/"
       }
     ]
@@ -265,7 +282,7 @@
     "region": "茨城",
     "lat": 36.086,
     "lon": 140.609,
-    "bearing": 90,
+    "bearing": 68,
     "cams": [
       {
         "label": "Surfers Ocean とっぷさんて下",
@@ -282,7 +299,7 @@
     "region": "茨城",
     "lat": 35.815,
     "lon": 140.82,
-    "bearing": 95,
+    "bearing": 45,
     "cams": [
       {
         "label": "YouTube 波崎・鹿島灘",
@@ -299,7 +316,7 @@
     "region": "茨城",
     "lat": 35.785,
     "lon": 140.83,
-    "bearing": 95,
+    "bearing": 45,
     "cams": [
       {
         "label": "YouTube 波崎・鹿島灘",
@@ -316,7 +333,7 @@
     "region": "湘南",
     "lat": 35.15,
     "lon": 139.108,
-    "bearing": 160,
+    "bearing": 135,
     "cams": [
       {
         "label": "Surfers Ocean",
