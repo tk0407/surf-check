@@ -1,723 +1,4813 @@
-# ライブカメラのリンクを検索結果に出す
+# 実況フィードバックと予報の補正 Implementation Plan
 
-## 目的
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-登録している32ポイントについて、公開されているライブカメラを調べ、検索結果の
-カードからワンタップで実際の波を見に行けるようにする。
+**Goal:** ランキングのカードから、実際に行った結果（総合・波・風・写真）を最短2タップで送れるようにする。貯まった予実データから、ポイントごとの予報の癖とランキングの配点を補正する。
 
-## 決まっていること（ユーザー判断）
+**Architecture:**
+- サイトは今のまま GitHub Pages の静的ファイルで、ビルドはしない。
+- 補正の計算（`calibration.js`）と、記録の組み立て・入力チェック（`feedback.js`）は UMD で書く。サイト、Cloudflare Worker、`node --test` の3か所で同じファイルを使う。
+- Worker（`worker/`）は次の2つを受け持つ。
+  - `POST /feedback`：記録を D1 に、写真を R2 に保存する。
+  - `GET /calibration`：記録からその都度、補正を計算して返す。
+- サイトは起動時に補正を読み、`scoring.js` の上に重ねてかける。`scoring.js` は変えない。
 
-- 表示形式は **リンクだけ**。埋め込みプレイヤーは置かない。
-- BCM のリンク先は **ページ**（静止画の直リンクではない）。
-- カメラが無い／遠いカメラしか無いポイントは **何も出さない**（行ごと省く）。
-- 1ポイントあたり **最大2本**。
-- 採用の優先度は **YouTube → Surfers Ocean → BCM**。
+**Tech Stack:**
+- 素の JavaScript（UMD、ビルドなし）
+- Node v23 の `node --test`。`node:sqlite` はテストでだけ使う。
+- Cloudflare Workers + D1 + R2。`npx wrangler@4` は開発ツールとして使い、`package.json` は作らない。
+- 画面の確認：ヘッドレス Chrome を CDP で直接動かす。パッケージは入れない。
 
-## 調査結果（3つの提供元）
+**Spec:** `docs/superpowers/specs/2026-09-23-feedback-calibration-design.md`
 
-| 提供元 | 形 | 無料か | 備考 |
-| --- | --- | --- | --- |
-| YouTube | 24時間ライブ配信 | 無料 | ポイントを名指しで映しているものだけ採用 |
-| Surfers Ocean | ポイント別のまとめページ | 無料 | BCM の静止画と YouTube を1ページに集約している |
-| BCM SurfPatrol | ポイント別の波情報ページ | 無料 | `wave-detail` ページに静止画が載る |
+## Global Constraints
 
-- BCM のライブカメラ索引（72ページ）を全件たどり、ポイント名 → ページURL の
-  対応表を作った。当初「一部有料」と判断していたが、`wave-detail` ページは
-  「無料波情報」で、静止画も認証なしで表示される。
-- Surfers Ocean のサイトマップから67件のページURLを取得し、うち該当する
-  21ポイントを取得した（robots.txt の `Crawl-Delay: 5` を守って5秒間隔）。
-- YouTube は27本の動画IDについて oembed でタイトル・配信者を取得し、どの浜を
-  映しているか確認した。1本（`S3rWxznFIRI`）は応答が無く不採用。
+- サイトは今のまま GitHub Pages に置く。ビルド工程を増やさない。サイト側に新しいパッケージを入れない。外部スクリプトを読み込まない。
+- Worker も依存パッケージを持たない。`wrangler` は開発ツールとして `npx wrangler@4` で使う。`package.json` は作らない。**初めて `npx wrangler` を実行する前に、ユーザーの承認を得る。**
+- `scoring.js` は変更しない。Python版が正本のしきい値を保つため。補正は `calibration.js` の上乗せ層で行う。
+- 補正の計算には、必ず補正前の生の予報値を使う。補正が自分の出力を学び直して偏らないようにするため。
+- 補正が無いとき（取得の失敗を含む）のランキング・週間予報・共有の表示と点数は、今とまったく同じになること。
+- 本番コードにテスト用の分岐を入れない。テストは `node --test` だけで動かす。
+- `app.js` の `FEEDBACK_API` が空文字のときは、補正を取りに行かず、「行ってきた」ボタンも出さない。Worker を公開する前にマージしても、サイトは今と同じに動く。
+- 画面に出す文字列は `escapeHtml` を通す。
+- スマホ幅 375px で、ページも入力パネルも横スクロールしない。
+- `index.html` のアセット参照の `?v=` の日付を上げる。
+- 秘密情報（`IP_SALT`、Cloudflare の認証情報）は、リポジトリにも markdown にも書かない。
+- コミットメッセージの末尾に `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` を付ける。
 
-### 採用しなかったカメラ
+## Review Focus
 
-- `47xoP12hJxs`（長生村一松海岸）: Surfers Ocean が片貝・一宮・東浪見・太東・
-  白子・豊海・志田下の7ページに貼っているが、映しているのは長生村一松海岸の
-  1か所だけ。7ポイントに同じ映像を配ると誤解を招くので使わない。
-- `IvLscoOQclM`（波崎・鹿島灘）: 同じ配信者・同じタイトルの配信が2本あり、
-  Surfers Ocean が現在貼っているほう（`viB8x_vRiv0`）だけを採用。
-- 国府津: 過去に見つけたカメラは3回試して毎回 HTTP 503。名前の一致する
-  生きたカメラが無いので何も出さない。
+仕様には書いていないが、実際に使うと起きやすい入力と、そのとき期待する振る舞い。起きやすい順に並べた。どれも、担当するタスクのテストで確かめる。
 
-### カメラを出さないポイント（6件）
+1. **日本時間の0時をまたぐ時刻を、UTC の時計で扱う**
+   - 起きる場面：Worker は UTC で動く。端末のタイムゾーンが日本以外のこともある。
+   - 期待する振る舞い：パネルの初期の日付・時間帯と、1日の回数上限を数え直す日は、日本時間の日付で決まる。
+   - テスト：Task 2 の `defaultSession uses Japan time on a UTC clock across midnight`、Task 4 の `limits restart at midnight Japan time even though the clock is UTC`
+2. **壊れた送信**
+   - 起きる場面：`record` が JSON でない、`record` 欄が無い、本文が multipart でない。
+   - 期待する振る舞い：`500` ではなく、理由を付けた `400` を返す。
+   - テスト：Task 4 の `malformed bodies get 400, not 500`
+3. **ビッグエンディアン（Motorola）の EXIF**
+   - 起きる場面：一部の Android 端末やカメラが、この形で書く。
+   - 期待する振る舞い：リトルエンディアンのものと同じ撮影時刻・撮影位置が読める。
+   - テスト：Task 2 の `readExif reads big-endian (Motorola) EXIF the same way`
+4. **予報の風が弱いポイントに、大きなマイナスの風速補正がかかる**
+   - 期待する振る舞い：補正後の風速は 0 m/s を下回らない。採点に負の風速が渡らない。
+   - テスト：Task 1 の `adjust never pushes the wind speed below 0`
+5. **長く動かし続けたときの `submissions` の肥大**
+   - 期待する振る舞い：3日より古い行は、送信のたびに消える。
+   - テスト：Task 4 の `each submission purges submission rows older than 3 days`
 
-木戸 / 吉崎浜 / 野手浜 / 花籠ポイント / 平砂浦 / 国府津
+## 仕様からの変更点と補足
 
-## 実装のチェックリスト
+実装して確かめた結果、仕様と違う形にしたものと、仕様に書いていないことを決めたもの。レビューでは、ここに書いたことを仕様どおりとして扱う。
 
-- [x] `spots.json` に `cams: [{ label, url }]` を追加（26ポイント、最大2本）
-- [x] `share.js` に `escapeHtml` と `camRow(spot)` を足して export
-- [x] `app.js` の `escapeHtml` を `Share.escapeHtml` に寄せる（実体は1か所）
-- [x] `app.js` の `resultCard` の `reason-row` の直後に `Share.camRow` を差す
-- [x] `app.js` の `fetch("spots.json")` に `?v=` を付ける（データ更新の取りこぼし防止）
-- [x] `style.css` に `.cam-row` / `.cam-row-label` / `.cam-link`
-- [x] `index.html` の `?v=` を8か所すべて `20260924` に上げる
-- [x] `share.test.js` に `camRow` / `escapeHtml` のテストを追加
-- [x] `spots.test.js` を新設してデータの形を固定
-- [x] `node --test` 全件成功
-- [x] 変異テストで新しいテストが効いていることを実証
-- [x] ローカルサーバーで全アセットの配信を確認
-- [x] README を更新
+- (a) **`feedback.js` の読み込み先**：`forecast.js` と `calibration.js` を読み込む（仕様の表では `scoring.js` と `calibration.js`）。
+  - 理由：時間帯の定義（`TIME_SLOTS`、`SLOT_ORDER`）を `Forecast` から取るため。
+  - `scoring.js` は `calibration.js` を通して使う。
+- (b) **Worker のファイル分け**：処理は `worker/handler.mjs` の `handle(request, env, now)` に置く。`worker/index.mjs` は、今の時刻を渡すだけの入口にする。
+  - 理由：テストで時刻を固定できるようにするため。
+- (c) **許可していないオリジンの `OPTIONS`**：`403` を返し、CORS ヘッダは付けない。
+- (d) **`400` の本文**：`{"error": "<違反を ' / ' でつないだ文>", "errors": [...]}`。パネルは `error` をそのまま出す。
+- (e) **写真なしの `photo_meta`**：写真を付けずに送ったときは保存しない。写真の位置・時刻は、写真とセットでだけ持つ。
+- (f) **`submissions` の掃除の範囲**：日本時間の今日から3日より前（`day < 今日−3日`）の行を消す。
+- (g) **`Calibration.apply(rawData, spot, cal)` を追加**：`adjust` と `score` をまとめて `{data, scores}` を返す。ランキングと週間予報の両方がこれを使う。
+- (h) **「実況補正」の表示場所**：ランキングのカードと、週間予報のセルを開いた詳細の両方に出す。
+- (i) **ローカル確認のポート**：8001 で配信する。8000 は持ち主が自分のサーバーを立てていることがあるため。
+  - `worker/.dev.vars` の `ALLOWED_ORIGINS` には 8000 と 8001 の両方を入れる。
+- (j) **補正のキャッシュ**：`GET /calibration` は `max-age=300` なので、新しい記録が補正に表れるまで最大5分かかる。ブラウザで確かめるときはキャッシュを切る。
+- (k) **「行ってきた」ボタンの位置**：`resultCard` の中で、`Share.camRow(...)` の直後に同じ行でつなげる。
+  - 理由：ボタンを出さないとき（`FEEDBACK_API` が空）に、カードの HTML が今と1バイトも変わらないようにするため。
+- (l) **確認用の静的サーバー**：Node で書いた `static.mjs` を使う。
+  - 理由：`python3 -m http.server`（3.10）は listen の待ち行列が5しかない。Chrome がスクリプトを並列に取りに行くと、接続が切られる（ERR_CONNECTION_RESET）。
+- (m) **「今の main と同じ」の比較の基準**：`git merge-base HEAD origin/main` を使う。ローカルの `main` は古いことがあるため。
 
----
+## 実行の前提
 
-## レビュー
+- **作業ブランチ**：`feat/feedback`。仕様のコミット 5b7aa91 の上で、`origin/main`（9399a27）から分かれている。
+- **コミットしないもの**：`snapshot.html`（追跡していないファイル）。
+  - `git add` には必ずファイル名を並べる。`git add -A` や `git add .` は使わない。
+- **ポート**：8000 には触らない（持ち主のサーバーが動いていることがある）。確認には 8001〜8003 と 8787 を使う。
+- **テスト**：リポジトリの直下で `node --test` を実行する。`worker/*.test.mjs` も対象になる。
+  - 依存パッケージは入れない。
+  - 始める前は 119 件。各タスクのあとの件数は、そのタスクに書いてある。
+- **コミットメッセージ**：件名は英語、本文は日本語。末尾に `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` を付ける。
+- **ユーザーの承認が要るもの**：
+  - 初めて `npx wrangler@4` を実行する前（Task 8）
+  - Cloudflare への公開（Task 9）
+- **秘密の値**：`IP_SALT` と Cloudflare の認証情報は、リポジトリにも markdown にも書かない。
+- **画面の確認（Task 5・6）に要るもの**：macOS、`/Applications/Google Chrome.app`、`sips`、`rsync`。
+  - 確認用のファイルはリポジトリの外に置き、コミットしない。
+  - Open-Meteo は続けて呼ぶと `429` を返すことがある。ブラウザでの確認は、1回ごとに2分空ける。
 
-### 実際に確認したこと（コマンドと実際の出力）
+## ファイルの構成
 
-**1. URLの生存確認** — 採用した43本すべて。YouTube は oembed、他は本体に GET。
-
-```
-ユニークURL:       43 本
-異常: 0 本
-```
-
-**2. テスト全件** — `node --test`
-
-```
-ℹ tests 118
-ℹ pass 118
-ℹ fail 0
-```
-
-（この変更の前は97件。`camRow` / `escapeHtml` で11件、`spots.test.js` で10件増えた。）
-
-**3. 変異テスト（`share.js`）** — スクラッチにコピーして壊し、必ず赤くなることを確認。
-リポジトリのファイルには触れていない。
-
-| 壊した箇所 | 結果 | 落ちたテスト |
-| --- | --- | --- |
-| `rel="noopener noreferrer"` を削除 | pass 78 / fail 1 | target と rel を付ける |
-| URL のエスケープをやめる | pass 78 / fail 1 | URL の引用符と山括弧をエスケープ |
-| ラベルのエスケープをやめる | pass 78 / fail 1 | ラベルの山括弧とアンパサンド |
-| `CAM_LIMIT` を 2 → 3 | pass 78 / fail 1 | 先頭2本だけに切る |
-| 空配列でも行を出す | pass 76 / fail 3 | 空文字を返す系3件 |
-| 復元 | pass 79 / fail 0 | — |
-
-**4. 変異テスト（`spots.json`）** — 10通り壊して、10通りとも狙ったテストが落ちた。
-
-| 壊した箇所 | 落ちたテスト |
-| --- | --- |
-| url を `http://` にする | https の url を持つ |
-| カメラを3本にする | 1〜2本 |
-| エリアをまたいでURLを使い回す | 同一エリア内に限る |
-| 同一ポイントでURLを重複 | 2回出さない |
-| `cams` を空配列にする | 1〜2本 |
-| ラベルの提供元を消す | 提供元が分かる接頭辞 |
-| 未調査ホストを混ぜる | ホストは3つに限る |
-| `bearing` を 360 にする | 型が正しい |
-| ポイント名を重複させる | 名前は重複しない |
-| 全ポイントから `cams` を削除 | どのエリアにもカメラ付きが1つ以上 |
-
-復元後は pass 10 / fail 0。
-
-**5. 配信の確認** — `python3 -m http.server 8777`
-
-```
-index.html                 200
-style.css?v=20260924       200
-app.js?v=20260924          200
-share.js?v=20260924        200
-spots.json?v=20260924      200
-配信された spots.json: 32 件 / cams あり 26 件
-配信CSSの cam-link 出現: 2
-```
-
-**6. 全32ポイントのカメラ行を描画** — `<a>` の開閉一致を確認したうえで、
-26ポイントに行が出て、6ポイントは空文字になることを確認した。
-
-### 変更したファイル
-
-- `spots.json` — 26ポイントに `cams` を追加
-- `share.js` — `CAM_LIMIT` / `escapeHtml` / `camRow` を追加、export に2つ追加
-- `app.js` — `escapeHtml` を `Share.escapeHtml` に置き換え、`resultCard` に
-  カメラ行を追加、`spots.json` の fetch に `?v=`
-- `style.css` — `.cam-row` / `.cam-row-label` / `.cam-link`
-- `index.html` — `?v=` を8か所
-- `share.test.js` — 11件追加
-- `spots.test.js` — 新規10件
-- `README.md` — ライブカメラの節を追加
-
-### 確認できていないこと
-
-- 実機のブラウザでの見た目（リンクの折り返し、375px 幅での横スクロール）。
-  このマシンにヘッドレスブラウザが無いため、HTMLとCSSの生成までしか確認して
-  いない。
-- 各カメラが「今この瞬間、波が見える画を配信しているか」。HTTP 200 と
-  YouTube の oembed が返ることまでは確認したが、映像の中身は見ていない。
-- ライブ配信は止まることがある。URLが死んだときは行が出たままリンク切れに
-  なる（画面側では検知していない）。
-
-### 座標の修正（3件）
-
-ライブカメラを調べている途中で、`spots.json` の座標が別の市町村を指している
-ものが3件見つかったので直した。
-
-| ポイント | 旧座標（逆ジオコーディング結果） | 新座標（修正後） |
-| --- | --- | --- |
-| 白渚 | `35.243, 140.35` → いすみ市長志 | `35.033, 140.007` → 南房総市和田町白渚 |
-| 千歳 | `35.145, 140.215` → 勝浦市台宿 | `34.99, 139.972` → 南房総市千倉町白子 |
-| トップサンテ | `35.91, 140.692` → 神栖市東和田 | `36.086, 140.609` → 鉾田市上幡木 |
-
-**どうやって確かめたか** — 国土地理院の2つの公開API（認証なし）を使った。
-
-1. 逆ジオコーディング（`mreversegeocoder.gsi.go.jp`）で旧座標の市町村を取得し、
-   3件とも本来の所在地と違うことを確認。
-2. 住所検索（`msearch.gsi.go.jp`）で正しい大字の代表点を取得。
-3. 逆ジオコーディングは海上では `results` が `null` になる。これを陸／海の
-   判定に使い、緯度を3本とって二分探索で汀線の経度を割り出した。真ん中の
-   汀線をそのポイントの座標として採用している。
-
-`千歳` だけは地理院に「千歳」という大字が無い。Surfers Ocean のページに
-「千歳① （南房総市千倉町白子・ライブ画像：ＢＣＭ提供）」と書いてあるのを
-根拠に千倉町白子とした。`白渚` は登録済みカメラのラベルが「YouTube 和田浦海岸」
-で、和田町という修正先と一致している。
-
-**動くことの確認** — 旧座標と新座標の両方で `app.js` の `fetchSpotData` →
-`slotConditions` → `scoreSpot` と同じ手順を実際のAPIに対して走らせた。
-
-```
-=== 白渚 ===
-  旧 35.243 ,140.35   合計  37  波高 3.24m  周期 7.85s  うねり 146°  風 2.49m/s 112°  潮汐イベント 3件
-  新 35.033 ,140.007  合計  45  波高 4.02m  周期 8.75s  うねり 157°  風 3.04m/s  32°  潮汐イベント 3件
-=== 千歳 ===
-  旧 35.145 ,140.215  合計  48  波高 3.32m  周期 7.97s  うねり 148°  風 1.69m/s  70°  潮汐イベント 3件
-  新 34.99  ,139.972  合計  50  波高 3.81m  周期 8.47s  うねり 155°  風 4.82m/s  43°  潮汐イベント 3件
-=== トップサンテ ===
-  旧 35.91  ,140.692  合計  41  波高 1.72m  周期 6.95s  うねり 102°  風 2.81m/s  50°  潮汐イベント 3件
-  新 36.086 ,140.609  合計  41  波高 1.88m  周期 6.50s  うねり 119°  風 7.82m/s  43°  潮汐イベント 3件
-```
-
-3件とも波高・周期・うねり・風・潮汐がそろって返り、スコアが出ている。
-`node --test` は 118/118 のまま。
-
-### 方位（bearing）は触っていない
-
-座標を直したポイントについて、汀線から海向きの法線を実測すると
-白渚 141°、千歳 104°、トップサンテ 69°（基線の長さを片側0.7km／1.3km／6.7kmで
-変えても 65〜69° で安定）になる。登録値はそれぞれ 105 / 120 / 90 なので合わない。
-
-ただしこれは今回の3件に限った話ではない。既存データ全体が幾何学的な法線とは
-系統的にずれている。
-
-| ポイント | 登録値 | 実測の法線 |
-| --- | --- | --- |
-| 片貝・サンライズ（九十九里） | 88 / 90 | 約 125 |
-| 平井海岸・波崎（鹿島灘） | 90 / 95 | 約 69 |
-| 辻堂・七里ヶ浜（湘南） | 188 / 200 | ほぼ一致 |
-
-九十九里は登録値のほうが北寄り、鹿島灘は南寄りで、湘南は合っている。
-`bearing` は `scoring.js` で「うねりが来る方位」と「オフショアの逆」の両方に
-使われるので、採点の効き方そのものを変える値になる。エリアごとに取り決めが
-違うのか単なる誤差なのか判断できないため、3件だけ実測値に差し替えると残り29件と
-食い違う。**今回は座標だけを直し、方位は全件そのままにした。**
-
-32件すべての方位を汀線から測り直して揃えるかどうかは、別途決めたい。
-
-## 追加作業：和田浦の分離と方位の全件見直し
-
-白渚に付けていた YouTube カメラは和田浦（Js前）のもので、別ポイントだった。
-ユーザー判断で (1) 和田浦を新ポイントとして追加し、(2) 方位を32件すべて見直す。
-
-### 決まっていること（ユーザー判断）
-
-- 和田浦海岸は **新ポイントとして追加**する。
-- 方位（bearing）は **32件すべて見直す**。
-
-### チェックリスト
-
-- [x] 白渚のカメラを差し替え（YouTube和田浦 → Surfers Ocean 和田・白渚 ＋ BCM 和田・白渚）
-- [x] Surfers Ocean の未取得ページを取得（志田下・部原・平砂浦・鎌倉・茅ヶ崎海岸 の5件、いずれも HTTP 200）
-- [x] 「◯◯Ｐは△向き」「◯◯Ｐは△がオフショア」を全件抽出（22件）し、登録ポイントに対応付ける
-- [x] 全ポイントの汀線から海向き法線を国土地理院APIで実測する
-- [x] 登録値・SOの記述・実測の3つを突き合わせて各ポイントの方位を決める
-- [x] 和田浦を spots.json に追加（座標・方位・カメラ2本）
-- [x] spots.json の方位を更新（8件）
-- [x] `node --test` 全件成功（118/118）
-- [x] 根拠を本ファイルに表で残す
-- [x] コミットして PR #6 の本文を更新
-
-### 判断の基準
-
-Surfers Ocean の記述は16方位の丸めなので ±11.25° の粒度しかない。一方で実測は
-汀線の法線であって、離岸堤・河口・岬の影響までは映さない。両方が近ければその値を、
-食い違う場合はポイントページの本文を読んで文脈で決める。どちらの根拠も無い
-ポイントは登録値を据え置く。
-
-### 実際にやったこと
-
-1. Surfers Ocean の未取得5ページを取得し、全26ページから「◯◯Ｐは△向き」
-   「◯◯Ｐは△がオフショア」を機械抽出した。18件中16件で両者が正確に逆方位
-   （向き＋180°＝オフショア風向）になっており、抽出は信頼できる。
-2. 国土地理院の逆ジオコーディング（`LonLatToAddress`、海上では `results` が
-   null になる性質を陸／海の判定に使う）で、各ポイントの周囲36方位を半径約
-   1.3km で探査し、海側の方向の円平均から汀線の海向き法線を求めた。
-   座標が浜から離れている場合は先に汀線へスナップしてから測っている。
-3. 実測の精度は、SO が向きを公開している6ポイントで検証した。直線的な海岸では
-   ±5°だが、湾では七里ヶ浜 −17°、飯岡 −20° とずれる。この検証結果が
-   「単独では採用しない」という判断の根拠になっている。
-
-### 結果：方位の根拠表（33件）
-
-`登録`＝変更前の値、`SO`＝Surfers Ocean が公開しているビーチの向き、
-`実測`＝国土地理院の逆ジオコーディングで汀線の海向き法線を測った値。
-
-| ポイント | 登録 | SO | 実測 | 採用 | 判断 |
-|---|---:|---:|---:|---:|---|
-| 片貝 | 88° | 135° | 125° | **135°** | **変更**（SOと実測が10°以内で一致） |
-| 一宮 | 100° | 90° | 85° | **90°** | **変更**（SOと実測が5°以内で一致） |
-| 釣ヶ崎（志田下） | 100° | 68° | 85° | **100°** | 据え置き（SOと実測が17°食い違う） |
-| 東浪見 | 105° | — | 60° | **105°** | 据え置き（SOに記述なし・実測のみ） |
-| 太東 | 110° | 68° | 110° | **110°** | 据え置き（SOと実測が42°食い違う） |
-| 木戸 | 95° | — | 105° | **95°** | 据え置き（SOに記述なし・実測のみ） |
-| サンライズ | 90° | — | 115° | **90°** | 据え置き（実測90°、差0°） |
-| 飯岡 | 130° | 180° | 165° | **180°** | **変更**（SOと実測が15°以内で一致） |
-| 吉崎浜 | 120° | — | 200° | **120°** | 据え置き（SOに記述なし・実測のみ） |
-| 野手浜 | 115° | — | 145° | **115°** | 据え置き（SOに記述なし・実測のみ） |
-| 白渚 | 105° | 135° | 145° | **135°** | **変更**（SOと実測が10°以内で一致） |
-| 御宿 | 115° | 158° | 110° | **115°** | 据え置き（SOと実測が48°食い違う） |
-| 千歳 | 120° | — | 105° | **120°** | 据え置き（SOに記述なし・実測のみ） |
-| 花籠ポイント | 110° | — | 160° | **110°** | 据え置き（SOに記述なし・実測のみ） |
-| マルキポイント | 135° | 135° | 130° | **135°** | 据え置き（SO・実測とも登録値とほぼ同じ） |
-| 部原 | 148° | 135° | — | **148°** | 据え置き（座標が浜から外れ実測できず） |
-| 千倉 | 175° | 90° | — | **175°** | 据え置き（座標が浜から外れ実測できず） |
-| 平砂浦 | 200° | 225° | 190° | **200°** | 据え置き（SOと実測が35°食い違う） |
-| 平井海岸 | 90° | 45° | 65° | **90°** | 据え置き（SOと実測が20°食い違う） |
-| トップサンテ | 90° | 68° | 65° | **68°** | **変更**（SOと実測が3°以内で一致） |
-| 波崎シーサイドパーク | 95° | 45° | 60° | **45°** | **変更**（SOと実測が15°以内で一致） |
-| 波崎 | 95° | 45° | 55° | **45°** | **変更**（SOと実測が10°以内で一致） |
-| 吉浜 | 160° | 135° | 135° | **135°** | **変更**（SOと実測が0°以内で一致） |
-| 国府津 | 170° | — | 140° | **170°** | 据え置き（SOに記述なし・実測のみ） |
-| 茅ヶ崎パーク | 185° | — | 180° | **185°** | 据え置き（SOに記述なし・実測のみ） |
-| パイプライン（茅ヶ崎） | 185° | — | 180° | **185°** | 据え置き（SOに記述なし・実測のみ） |
-| 辻堂 | 188° | — | 190° | **188°** | 据え置き（SOに記述なし・実測のみ） |
-| 鵠沼 | 190° | — | 212° | **190°** | 据え置き（SOに記述なし・実測のみ） |
-| 七里ヶ浜 | 200° | 202° | 190° | **200°** | 据え置き（SO・実測とも登録値とほぼ同じ） |
-| 玉石 | 205° | — | 185° | **205°** | 据え置き（SOに記述なし・実測のみ） |
-| 稲村ケ崎 | 210° | — | 170° | **210°** | 据え置き（SOに記述なし・実測のみ） |
-| 由比ヶ浜 | 190° | — | 205° | **190°** | 据え置き（SOに記述なし・実測のみ） |
-| 和田浦（新規） | — | 135° | — | **135°** | 新ポイント。SO「和田・Js前 … ビーチの向き＝南東」 |
-
-変更したのは **8件**。いずれも SO の記述と実測が15°以内で一致し、かつ登録値が
-それらから離れていたもの。
-
-| ポイント | 変更 | 9/21朝のスコア |
+| ファイル | 役割 | タスク |
 |---|---|---|
-| 片貝 | 88° → 135° | 34 → 40 |
-| 一宮 | 100° → 90° | 37 → 37 |
-| 飯岡 | 130° → 180° | 48 → 51 |
-| 白渚 | 105° → 135° | 45 → 56 |
-| トップサンテ | 90° → 68° | 41 → 32 |
-| 波崎シーサイドパーク | 95° → 45° | 34 → 28 |
-| 波崎 | 95° → 45° | 34 → 28 |
-| 吉浜 | 160° → 135° | 65 → 59 |
+| `calibration.js`（新規） | 帯・風の区分、1件ごとの誤差、`compute` / `metrics` / `adjust` / `score` / `apply` / `validate` / `summaryLabel`。サイト・Worker・テストで共用する | 1 |
+| `calibration.test.js`（新規） | 上のテスト | 1 |
+| `feedback.js`（新規） | パネルの初期値、`buildRecord` / `validateRecord`、`readExif`、`distanceKm` / `suggestSpot`。DOM には触らない。サイト・Worker・テストで共用する | 2 |
+| `feedback.test.js`（新規） | 上のテスト | 2 |
+| `forecast.js` / `forecast.test.js` | `weeklyForecast` に任意の `scorer` 引数を足す | 3 |
+| `worker/schema.sql`（新規） | D1 のテーブル定義 | 4 |
+| `worker/handler.mjs`（新規） | `POST /feedback`、`GET /calibration`、CORS、回数の上限 | 4 |
+| `worker/index.mjs`（新規） | Worker の入口 | 4 |
+| `worker/d1-sqlite.mjs`（新規） | テスト専用。`node:sqlite` を D1 と同じ呼び方で使う | 4 |
+| `worker/worker.test.mjs`（新規） | Worker のテスト | 4 |
+| `worker/wrangler.toml`（新規） | Worker 名、D1・R2 の紐づけ、`ALLOWED_ORIGINS` | 4 |
+| `.gitignore`（新規） | `worker/.dev.vars` と `worker/.wrangler/` | 4 |
+| `app.js` | 補正の読み込みとかけ方、「実況補正」の表示（Task 5）。「行ってきた」ボタンとパネルの呼び出し（Task 6） | 5, 6 |
+| `index.html` | スクリプトの追加と `?v=` の更新 | 5, 6 |
+| `style.css` | `.chip.calib`（Task 5）。ボタンとパネル（Task 6） | 5, 6 |
+| `feedback-panel.js`（新規） | ブラウザ専用。入力パネルの描画と操作、写真の縮小、送信 | 6 |
+| `README.md` | 構成、フィードバック機能、ローカル開発、公開の手順、記録の消し方、名前の書き換え方 | 7 |
 
-スコアは `forecast.js` の `slotConditions` と `scoring.js` の `scoreSpot` を
-実際の Open-Meteo のデータに対して呼んで比べた。9件すべてで波高・周期・うねり
-向き・風の4項目が欠損なく揃うことも同時に確認している。
+`scoring.js` は変更しない。
 
-### 追加した和田浦
+ブラウザでの読み込み順は `scoring.js` → `forecast.js` → `share.js` → `calibration.js` → `feedback.js` → `feedback-panel.js` → `app.js`。
 
-| 項目 | 値 | 根拠 |
+---
+
+### Task 1: 補正の計算とかけ方（`calibration.js`）
+
+**Files:**
+- Create: `calibration.js`
+- Test: `calibration.test.js`（新規）
+
+**Interfaces:**
+- Consumes: `scoring.js`（変更しない）の `Scoring.scoreSpot(data, bearing)` と各項目の点数関数。
+  - `data` は `{wave_height, wind_dir, wind_speed, swell_dir, swell_period}`。今の `Forecast.slotConditions` が返す形。
+- Produces: Node では `require("./calibration.js")`、ブラウザでは `window.Calibration`。
+  - **定数**
+    - `WAVE_BANDS`：8つの `{label, lo, hi, center}`。番号 0〜7 が波の帯。
+    - `WIND_STRENGTHS`：`{calm, light, strong}` のそれぞれに `{label, lo, hi, center}`。
+    - `WIND_SIDES`：`{off: "オフ", side: "サイド", on: "オン"}`。
+    - `DEFAULT_WEIGHTS`：`{wind_direction: 20, wind_speed: 10, swell_direction: 20, swell_period: 20, wave_height: 15}`。
+  - **区分**
+    - `waveBand(height)` → 0〜7
+    - `windSide(windDir, bearing)` → `"off"` / `"side"` / `"on"`
+    - `windStrength(speed)` → `"calm"` / `"light"` / `"strong"`
+  - **1件ごとの誤差と配点の学習**（`compute` の中で使う。テストからも呼ぶ）
+    - `waveError(height, band)` → 予報の波高から、答えた帯の中心までの対数比。帯の中なら 0、予報が 0 以下なら `null`。
+    - `windError(speed, strength)` → 予報の風速から、答えた強さの中心までの差（m/s）。区分の中なら 0。
+    - `fitWeights(rows)` → 学習した配点（合計は今の満点と同じ）、または `null`（今の配点のまま）。`rows` は `[{x: 5項目の点の割合, r: 総合, w: 重み}]`。
+  - **補正の計算**
+    - `compute(records)` → `{version: 1, n, spots: {<ポイント名>: {n, wave_factor, wind_offset, wind_side_hit}}, weights, weights_learned}`。`records` は D1 の `feedback` の行。
+    - `metrics(records)` → `{n, wave_band_mae: {raw, calibrated}, wind_strength_hit: {raw, calibrated}, wind_side_hit, rating_concordance: {default, calibrated}}`。記録が1件以下なら、値はすべて `null`。
+  - **補正のかけ方**
+    - `adjust(data, spotName, cal)` → 新しい `data`
+    - `score(data, bearing, cal)` → `Scoring.scoreSpot` と同じ形
+    - `apply(rawData, spot, cal)` → `{data, scores}`。`spot` は `{name, bearing}`。
+  - **確認と表示**
+    - `validate(json)` → `boolean`
+    - `summaryLabel(spotName, cal)` → 例：`"実況補正 7件（波×1.2・風+0.6m/s）"`。記録が無ければ `""`。
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+`calibration.test.js` を次の内容で作る。
+
+```js
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const C = require("./calibration.js");
+const S = require("./scoring.js");
+
+const round3 = (v) => Math.round(v * 1000) / 1000;
+const W0 = { wind_direction: 20, wind_speed: 10, swell_direction: 20, swell_period: 20, wave_height: 15 };
+const KEYS = Object.keys(W0);
+
+// A D1 feedback row. Bearing 90, so the offshore wind blows from 270.
+// The observed values match the forecast unless overridden.
+function row(overrides = {}) {
+  return {
+    device_id: "dev-a", spot: "一宮", bearing: 90,
+    fc_wave_height: 1.0, fc_wind_dir: 270, fc_wind_speed: 3, fc_swell_dir: 90, fc_swell_period: 11,
+    rating: 3, wave_band: 3, wind_side: "off", wind_strength: "light",
+    ...overrides,
+  };
+}
+
+// --- bands and categories ---
+
+test("waveBand splits at 0.3/0.5/0.8/1.1/1.5/2.0/2.5, each band [lo, hi)", () => {
+  const cases = [[0, 0], [0.29, 0], [0.3, 1], [0.49, 1], [0.5, 2], [0.79, 2], [0.8, 3], [1.09, 3],
+    [1.1, 4], [1.49, 4], [1.5, 5], [1.99, 5], [2.0, 6], [2.49, 6], [2.5, 7], [6, 7]];
+  for (const [h, band] of cases) assert.equal(C.waveBand(h), band, `h=${h}`);
+});
+
+test("waveBand labels agree with Scoring.waveSizeLabel from 0 to 4 m", () => {
+  for (let i = 0; i <= 80; i++) {
+    const h = i / 20;
+    assert.equal(C.WAVE_BANDS[C.waveBand(h)].label, S.waveSizeLabel(h), `h=${h}`);
+  }
+});
+
+test("windSide is off up to 75°, side up to 105°, on beyond (from offshore)", () => {
+  // bearing 90 -> offshore wind comes from 270
+  assert.equal(C.windSide(270, 90), "off");
+  assert.equal(C.windSide(345, 90), "off"); // 75
+  assert.equal(C.windSide(346, 90), "side"); // 76
+  assert.equal(C.windSide(15, 90), "side"); // 105
+  assert.equal(C.windSide(16, 90), "on"); // 106
+  assert.equal(C.windSide(90, 90), "on"); // 180
+});
+
+test("windStrength is calm up to 2, light up to 5, strong beyond", () => {
+  assert.equal(C.windStrength(0), "calm");
+  assert.equal(C.windStrength(2), "calm");
+  assert.equal(C.windStrength(2.01), "light");
+  assert.equal(C.windStrength(5), "light");
+  assert.equal(C.windStrength(5.01), "strong");
+});
+
+// --- per-record errors ---
+
+test("waveError is 0 inside the observed band and the log ratio to its center outside", () => {
+  assert.equal(C.waveError(1.0, 3), 0);
+  assert.equal(C.waveError(0.8, 3), 0);
+  assert.equal(C.waveError(1.1, 3), Math.log(0.95 / 1.1)); // 1.1 belongs to band 4
+  assert.equal(C.waveError(0.6, 3), Math.log(0.95 / 0.6));
+});
+
+test("waveError clamps to ±ln 2 and skips forecasts of 0 or below", () => {
+  assert.equal(C.waveError(0.2, 7), Math.LN2);
+  assert.equal(C.waveError(3.0, 0), -Math.LN2);
+  assert.equal(C.waveError(0, 3), null);
+  assert.equal(C.waveError(-0.1, 3), null);
+});
+
+test("windError is 0 inside the observed range and center minus forecast outside, clamped to ±4", () => {
+  assert.equal(C.windError(3, "light"), 0);
+  assert.equal(C.windError(2, "calm"), 0);
+  assert.equal(C.windError(2, "light"), 1.5); // 2 is calm, not light
+  assert.equal(C.windError(6, "light"), -2.5);
+  assert.equal(C.windError(1, "strong"), 4); // 7 - 1 = 6 -> 4
+  assert.equal(C.windError(9, "calm"), -4); // 1 - 9 = -8 -> -4
+});
+
+// --- per-spot aggregation (K = 3) ---
+
+const E06 = Math.log(0.95 / 0.6); // forecast 0.6 m, observed ムネ〜カタ
+
+test("compute pulls a single record's wave error to 1/4 (K = 3)", () => {
+  const cal = C.compute([row({ fc_wave_height: 0.6 })]);
+  assert.equal(cal.spots["一宮"].wave_factor, round3(Math.exp(E06 / 4)));
+  assert.equal(cal.spots["一宮"].n, 1);
+});
+
+test("compute gives three records from one device half the error", () => {
+  const cal = C.compute([1, 2, 3].map(() => row({ fc_wave_height: 0.6 })));
+  assert.equal(cal.spots["一宮"].wave_factor, round3(Math.exp(E06 / 2)));
+});
+
+test("compute averages two devices with one record each over 2 + 3", () => {
+  const cal = C.compute([
+    row({ device_id: "a", fc_wave_height: 0.6 }),
+    row({ device_id: "b", fc_wave_height: 1.0 }), // in band -> error 0
+  ]);
+  assert.equal(cal.spots["一宮"].wave_factor, round3(Math.exp(E06 / 5)));
+});
+
+test("compute caps one device's weight at 5 records per spot", () => {
+  const five = C.compute(Array.from({ length: 5 }, () => row({ fc_wave_height: 0.6 })));
+  const eight = C.compute(Array.from({ length: 8 }, () => row({ fc_wave_height: 0.6 })));
+  assert.equal(eight.spots["一宮"].wave_factor, round3(Math.exp((5 * E06) / 8)));
+  assert.equal(eight.spots["一宮"].wave_factor, five.spots["一宮"].wave_factor);
+});
+
+test("compute leaves forecasts of 0 out of the wave factor but counts them elsewhere", () => {
+  const cal = C.compute([row({ fc_wave_height: 0.6 }), row({ device_id: "b", fc_wave_height: 0, wave_band: 2 })]);
+  assert.equal(cal.spots["一宮"].wave_factor, round3(Math.exp(E06 / 4)));
+  assert.equal(cal.spots["一宮"].n, 2);
+});
+
+test("compute derives wind_offset the same way and wind_side_hit as a plain rate", () => {
+  const cal = C.compute([
+    row({ fc_wind_speed: 6, wind_strength: "light" }), // error -2.5
+    row({ device_id: "b", wind_side: "on" }), // forecast off -> miss
+  ]);
+  assert.equal(cal.spots["一宮"].wind_offset, round3(-2.5 / 5));
+  assert.equal(cal.spots["一宮"].wind_side_hit, 0.5);
+});
+
+test("compute keeps each spot separate and returns defaults with no records", () => {
+  const cal = C.compute([row({ fc_wave_height: 0.6 }), row({ spot: "志田下" })]);
+  assert.deepEqual(Object.keys(cal.spots).sort(), ["一宮", "志田下"].sort());
+  assert.equal(cal.spots["志田下"].wave_factor, 1);
+  assert.deepEqual(C.compute([]), { version: 1, n: 0, spots: {}, weights: W0, weights_learned: false });
+});
+
+// --- weights ---
+
+// All 32 on/off combinations of the five features: orthogonal once centered.
+function factorial(ratingOf) {
+  const rows = [];
+  for (let m = 0; m < 32; m++) {
+    const x = [0, 1, 2, 3, 4].map((i) => (m >> i) & 1);
+    rows.push({ x, r: ratingOf(x), w: 1 });
+  }
+  return rows;
+}
+const dot = (x, w) => x.reduce((s, xi, i) => s + xi * w[i], 0);
+const W0_LIST = KEYS.map((k) => W0[k]);
+
+test("fitWeights returns the default weights when ratings follow the default total exactly", () => {
+  const w = C.fitWeights(factorial((x) => 1 + (4 * dot(x, W0_LIST)) / 85));
+  for (const k of KEYS) assert.ok(Math.abs(w[k] - W0[k]) < 1e-9, `${k}: ${w[k]}`);
+});
+
+test("fitWeights raises the weight of a component the ratings lean on", () => {
+  const w = C.fitWeights(factorial((x) => 1 + (4 * (dot(x, W0_LIST) + 20 * x[4])) / 105));
+  assert.ok(w.wave_height > 15, `wave_height ${w.wave_height}`);
+  for (const k of KEYS.filter((k) => k !== "wave_height")) {
+    assert.ok(w.wave_height / 15 > w[k] / W0[k], k);
+  }
+});
+
+test("fitWeights clamps each weight to 0.5-2x before rescaling the sum to 85", () => {
+  // Ratings depend on the swell period only: it hits 2x (40), the rest hit 0.5x.
+  const w = C.fitWeights(factorial((x) => 1 + 4 * x[3]));
+  const scale = 85 / (10 + 5 + 10 + 40 + 7.5);
+  assert.deepEqual(Object.fromEntries(KEYS.map((k) => [k, round3(w[k])])), {
+    wind_direction: round3(10 * scale), wind_speed: round3(5 * scale), swell_direction: round3(10 * scale),
+    swell_period: round3(40 * scale), wave_height: round3(7.5 * scale),
+  });
+  assert.ok(Math.abs(KEYS.reduce((s, k) => s + w[k], 0) - 85) < 1e-9);
+});
+
+test("fitWeights keeps the defaults when ratings are flat, inverted, or the totals never vary", () => {
+  assert.equal(C.fitWeights(factorial(() => 3)), null);
+  assert.equal(C.fitWeights(factorial((x) => 5 - (4 * dot(x, W0_LIST)) / 85)), null);
+  const same = Array.from({ length: 20 }, (_, j) => ({ x: [1, 1, 0, 1, 0], r: 1 + (j % 5), w: 1 }));
+  assert.equal(C.fitWeights(same), null);
+});
+
+// Records spread over the five components; the observed values match the
+// forecast so the spot factors stay neutral and features equal raw points.
+function spreadRecords(ratingOf, device = (j) => `dev-${j}`) {
+  const winds = [[270, 1], [0, 4], [90, 10]];
+  const swells = [[90, 16], [150, 11], [200, 7]];
+  const heights = [0.4, 1.2, 2.2];
+  const out = [];
+  let j = 0;
+  for (const [wd, ws] of winds) for (const [sd, sp] of swells) for (const h of heights) {
+    const data = { wind_dir: wd, wind_speed: ws, swell_dir: sd, swell_period: sp, wave_height: h };
+    const scores = S.scoreSpot(data, 90);
+    out.push(row({
+      device_id: device(j), fc_wind_dir: wd, fc_wind_speed: ws, fc_swell_dir: sd, fc_swell_period: sp, fc_wave_height: h,
+      wave_band: C.waveBand(h), wind_side: C.windSide(wd, 90), wind_strength: C.windStrength(ws),
+      rating: ratingOf(scores),
+    }));
+    j += 1;
+  }
+  return out;
+}
+const byTotal = (s) => Math.min(5, Math.max(1, Math.round(1 + (4 * s.total) / 85)));
+
+test("compute keeps the default weights below 15 records and learns from 15", () => {
+  const records = spreadRecords(byTotal);
+  const fourteen = C.compute(records.slice(0, 14));
+  assert.equal(fourteen.weights_learned, false);
+  assert.deepEqual(fourteen.weights, W0);
+  const fifteen = C.compute(records.slice(0, 15));
+  assert.equal(fifteen.weights_learned, true);
+});
+
+test("compute learns weights near the defaults from ratings that follow the default total", () => {
+  const cal = C.compute(spreadRecords(byTotal));
+  assert.equal(cal.weights_learned, true);
+  for (const k of KEYS) {
+    const ratio = cal.weights[k] / W0[k];
+    assert.ok(ratio > 0.75 && ratio < 1.25, `${k}: ${cal.weights[k]}`);
+  }
+  assert.ok(Math.abs(KEYS.reduce((s, k) => s + cal.weights[k], 0) - 85) <= 0.01);
+});
+
+test("compute weights a device's records by min(1, 30 / its record count)", () => {
+  const bySize = (s) => (s.wave_height >= 10 ? 5 : 1);
+  const byPeriod = (s) => (s.swell_period >= 10 ? 5 : 1);
+  const others = spreadRecords(byPeriod);
+  const heavy = spreadRecords(bySize, () => "heavy").slice(0, 15);
+  const copies = (n, device) => Array.from({ length: n }, () => heavy.map((r) => ({ ...r, device_id: device }))).flat();
+  // 60 records from one device weigh 0.5 each: the same as 30 records weighing 1.
+  const sixty = C.compute([...others, ...copies(4, "heavy")]);
+  const thirty = C.compute([...others, ...copies(2, "heavy")]);
+  // Without the cap, 60 records from two devices of 30 pull twice as hard.
+  const twoDevices = C.compute([...others, ...copies(2, "heavy"), ...copies(2, "heavy-2")]);
+  for (const k of KEYS) assert.ok(Math.abs(sixty.weights[k] - thirty.weights[k]) < 0.002, k);
+  assert.notDeepEqual(sixty.weights, twoDevices.weights);
+});
+
+// --- adjust / score ---
+
+const DATA = { wind_dir: 270, wind_speed: 3, swell_dir: 90, swell_period: 11, wave_height: 1.0 };
+const CAL = {
+  version: 1, n: 3,
+  spots: { 一宮: { n: 3, wave_factor: 1.2, wind_offset: 0.6, wind_side_hit: 1 } },
+  weights: W0, weights_learned: false,
+};
+
+test("adjust scales the wave height and shifts the wind speed without touching its input", () => {
+  const input = { ...DATA };
+  const out = C.adjust(input, "一宮", CAL);
+  assert.deepEqual(out, { ...DATA, wave_height: 1.2, wind_speed: 3.6 });
+  assert.deepEqual(input, DATA);
+});
+
+test("adjust passes unknown spots and a null calibration through as copies", () => {
+  assert.deepEqual(C.adjust(DATA, "志田下", CAL), DATA);
+  assert.deepEqual(C.adjust(DATA, "一宮", null), DATA);
+  assert.notEqual(C.adjust(DATA, "一宮", null), DATA);
+  assert.deepEqual(C.adjust(DATA, "constructor", CAL), DATA);
+});
+
+test("adjust never pushes the wind speed below 0", () => {
+  const cal = { ...CAL, spots: { 一宮: { n: 1, wave_factor: 1, wind_offset: -4, wind_side_hit: 1 } } };
+  const out = C.adjust({ ...DATA, wind_speed: 1.5 }, "一宮", cal);
+  assert.equal(out.wind_speed, 0);
+  assert.equal(C.score(out, 90, cal).wind_speed, 10);
+});
+
+test("score matches Scoring.scoreSpot exactly with the default weights or no calibration", () => {
+  for (const wind_dir of [0, 45, 100, 200, 270, 330]) for (const wind_speed of [0, 2, 4, 7, 11, 15])
+    for (const swell_dir of [90, 130, 170, 250]) for (const swell_period of [6, 9, 11, 13, 16])
+      for (const wave_height of [0.2, 0.6, 1.2, 1.7, 2.4]) {
+        const data = { wind_dir, wind_speed, swell_dir, swell_period, wave_height };
+        const expected = S.scoreSpot(data, 90);
+        assert.deepEqual(C.score(data, 90, null), expected);
+        assert.deepEqual(C.score(data, 90, CAL), expected);
+      }
+});
+
+test("score keeps the component points and re-weights only the total", () => {
+  const weights = { wind_direction: 10, wind_speed: 10, swell_direction: 20, swell_period: 20, wave_height: 25 };
+  const out = C.score(DATA, 90, { ...CAL, weights });
+  const base = S.scoreSpot(DATA, 90); // 20, 8, 20, 10, 10
+  assert.deepEqual({ ...out, total: 0 }, { ...base, total: 0 });
+  assert.equal(out.total, Math.round(10 * 20 / 20 + 10 * 8 / 10 + 20 * 20 / 20 + 20 * 10 / 20 + 25 * 10 / 15));
+});
+
+test("apply returns the calibrated data with its score, and the plain scoreSpot cell without calibration", () => {
+  const spot = { name: "一宮", bearing: 90 };
+  const adjusted = { ...DATA, wave_height: 1.2, wind_speed: 3.6 };
+  assert.deepEqual(C.apply(DATA, spot, CAL), { data: adjusted, scores: C.score(adjusted, 90, CAL) });
+  assert.deepEqual(C.apply(DATA, spot, null), { data: DATA, scores: S.scoreSpot(DATA, 90) });
+  assert.deepEqual(C.apply(DATA, { name: "志田下", bearing: 90 }, CAL), { data: DATA, scores: S.scoreSpot(DATA, 90) });
+});
+
+// --- validate ---
+
+test("validate accepts compute's output and the documented shape", () => {
+  assert.equal(C.validate(C.compute([])), true);
+  assert.equal(C.validate(C.compute(spreadRecords(byTotal))), true);
+  assert.equal(C.validate(CAL), true);
+});
+
+test("validate rejects a wrong version, out-of-range values, NaN and missing fields", () => {
+  const bad = [
+    null, "x", { ...CAL, version: 2 }, { ...CAL, spots: [] },
+    { ...CAL, spots: { 一宮: { ...CAL.spots["一宮"], wave_factor: 2.01 } } },
+    { ...CAL, spots: { 一宮: { ...CAL.spots["一宮"], wave_factor: 0.49 } } },
+    { ...CAL, spots: { 一宮: { ...CAL.spots["一宮"], wind_offset: -4.01 } } },
+    { ...CAL, spots: { 一宮: { ...CAL.spots["一宮"], wind_offset: NaN } } },
+    { ...CAL, spots: { 一宮: { n: 3, wave_factor: 1.2, wind_offset: 0.6 } } },
+    { ...CAL, weights: { ...W0, wave_height: undefined } },
+    { ...CAL, weights: { ...W0, wind_speed: 0 } },
+    { ...CAL, weights: { ...W0, wave_height: 15.2 } }, // sums to 85.2
+    { ...CAL, weights: undefined },
+  ];
+  bad.forEach((json, i) => assert.equal(C.validate(json), false, `case ${i}`));
+  assert.equal(C.validate({ ...CAL, weights: { ...W0, wave_height: 15.1 } }), true); // 85.1
+});
+
+// --- metrics ---
+
+test("metrics shows the calibrated wave bands closer than the raw forecast for a biased spot", () => {
+  // Every visitor at 一宮 saw ムネ〜カタ while the forecast said 0.6 m (コシ〜ハラ).
+  const records = Array.from({ length: 8 }, (_, j) => row({ device_id: `d${j}`, fc_wave_height: 0.6, wave_band: 3 }));
+  const m = C.metrics(records);
+  assert.equal(m.n, 8);
+  assert.equal(m.wave_band_mae.raw, 1);
+  assert.equal(m.wave_band_mae.calibrated, 0);
+  assert.equal(m.wind_side_hit, 1);
+});
+
+test("metrics compares rating concordance for the default and calibrated scores", () => {
+  const m = C.metrics(spreadRecords(byTotal));
+  assert.equal(m.rating_concordance.default, 1);
+  assert.ok(m.rating_concordance.calibrated > 0.9, String(m.rating_concordance.calibrated));
+  assert.equal(m.wind_strength_hit.raw, 1);
+});
+
+test("metrics returns nulls for one record or none", () => {
+  const empty = {
+    wave_band_mae: { raw: null, calibrated: null }, wind_strength_hit: { raw: null, calibrated: null },
+    wind_side_hit: null, rating_concordance: { default: null, calibrated: null },
+  };
+  assert.deepEqual(C.metrics([]), { n: 0, ...empty });
+  assert.deepEqual(C.metrics([row()]), { n: 1, ...empty });
+});
+
+// --- summaryLabel ---
+
+test("summaryLabel shows the record count, the wave factor and a signed wind offset", () => {
+  assert.equal(C.summaryLabel("一宮", CAL), "実況補正 3件（波×1.2・風+0.6m/s）");
+  const neg = { ...CAL, spots: { 一宮: { n: 7, wave_factor: 0.84, wind_offset: -1.26, wind_side_hit: 1 } } };
+  assert.equal(C.summaryLabel("一宮", neg), "実況補正 7件（波×0.8・風-1.3m/s）");
+});
+
+test("summaryLabel drops the wind part inside ±0.5 m/s", () => {
+  const at = (off) => ({ ...CAL, spots: { 一宮: { n: 2, wave_factor: 1.12, wind_offset: off, wind_side_hit: 1 } } });
+  assert.equal(C.summaryLabel("一宮", at(0.5)), "実況補正 2件（波×1.1・風+0.5m/s）");
+  assert.equal(C.summaryLabel("一宮", at(-0.5)), "実況補正 2件（波×1.1・風-0.5m/s）");
+  assert.equal(C.summaryLabel("一宮", at(0.499)), "実況補正 2件（波×1.1）");
+  assert.equal(C.summaryLabel("一宮", at(-0.499)), "実況補正 2件（波×1.1）");
+});
+
+test("summaryLabel is empty for spots without records and without a calibration", () => {
+  assert.equal(C.summaryLabel("志田下", CAL), "");
+  assert.equal(C.summaryLabel("一宮", null), "");
+  assert.equal(C.summaryLabel("一宮", C.compute([])), "");
+});
+```
+
+- [ ] **Step 2: テストが失敗することを確かめる**
+
+Run: `node --test calibration.test.js`
+Expected: FAIL。`Error: Cannot find module './calibration.js'`
+
+- [ ] **Step 3: 実装を書く**
+
+`calibration.js` を次の内容で作る。
+
+```js
+// Feedback-driven calibration layered on top of scoring.js, which stays
+// untouched so its thresholds keep matching the Python source of truth.
+// Shared by the site, the Worker and the tests.
+(function (root, factory) {
+  if (typeof module !== "undefined" && module.exports) module.exports = factory(require("./scoring.js"));
+  else root.Calibration = factory(root.Scoring);
+})(typeof self !== "undefined" ? self : this, function (Scoring) {
+  const PRIOR_K = 3;
+  const DEVICE_CAP_SPOT = 5;
+  const DEVICE_CAP_WEIGHTS = 30;
+  const WAVE_LOG_CLAMP = Math.LN2;
+  const WIND_CLAMP = 4;
+  const RIDGE_LAMBDA = 5;
+  const MIN_WEIGHT_RECORDS = 15;
+  const WEIGHT_BOUNDS = [0.5, 2];
+  const TOTAL_POINTS = 85;
+
+  // Same cut points as Scoring.waveSizeLabel; each band is [lo, hi).
+  const WAVE_BANDS = [
+    { label: "フラット", lo: 0, hi: 0.3, center: 0.15 },
+    { label: "ヒザ", lo: 0.3, hi: 0.5, center: 0.4 },
+    { label: "コシ〜ハラ", lo: 0.5, hi: 0.8, center: 0.65 },
+    { label: "ムネ〜カタ", lo: 0.8, hi: 1.1, center: 0.95 },
+    { label: "カタ〜アタマ", lo: 1.1, hi: 1.5, center: 1.3 },
+    { label: "アタマ〜オーバー", lo: 1.5, hi: 2.0, center: 1.75 },
+    { label: "オーバーヘッド", lo: 2.0, hi: 2.5, center: 2.25 },
+    { label: "ダブル+", lo: 2.5, hi: Infinity, center: 3.0 },
+  ];
+  // Same cut points as Scoring.windSpeedScore; each range is (lo, hi].
+  const WIND_STRENGTHS = {
+    calm: { label: "無風", lo: -Infinity, hi: 2, center: 1.0 },
+    light: { label: "弱い", lo: 2, hi: 5, center: 3.5 },
+    strong: { label: "強い", lo: 5, hi: Infinity, center: 7.0 },
+  };
+  const WIND_SIDES = { off: "オフ", side: "サイド", on: "オン" };
+
+  const COMPONENTS = [
+    { key: "wind_direction", max: 20 },
+    { key: "wind_speed", max: 10 },
+    { key: "swell_direction", max: 20 },
+    { key: "swell_period", max: 20 },
+    { key: "wave_height", max: 15 },
+  ];
+  const DEFAULT_WEIGHTS = Object.freeze(Object.fromEntries(COMPONENTS.map((c) => [c.key, c.max])));
+
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const round3 = (v) => Math.round(v * 1000) / 1000;
+  const own = (obj, key) => obj != null && Object.prototype.hasOwnProperty.call(obj, key);
+
+  function waveBand(height) {
+    for (let i = 0; i < WAVE_BANDS.length; i++) if (height < WAVE_BANDS[i].hi) return i;
+    return WAVE_BANDS.length - 1;
+  }
+
+  // Groups windConditionLabel's five labels into off / side / on.
+  function windSide(windDir, bearing) {
+    const diff = Scoring.angleDiff(windDir, (bearing + 180) % 360);
+    if (diff <= 75) return "off";
+    if (diff <= 105) return "side";
+    return "on";
+  }
+
+  function windStrength(speed) {
+    if (speed <= 2) return "calm";
+    if (speed <= 5) return "light";
+    return "strong";
+  }
+
+  // Log-ratio from the forecast to the observed band's center; 0 inside the
+  // band, null when there is no positive forecast to take a ratio of.
+  function waveError(height, band) {
+    if (!(height > 0)) return null;
+    const b = WAVE_BANDS[band];
+    if (height >= b.lo && height < b.hi) return 0;
+    return clamp(Math.log(b.center / height), -WAVE_LOG_CLAMP, WAVE_LOG_CLAMP);
+  }
+
+  function windError(speed, strength) {
+    const s = WIND_STRENGTHS[strength];
+    if (speed > s.lo && speed <= s.hi) return 0;
+    return clamp(s.center - speed, -WIND_CLAMP, WIND_CLAMP);
+  }
+
+  // Per-device means, each device weighted by min(n, DEVICE_CAP_SPOT), and
+  // pulled toward 0 ("no correction") by PRIOR_K pseudo-records.
+  function shrunkMean(samples) {
+    const byDevice = new Map();
+    for (const { device, e } of samples) {
+      const acc = byDevice.get(device) || { sum: 0, n: 0 };
+      acc.sum += e;
+      acc.n += 1;
+      byDevice.set(device, acc);
+    }
+    let num = 0;
+    let den = 0;
+    for (const { sum, n } of byDevice.values()) {
+      const w = Math.min(n, DEVICE_CAP_SPOT);
+      num += (w * sum) / n;
+      den += w;
+    }
+    return num / (den + PRIOR_K);
+  }
+
+  function rawData(record) {
+    return {
+      wind_dir: record.fc_wind_dir,
+      wind_speed: record.fc_wind_speed,
+      swell_dir: record.fc_swell_dir,
+      swell_period: record.fc_swell_period,
+      wave_height: record.fc_wave_height,
+    };
+  }
+
+  function spotCalibration(records) {
+    const bySpot = new Map();
+    for (const r of records) {
+      if (!bySpot.has(r.spot)) bySpot.set(r.spot, []);
+      bySpot.get(r.spot).push(r);
+    }
+    const spots = {};
+    for (const [name, rs] of bySpot) {
+      const wave = [];
+      const wind = [];
+      let sideHits = 0;
+      for (const r of rs) {
+        const we = waveError(r.fc_wave_height, r.wave_band);
+        if (we !== null) wave.push({ device: r.device_id, e: we });
+        wind.push({ device: r.device_id, e: windError(r.fc_wind_speed, r.wind_strength) });
+        if (windSide(r.fc_wind_dir, r.bearing) === r.wind_side) sideHits += 1;
+      }
+      spots[name] = {
+        n: rs.length,
+        wave_factor: Math.exp(shrunkMean(wave)),
+        wind_offset: shrunkMean(wind),
+        wind_side_hit: sideHits / rs.length,
+      };
+    }
+    return spots;
+  }
+
+  function adjust(data, spotName, cal) {
+    const s = cal && own(cal.spots, spotName) ? cal.spots[spotName] : null;
+    if (!s) return { ...data };
+    return {
+      ...data,
+      wave_height: data.wave_height * s.wave_factor,
+      wind_speed: Math.max(0, data.wind_speed + s.wind_offset),
+    };
+  }
+
+  // Component points stay scoreSpot's; only the total is re-weighted.
+  function score(data, bearing, cal) {
+    const base = Scoring.scoreSpot(data, bearing);
+    const weights = (cal && cal.weights) || DEFAULT_WEIGHTS;
+    let total = 0;
+    for (const c of COMPONENTS) total += (weights[c.key] * base[c.key]) / c.max;
+    return { ...base, total: Math.round(total) };
+  }
+
+  // One forecast cell as the site shows it: { data, scores } after calibration.
+  // Used by the ranking and, as weeklyForecast's scorer, by the weekly view.
+  function apply(rawData, spot, cal) {
+    const data = adjust(rawData, spot.name, cal);
+    return { data, scores: score(data, spot.bearing, cal) };
+  }
+
+  function features(data, bearing) {
+    const base = Scoring.scoreSpot(data, bearing);
+    return COMPONENTS.map((c) => base[c.key] / c.max);
+  }
+
+  // Gaussian elimination with partial pivoting; A is n×n, b has length n.
+  function solve(A, b) {
+    const n = b.length;
+    const M = A.map((row, i) => [...row, b[i]]);
+    for (let c = 0; c < n; c++) {
+      let p = c;
+      for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      [M[c], M[p]] = [M[p], M[c]];
+      for (let r = c + 1; r < n; r++) {
+        const f = M[r][c] / M[c][c];
+        for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+      }
+    }
+    const x = new Array(n).fill(0);
+    for (let r = n - 1; r >= 0; r--) {
+      let s = M[r][n];
+      for (let k = r + 1; k < n; k++) s -= M[r][k] * x[k];
+      x[r] = s / M[r][r];
+    }
+    return x;
+  }
+
+  // rows: [{ x: [5 features in COMPONENTS order, each 0..1], r: rating, w: row weight }].
+  // Returns learned weights (summing to TOTAL_POINTS), or null to keep the defaults.
+  function fitWeights(rows) {
+    const w0 = COMPONENTS.map((c) => DEFAULT_WEIGHTS[c.key]);
+    const W = rows.reduce((s, row) => s + row.w, 0);
+    if (!(W > 0)) return null;
+    const t = rows.map((row) => row.x.reduce((s, xi, i) => s + w0[i] * xi, 0));
+    const tBar = rows.reduce((s, row, j) => s + row.w * t[j], 0) / W;
+    const rBar = rows.reduce((s, row) => s + row.w * row.r, 0) / W;
+    let varT = 0;
+    let covTR = 0;
+    rows.forEach((row, j) => {
+      varT += row.w * (t[j] - tBar) ** 2;
+      covTR += row.w * (t[j] - tBar) * (row.r - rBar);
+    });
+    if (!(varT > 1e-12)) return null;
+    const gamma = covTR / varT;
+    if (!(gamma > 0)) return null;
+
+    const k = COMPONENTS.length;
+    const xBar = w0.map((_, i) => rows.reduce((s, row) => s + row.w * row.x[i], 0) / W);
+    const A = Array.from({ length: k }, (_, i) => Array.from({ length: k }, (_, m) => (i === m ? RIDGE_LAMBDA : 0)));
+    const b = w0.map((wi) => RIDGE_LAMBDA * gamma * wi);
+    for (const row of rows) {
+      const xc = row.x.map((xi, i) => xi - xBar[i]);
+      const rc = row.r - rBar;
+      for (let i = 0; i < k; i++) {
+        b[i] += row.w * xc[i] * rc;
+        for (let m = 0; m < k; m++) A[i][m] += row.w * xc[i] * xc[m];
+      }
+    }
+    const theta = solve(A, b);
+    const bounded = theta.map((th, i) => clamp(th / gamma, WEIGHT_BOUNDS[0] * w0[i], WEIGHT_BOUNDS[1] * w0[i]));
+    const scale = TOTAL_POINTS / bounded.reduce((s, v) => s + v, 0);
+    return Object.fromEntries(COMPONENTS.map((c, i) => [c.key, bounded[i] * scale]));
+  }
+
+  function learnWeights(records, spots) {
+    if (records.length < MIN_WEIGHT_RECORDS) return null;
+    const perDevice = new Map();
+    for (const r of records) perDevice.set(r.device_id, (perDevice.get(r.device_id) || 0) + 1);
+    const cal = { spots };
+    const rows = records.map((r) => ({
+      x: features(adjust(rawData(r), r.spot, cal), r.bearing),
+      r: r.rating,
+      w: Math.min(1, DEVICE_CAP_WEIGHTS / perDevice.get(r.device_id)),
+    }));
+    return fitWeights(rows);
+  }
+
+  function compute(records) {
+    const spots = spotCalibration(records);
+    const learned = learnWeights(records, spots);
+    const outSpots = {};
+    for (const [name, s] of Object.entries(spots)) {
+      outSpots[name] = {
+        n: s.n,
+        wave_factor: round3(s.wave_factor),
+        wind_offset: round3(s.wind_offset),
+        wind_side_hit: round3(s.wind_side_hit),
+      };
+    }
+    const weights = learned || DEFAULT_WEIGHTS;
+    return {
+      version: 1,
+      n: records.length,
+      spots: outSpots,
+      weights: Object.fromEntries(COMPONENTS.map((c) => [c.key, round3(weights[c.key])])),
+      weights_learned: Boolean(learned),
+    };
+  }
+
+  // Share of rating-discordant pairs whose higher-rated record got the higher
+  // score; tied scores count half. null when every rating is the same.
+  function concordance(ratings, scores) {
+    let pairs = 0;
+    let agree = 0;
+    for (let i = 0; i < ratings.length; i++) {
+      for (let j = i + 1; j < ratings.length; j++) {
+        if (ratings[i] === ratings[j]) continue;
+        pairs += 1;
+        const hi = ratings[i] > ratings[j] ? i : j;
+        const lo = hi === i ? j : i;
+        if (scores[hi] > scores[lo]) agree += 1;
+        else if (scores[hi] === scores[lo]) agree += 0.5;
+      }
+    }
+    return pairs ? agree / pairs : null;
+  }
+
+  // Leave-one-out: each record is predicted by a calibration computed from
+  // all the other records. O(n²) compute calls — fine for a few hundred.
+  function metrics(records) {
+    const n = records.length;
+    const out = {
+      n,
+      wave_band_mae: { raw: null, calibrated: null },
+      wind_strength_hit: { raw: null, calibrated: null },
+      wind_side_hit: null,
+      rating_concordance: { default: null, calibrated: null },
+    };
+    if (n < 2) return out;
+    let maeRaw = 0;
+    let maeCal = 0;
+    let windRaw = 0;
+    let windCal = 0;
+    let side = 0;
+    const ratings = [];
+    const defaultScores = [];
+    const calScores = [];
+    records.forEach((r, j) => {
+      const cal = compute(records.filter((_, i) => i !== j));
+      const raw = rawData(r);
+      const adj = adjust(raw, r.spot, cal);
+      maeRaw += Math.abs(waveBand(raw.wave_height) - r.wave_band);
+      maeCal += Math.abs(waveBand(adj.wave_height) - r.wave_band);
+      if (windStrength(raw.wind_speed) === r.wind_strength) windRaw += 1;
+      if (windStrength(adj.wind_speed) === r.wind_strength) windCal += 1;
+      if (windSide(raw.wind_dir, r.bearing) === r.wind_side) side += 1;
+      ratings.push(r.rating);
+      defaultScores.push(Scoring.scoreSpot(raw, r.bearing).total);
+      calScores.push(score(adj, r.bearing, cal).total);
+    });
+    const def = concordance(ratings, defaultScores);
+    const calc = concordance(ratings, calScores);
+    out.wave_band_mae = { raw: round3(maeRaw / n), calibrated: round3(maeCal / n) };
+    out.wind_strength_hit = { raw: round3(windRaw / n), calibrated: round3(windCal / n) };
+    out.wind_side_hit = round3(side / n);
+    out.rating_concordance = {
+      default: def === null ? null : round3(def),
+      calibrated: calc === null ? null : round3(calc),
+    };
+    return out;
+  }
+
+  function validate(json) {
+    if (!json || typeof json !== "object" || json.version !== 1) return false;
+    if (!json.spots || typeof json.spots !== "object" || Array.isArray(json.spots)) return false;
+    for (const s of Object.values(json.spots)) {
+      if (!s || typeof s !== "object") return false;
+      if (![s.n, s.wave_factor, s.wind_offset, s.wind_side_hit].every(Number.isFinite)) return false;
+      if (s.wave_factor < 0.5 || s.wave_factor > 2) return false;
+      if (s.wind_offset < -4 || s.wind_offset > 4) return false;
+    }
+    const w = json.weights;
+    if (!w || typeof w !== "object") return false;
+    let sum = 0;
+    for (const c of COMPONENTS) {
+      const v = w[c.key];
+      if (!Number.isFinite(v) || v <= 0) return false;
+      sum += v;
+    }
+    return Math.abs(sum - TOTAL_POINTS) <= 0.1;
+  }
+
+  // "実況補正 7件（波×1.2・風+0.6m/s）"; empty when the spot has no records.
+  function summaryLabel(spotName, cal) {
+    const s = cal && own(cal.spots, spotName) ? cal.spots[spotName] : null;
+    if (!s || !(s.n >= 1)) return "";
+    const parts = [`波×${s.wave_factor.toFixed(1)}`];
+    if (Math.abs(s.wind_offset) >= 0.5) {
+      parts.push(`風${s.wind_offset > 0 ? "+" : "-"}${Math.abs(s.wind_offset).toFixed(1)}m/s`);
+    }
+    return `実況補正 ${s.n}件（${parts.join("・")}）`;
+  }
+
+  return {
+    WAVE_BANDS, WIND_STRENGTHS, WIND_SIDES, DEFAULT_WEIGHTS,
+    waveBand, windSide, windStrength, waveError, windError,
+    compute, fitWeights, metrics, adjust, score, apply, validate, summaryLabel,
+  };
+});
+```
+
+- [ ] **Step 4: テストが通ることを確かめる**
+
+Run: `node --test calibration.test.js`
+Expected: `ℹ tests 35`、`ℹ pass 35`、`ℹ fail 0`
+
+- [ ] **Step 5: 全体のテストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 154`、`ℹ fail 0`
+
+- [ ] **Step 6: コミットする**
+
+```bash
+git add calibration.js calibration.test.js
+git commit -F - <<'EOF'
+feat: add calibration from session feedback
+
+実況フィードバックの記録から、ポイントごとの波サイズの倍率・風速のずれと、
+ランキングの配点を計算する calibration.js を追加した。scoring.js は変えず、
+上乗せでかける（adjust / score / apply）。validate で形を確かめ、
+metrics で leave-one-out の効果を測る。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
+
+---
+
+### Task 2: 記録の組み立て・入力チェック・EXIF（`feedback.js`）
+
+**Files:**
+- Create: `feedback.js`
+- Test: `feedback.test.js`（新規）
+
+**Interfaces:**
+- Consumes:
+  - `forecast.js` の `Forecast.TIME_SLOTS` と `Forecast.SLOT_ORDER`（今のまま）
+  - Task 1 の `Calibration.waveBand` / `windSide` / `windStrength`
+- Produces: Node では `require("./feedback.js")`、ブラウザでは `window.Feedback`。すべて日本時間で動く。`now` は `Date`。
+  - **日付と時間帯**
+    - `jstNow(now)` → `{date: "YYYY-MM-DD", minutes}`
+    - `shiftDay(date, days)` → `"YYYY-MM-DD"`
+    - `dateRange(now)` → `{min, max}`（30日前〜今日）
+    - `slotStarted(date, slot, now)` → `boolean`
+    - `defaultSession(card, now)` → `{date, slot}`。`card` は `{date, slot}`。
+    - `slotForTime(takenAt)` → `"morning"` / `"afternoon"` / `"evening"`
+    - `sessionFromPhoto(takenAt, now)` → `{date, slot}` または `null`
+  - **記録**
+    - `initialObserved(data, bearing)` → `{rating: null, wave_band, wind_side, wind_strength}`
+    - `buildRecord({deviceId, name, spot, date, slot, rawData, observed, photoMeta})` → 仕様の `POST /feedback` の `record` の形
+    - `validateRecord(rec, now)` → 日本語のエラー文の配列。空なら正しい。
+  - **写真と位置**
+    - `readExif(arrayBuffer)` → `{lat, lon, taken_at}`（それぞれ `null` のこともある）または `null`。例外は投げない。
+    - `distanceKm(a, b)`：`a` と `b` は `{lat, lon}`。
+    - `suggestSpot(meta, current, spots)` → `{spot, km}` または `null`
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+`feedback.test.js` を次の内容で作る。EXIF のテストは、テストの中でバイト列から JPEG を組み立てる（リトルエンディアンとビッグエンディアンの両方）。
+
+```js
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const Feedback = require("./feedback.js");
+
+// Japan time → the UTC instant the Worker and browsers see.
+const jst = (s) => new Date(Date.parse(`${s}:00+09:00`));
+const NOW = jst("2026-09-23T13:00"); // Wednesday afternoon, JST
+const DEVICE = "2f1c6a3e-9b7d-4c21-8e5f-0a1b2c3d4e5f";
+
+function validRecord(overrides = {}) {
+  return {
+    device_id: DEVICE,
+    name: "",
+    spot: "一宮",
+    date: "2026-09-23",
+    slot: "morning",
+    bearing: 100,
+    forecast: { wave_height: 0.9, wind_dir: 270, wind_speed: 3.2, swell_dir: 95, swell_period: 9.5 },
+    observed: { rating: 4, wave_band: 3, wind_side: "off", wind_strength: "light" },
+    photo_meta: { lat: 35.34, lon: 140.39, taken_at: "2026-09-23T07:42" },
+    ...overrides,
+  };
+}
+const withForecast = (patch) => validRecord({ forecast: { ...validRecord().forecast, ...patch } });
+const withObserved = (patch) => validRecord({ observed: { ...validRecord().observed, ...patch } });
+const withPhoto = (patch) => validRecord({ photo_meta: { ...validRecord().photo_meta, ...patch } });
+const fields = (errors) => errors.map((e) => e.split(":")[0]);
+
+// --- JST helpers ---
+
+test("jstNow converts a UTC instant to the Japan date and minutes", () => {
+  assert.deepEqual(Feedback.jstNow(new Date("2026-09-22T15:00:00Z")), { date: "2026-09-23", minutes: 0 });
+  assert.deepEqual(Feedback.jstNow(new Date("2026-09-22T14:59:00Z")), { date: "2026-09-22", minutes: 23 * 60 + 59 });
+});
+
+test("dateRange spans 30 days before today through today", () => {
+  assert.deepEqual(Feedback.dateRange(NOW), { min: "2026-08-24", max: "2026-09-23" });
+});
+
+// --- defaultSession ---
+
+test("defaultSession keeps the card's slot at the exact start minute", () => {
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "morning" }, jst("2026-09-23T07:00")), { date: "2026-09-23", slot: "morning" });
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "afternoon" }, jst("2026-09-23T12:00")), { date: "2026-09-23", slot: "afternoon" });
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "evening" }, jst("2026-09-23T16:00")), { date: "2026-09-23", slot: "evening" });
+});
+
+test("defaultSession falls back one minute before a slot starts", () => {
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "afternoon" }, jst("2026-09-23T11:59")), { date: "2026-09-23", slot: "morning" });
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "evening" }, jst("2026-09-23T15:59")), { date: "2026-09-23", slot: "afternoon" });
+});
+
+test("defaultSession before 7:00 is the previous evening", () => {
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "morning" }, jst("2026-09-23T06:59")), { date: "2026-09-22", slot: "evening" });
+});
+
+test("defaultSession keeps a past date's slot and replaces a future date", () => {
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-20", slot: "evening" }, NOW), { date: "2026-09-20", slot: "evening" });
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-25", slot: "morning" }, NOW), { date: "2026-09-23", slot: "afternoon" });
+});
+
+test("defaultSession replaces a date older than 30 days", () => {
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-08-24", slot: "morning" }, NOW), { date: "2026-08-24", slot: "morning" });
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-08-23", slot: "morning" }, NOW), { date: "2026-09-23", slot: "afternoon" });
+});
+
+test("defaultSession uses Japan time on a UTC clock across midnight", () => {
+  // 2026-09-22T22:30Z is 07:30 on the 23rd in Japan: today's morning has begun.
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "morning" }, new Date("2026-09-22T22:30:00Z")), { date: "2026-09-23", slot: "morning" });
+  // 2026-09-22T15:30Z is 00:30 on the 23rd: before 7:00, so the evening of the 22nd.
+  assert.deepEqual(Feedback.defaultSession({ date: "2026-09-23", slot: "morning" }, new Date("2026-09-22T15:30:00Z")), { date: "2026-09-22", slot: "evening" });
+});
+
+// --- slotForTime / sessionFromPhoto ---
+
+test("slotForTime picks the slot containing the time, ends included", () => {
+  assert.equal(Feedback.slotForTime("2026-09-23T07:00"), "morning");
+  assert.equal(Feedback.slotForTime("2026-09-23T10:00"), "morning");
+  assert.equal(Feedback.slotForTime("2026-09-23T13:30"), "afternoon");
+  assert.equal(Feedback.slotForTime("2026-09-23T19:00"), "evening");
+});
+
+test("slotForTime picks the nearest slot between and outside ranges", () => {
+  assert.equal(Feedback.slotForTime("2026-09-23T10:59"), "morning");
+  assert.equal(Feedback.slotForTime("2026-09-23T11:01"), "afternoon");
+  assert.equal(Feedback.slotForTime("2026-09-23T05:00"), "morning");
+  assert.equal(Feedback.slotForTime("2026-09-23T22:00"), "evening");
+});
+
+test("slotForTime breaks ties toward the earlier slot", () => {
+  assert.equal(Feedback.slotForTime("2026-09-23T11:00"), "morning");
+  assert.equal(Feedback.slotForTime("2026-09-23T15:30"), "afternoon");
+});
+
+test("sessionFromPhoto returns the photo's date and slot when selectable", () => {
+  assert.deepEqual(Feedback.sessionFromPhoto("2026-09-23T07:42", NOW), { date: "2026-09-23", slot: "morning" });
+  assert.deepEqual(Feedback.sessionFromPhoto("2026-09-10T17:10", NOW), { date: "2026-09-10", slot: "evening" });
+});
+
+test("sessionFromPhoto rejects out-of-range dates, unstarted slots and missing times", () => {
+  assert.equal(Feedback.sessionFromPhoto("2026-08-23T08:00", NOW), null);
+  assert.equal(Feedback.sessionFromPhoto("2026-09-24T08:00", NOW), null);
+  // 15:50 is nearest the evening slot, which has not begun at 13:00.
+  assert.equal(Feedback.sessionFromPhoto("2026-09-23T15:50", NOW), null);
+  assert.equal(Feedback.sessionFromPhoto(null, NOW), null);
+});
+
+// --- initialObserved / buildRecord ---
+
+test("initialObserved derives band, side and strength from the shown forecast", () => {
+  assert.deepEqual(
+    Feedback.initialObserved({ wave_height: 1.2, wind_dir: 270, wind_speed: 3.6, swell_dir: 90, swell_period: 11 }, 90),
+    { wave_band: 4, wind_side: "off", wind_strength: "light" },
+  );
+  assert.deepEqual(
+    Feedback.initialObserved({ wave_height: 0.3, wind_dir: 90, wind_speed: 2, swell_dir: 90, swell_period: 11 }, 90),
+    { wave_band: 1, wind_side: "on", wind_strength: "calm" },
+  );
+});
+
+test("buildRecord stores the raw forecast, the trimmed name and a null photo_meta", () => {
+  const rec = Feedback.buildRecord({
+    deviceId: DEVICE,
+    name: "  たろう ",
+    spot: { name: "一宮", bearing: 100, lat: 35.37, lon: 140.39 },
+    date: "2026-09-23",
+    slot: "morning",
+    rawData: { wave_height: 0.9, wind_dir: 270, wind_speed: 3.2, swell_dir: 95, swell_period: 9.5, extra: 1 },
+    observed: { rating: 4, wave_band: 3, wind_side: "off", wind_strength: "light" },
+  });
+  assert.deepEqual(rec, { ...validRecord(), name: "たろう", photo_meta: null });
+  assert.deepEqual(Feedback.validateRecord(rec, NOW), []);
+});
+
+// --- validateRecord ---
+
+function assertValid(rec) {
+  assert.deepEqual(Feedback.validateRecord(rec, NOW), []);
+}
+function assertInvalid(rec, field) {
+  assert.deepEqual(fields(Feedback.validateRecord(rec, NOW)), [field]);
+}
+
+test("validateRecord accepts the spec example and a null photo_meta", () => {
+  assertValid(validRecord());
+  assertValid(validRecord({ photo_meta: null }));
+  assertValid(withPhoto({ lat: null, lon: null, taken_at: null }));
+});
+
+test("validateRecord rejects a non-object record", () => {
+  assert.deepEqual(fields(Feedback.validateRecord(null, NOW)), ["record"]);
+  assert.deepEqual(fields(Feedback.validateRecord([], NOW)), ["record"]);
+  assert.deepEqual(fields(Feedback.validateRecord("x", NOW)), ["record"]);
+});
+
+test("validateRecord checks device_id is a UUID v4", () => {
+  assertInvalid(validRecord({ device_id: "not-a-uuid" }), "device_id");
+  assertInvalid(validRecord({ device_id: "2f1c6a3e-9b7d-1c21-8e5f-0a1b2c3d4e5f" }), "device_id"); // version 1
+  assertInvalid(validRecord({ device_id: 123 }), "device_id");
+});
+
+test("validateRecord limits name to 20 characters after trimming, without control characters", () => {
+  assertValid(validRecord({ name: "あ".repeat(20) }));
+  assertValid(validRecord({ name: `  ${"a".repeat(20)}  ` }));
+  assertValid(validRecord({ name: "🏄".repeat(20) }));
+  assertInvalid(validRecord({ name: "あ".repeat(21) }), "name");
+  assertInvalid(validRecord({ name: "a\tb" }), "name");
+  assertInvalid(validRecord({ name: null }), "name");
+});
+
+test("validateRecord limits spot to 1-40 characters", () => {
+  assertValid(validRecord({ spot: "あ".repeat(40) }));
+  assertInvalid(validRecord({ spot: "" }), "spot");
+  assertInvalid(validRecord({ spot: "あ".repeat(41) }), "spot");
+});
+
+test("validateRecord accepts dates from 30 days ago through today", () => {
+  assertValid(validRecord({ date: "2026-08-24" }));
+  assertInvalid(validRecord({ date: "2026-08-23" }), "date");
+  assertInvalid(validRecord({ date: "2026-09-24" }), "date");
+  assertInvalid(validRecord({ date: "2026-02-30" }), "date");
+  assertInvalid(validRecord({ date: "2026-9-23" }), "date");
+});
+
+test("validateRecord rejects unknown slots and today's slots that have not begun", () => {
+  assertValid(validRecord({ slot: "afternoon" }));
+  assertValid(validRecord({ date: "2026-09-22", slot: "evening" }));
+  assertInvalid(validRecord({ slot: "evening" }), "slot");
+  assertInvalid(validRecord({ slot: "night" }), "slot");
+});
+
+test("validateRecord checks numeric ranges at both edges", () => {
+  for (const bearing of [0, 360]) assertValid(validRecord({ bearing }));
+  for (const bearing of [-0.1, 360.1]) assertInvalid(validRecord({ bearing }), "bearing");
+  const ranges = { wave_height: [0, 20], wind_dir: [0, 360], wind_speed: [0, 60], swell_dir: [0, 360], swell_period: [0, 30] };
+  for (const [key, [lo, hi]] of Object.entries(ranges)) {
+    assertValid(withForecast({ [key]: lo }));
+    assertValid(withForecast({ [key]: hi }));
+    assertInvalid(withForecast({ [key]: lo - 0.01 }), `forecast.${key}`);
+    assertInvalid(withForecast({ [key]: hi + 0.01 }), `forecast.${key}`);
+    assertInvalid(withForecast({ [key]: NaN }), `forecast.${key}`);
+    assertInvalid(withForecast({ [key]: "1" }), `forecast.${key}`);
+  }
+  assertInvalid(validRecord({ forecast: null }), "forecast");
+});
+
+test("validateRecord checks observed values", () => {
+  for (const rating of [1, 5]) assertValid(withObserved({ rating }));
+  for (const rating of [0, 6, 3.5, "4"]) assertInvalid(withObserved({ rating }), "observed.rating");
+  for (const wave_band of [0, 7]) assertValid(withObserved({ wave_band }));
+  for (const wave_band of [-1, 8, 2.5]) assertInvalid(withObserved({ wave_band }), "observed.wave_band");
+  for (const wind_side of ["off", "side", "on"]) assertValid(withObserved({ wind_side }));
+  for (const wind_side of ["offshore", "constructor", null]) assertInvalid(withObserved({ wind_side }), "observed.wind_side");
+  for (const wind_strength of ["calm", "light", "strong"]) assertValid(withObserved({ wind_strength }));
+  for (const wind_strength of ["breeze", "toString"]) assertInvalid(withObserved({ wind_strength }), "observed.wind_strength");
+});
+
+test("validateRecord checks photo_meta ranges and time format", () => {
+  assertValid(withPhoto({ lat: -90, lon: 180 }));
+  assertInvalid(withPhoto({ lat: 90.01 }), "photo_meta.lat");
+  assertInvalid(withPhoto({ lon: -180.01 }), "photo_meta.lon");
+  assertInvalid(withPhoto({ taken_at: "2026-09-23 07:42" }), "photo_meta.taken_at");
+  assertInvalid(validRecord({ photo_meta: "x" }), "photo_meta");
+});
+
+test("validateRecord reports every problem at once", () => {
+  const errors = Feedback.validateRecord(validRecord({ spot: "", slot: "night", observed: { rating: 0, wave_band: 3, wind_side: "off", wind_strength: "light" } }), NOW);
+  assert.deepEqual(fields(errors), ["spot", "slot", "observed.rating"]);
+  assert.ok(errors.every((e) => /: \S/.test(e)));
+});
+
+// --- readExif ---
+
+// Builds a JPEG with an APP0 (JFIF) segment, then an EXIF APP1 in the given
+// byte order holding DateTimeOriginal and/or GPS, then start-of-scan.
+function buildJpeg({ le = true, takenAt = null, gps = null } = {}) {
+  const u16 = (v) => (le ? [v & 255, v >> 8] : [v >> 8, v & 255]);
+  const u32 = (v) => (le ? [v & 255, (v >> 8) & 255, (v >> 16) & 255, v >>> 24] : [v >>> 24, (v >> 16) & 255, (v >> 8) & 255, v & 255]);
+  const entry = (tag, type, count, value) => [...u16(tag), ...u16(type), ...u32(count), ...value];
+  const ascii = (s) => Array.from(s + "\0", (c) => c.charCodeAt(0));
+  const inline = (s) => [...ascii(s), 0, 0, 0, 0].slice(0, 4);
+  const rationals = (dms) => dms.flatMap((v) => [...u32(Math.round(v * 100)), ...u32(100)]);
+
+  let tiff = [];
+  if (takenAt || gps) {
+    const count0 = (takenAt ? 1 : 0) + (gps ? 1 : 0);
+    let cursor = 8 + 2 + 12 * count0 + 4;
+    const exifAt = cursor;
+    if (takenAt) cursor += 2 + 12 + 4 + 20;
+    const gpsAt = cursor;
+    tiff = [...(le ? [0x49, 0x49] : [0x4d, 0x4d]), ...u16(42), ...u32(8), ...u16(count0)];
+    if (takenAt) tiff.push(...entry(0x8769, 4, 1, u32(exifAt)));
+    if (gps) tiff.push(...entry(0x8825, 4, 1, u32(gpsAt)));
+    tiff.push(...u32(0));
+    if (takenAt) tiff.push(...u16(1), ...entry(0x9003, 2, 20, u32(exifAt + 18)), ...u32(0), ...ascii(takenAt));
+    if (gps) {
+      tiff.push(
+        ...u16(4),
+        ...entry(1, 2, 2, inline(gps.latRef)),
+        ...entry(2, 5, 3, u32(gpsAt + 54)),
+        ...entry(3, 2, 2, inline(gps.lonRef)),
+        ...entry(4, 5, 3, u32(gpsAt + 78)),
+        ...u32(0),
+        ...rationals(gps.lat),
+        ...rationals(gps.lon),
+      );
+    }
+  }
+  const app0 = [0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0];
+  const app1 = tiff.length ? [0xff, 0xe1, (tiff.length + 8) >> 8, (tiff.length + 8) & 255, 0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff] : [];
+  return new Uint8Array([0xff, 0xd8, ...app0, ...app1, 0xff, 0xda, 0x00, 0x02, 0xff, 0xd9]).buffer;
+}
+const ICHINOMIYA = { latRef: "N", lat: [35, 20, 24], lonRef: "E", lon: [140, 23, 24] }; // 35.34, 140.39
+
+test("readExif reads GPS and capture time in little-endian order", () => {
+  const meta = Feedback.readExif(buildJpeg({ takenAt: "2026:09:23 07:42:10", gps: ICHINOMIYA }));
+  assert.equal(meta.taken_at, "2026-09-23T07:42");
+  assert.ok(Math.abs(meta.lat - 35.34) < 1e-9);
+  assert.ok(Math.abs(meta.lon - 140.39) < 1e-9);
+});
+
+test("readExif reads big-endian (Motorola) EXIF the same way", () => {
+  const meta = Feedback.readExif(buildJpeg({ le: false, takenAt: "2026:09:23 07:42:10", gps: ICHINOMIYA }));
+  assert.equal(meta.taken_at, "2026-09-23T07:42");
+  assert.ok(Math.abs(meta.lat - 35.34) < 1e-9);
+  assert.ok(Math.abs(meta.lon - 140.39) < 1e-9);
+});
+
+test("readExif returns null lat/lon when only the capture time exists", () => {
+  assert.deepEqual(Feedback.readExif(buildJpeg({ takenAt: "2026:09:23 16:05:00" })), { lat: null, lon: null, taken_at: "2026-09-23T16:05" });
+});
+
+test("readExif returns a null time when only GPS exists", () => {
+  const meta = Feedback.readExif(buildJpeg({ gps: ICHINOMIYA }));
+  assert.equal(meta.taken_at, null);
+  assert.ok(Math.abs(meta.lat - 35.34) < 1e-9);
+});
+
+test("readExif makes south and west negative", () => {
+  const meta = Feedback.readExif(buildJpeg({ gps: { ...ICHINOMIYA, latRef: "S", lonRef: "W" } }));
+  assert.ok(Math.abs(meta.lat + 35.34) < 1e-9);
+  assert.ok(Math.abs(meta.lon + 140.39) < 1e-9);
+});
+
+test("readExif returns null for a JPEG without EXIF", () => {
+  assert.equal(Feedback.readExif(buildJpeg()), null);
+});
+
+test("readExif returns null, without throwing, for truncated and non-JPEG input", () => {
+  const full = buildJpeg({ takenAt: "2026:09:23 07:42:10", gps: ICHINOMIYA });
+  for (const cut of [1, 3, 30, 60, full.byteLength - 60]) {
+    assert.equal(Feedback.readExif(full.slice(0, cut)), null, `cut at ${cut}`);
+  }
+  assert.equal(Feedback.readExif(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).buffer), null);
+  assert.equal(Feedback.readExif(new ArrayBuffer(0)), null);
+});
+
+// --- distanceKm / suggestSpot ---
+
+const KM = 180 / (Math.PI * 6371); // degrees of latitude per km
+const A = { name: "A", lat: 35, lon: 140 };
+const B = { name: "B", lat: 35 + 1.5 * KM, lon: 140 };
+const FAR = { name: "FAR", lat: 36, lon: 141 };
+
+test("distanceKm measures along a meridian in km", () => {
+  assert.ok(Math.abs(Feedback.distanceKm(A, B) - 1.5) < 1e-9);
+  assert.equal(Feedback.distanceKm(A, A), 0);
+});
+
+test("suggestSpot suggests the nearest spot once the chosen one is over 1.0 km away", () => {
+  const photo = { lat: 35 + 1.01 * KM, lon: 140, taken_at: null };
+  const s = Feedback.suggestSpot(photo, A, [A, B, FAR]);
+  assert.equal(s.spot, B);
+  assert.ok(Math.abs(s.km - 0.49) < 1e-9);
+});
+
+test("suggestSpot stays quiet within 1.0 km of the chosen spot", () => {
+  assert.equal(Feedback.suggestSpot({ lat: 35 + 0.99 * KM, lon: 140 }, A, [A, B, FAR]), null);
+});
+
+test("suggestSpot stays quiet when the chosen spot is the nearest", () => {
+  assert.equal(Feedback.suggestSpot({ lat: 35 - 3 * KM, lon: 140 }, A, [A, B, FAR]), null);
+});
+
+test("suggestSpot stays quiet without a photo location", () => {
+  assert.equal(Feedback.suggestSpot(null, A, [A, B]), null);
+  assert.equal(Feedback.suggestSpot({ lat: null, lon: null, taken_at: "2026-09-23T07:00" }, A, [A, B]), null);
+});
+```
+
+- [ ] **Step 2: テストが失敗することを確かめる**
+
+Run: `node --test feedback.test.js`
+Expected: FAIL。`Error: Cannot find module './feedback.js'`
+
+- [ ] **Step 3: 実装を書く**
+
+`feedback.js` を次の内容で作る。
+
+```js
+// Feedback records: panel defaults, validation (shared by the site and the
+// Worker), and photo EXIF reading. No DOM access, so it runs under node --test.
+(function (root, factory) {
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = factory(require("./forecast.js"), require("./calibration.js"));
+  } else {
+    root.Feedback = factory(root.Forecast, root.Calibration);
+  }
+})(typeof self !== "undefined" ? self : this, function (Forecast, Calibration) {
+  const { TIME_SLOTS, SLOT_ORDER } = Forecast;
+  const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // Japan has no daylight saving time
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const MAX_AGE_DAYS = 30;
+  const NAME_MAX = 20;
+  const SPOT_MAX = 40;
+  const SUGGEST_KM = 1.0;
+
+  const pad = (n) => String(n).padStart(2, "0");
+
+  // Date and minutes-since-midnight in Japan time, whatever the host's zone.
+  function jstNow(now) {
+    const d = new Date(now.getTime() + JST_OFFSET_MS);
+    return {
+      date: `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`,
+      minutes: d.getUTCHours() * 60 + d.getUTCMinutes(),
+    };
+  }
+
+  function shiftDay(date, days) {
+    return new Date(Date.parse(`${date}T00:00:00Z`) + days * DAY_MS).toISOString().slice(0, 10);
+  }
+
+  // Selectable dates: 30 days ago through today, Japan time.
+  function dateRange(now) {
+    const today = jstNow(now).date;
+    return { min: shiftDay(today, -MAX_AGE_DAYS), max: today };
+  }
+
+  function slotStartMinutes(slot) {
+    return TIME_SLOTS[slot][0] * 60;
+  }
+
+  // True when the slot on that date has begun (every slot of a past date has).
+  function slotStarted(date, slot, now) {
+    const { date: today, minutes } = jstNow(now);
+    if (date < today) return true;
+    if (date > today) return false;
+    return minutes >= slotStartMinutes(slot);
+  }
+
+  function latestStarted(now) {
+    const { date: today, minutes } = jstNow(now);
+    let slot = null;
+    for (const s of SLOT_ORDER) if (minutes >= slotStartMinutes(s)) slot = s;
+    return slot ? { date: today, slot } : { date: shiftDay(today, -1), slot: SLOT_ORDER[SLOT_ORDER.length - 1] };
+  }
+
+  // The card's date and slot when they have begun and are in range;
+  // otherwise the latest slot that has begun (before 7:00, yesterday evening).
+  function defaultSession(card, now) {
+    const { min, max } = dateRange(now);
+    if (card.date >= min && card.date <= max && slotStarted(card.date, card.slot, now)) {
+      return { date: card.date, slot: card.slot };
+    }
+    return latestStarted(now);
+  }
+
+  // Nearest slot to "YYYY-MM-DDTHH:MM"; 0 inside a slot, earlier slot on ties.
+  function slotForTime(takenAt) {
+    const m = parseInt(takenAt.slice(11, 13), 10) * 60 + parseInt(takenAt.slice(14, 16), 10);
+    let best = null;
+    let bestDist = Infinity;
+    for (const slot of SLOT_ORDER) {
+      const [startH, endH] = TIME_SLOTS[slot];
+      const dist = m < startH * 60 ? startH * 60 - m : m > endH * 60 ? m - endH * 60 : 0;
+      if (dist < bestDist) {
+        best = slot;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  // Session suggested by a photo's capture time, or null when it falls
+  // outside the selectable dates or on a slot of today that has not begun.
+  function sessionFromPhoto(takenAt, now) {
+    if (!takenAt) return null;
+    const date = takenAt.slice(0, 10);
+    const slot = slotForTime(takenAt);
+    const { min, max } = dateRange(now);
+    if (date < min || date > max || !slotStarted(date, slot, now)) return null;
+    return { date, slot };
+  }
+
+  // Panel defaults from the forecast shown on the card (already calibrated).
+  function initialObserved(data, bearing) {
+    return {
+      wave_band: Calibration.waveBand(data.wave_height),
+      wind_side: Calibration.windSide(data.wind_dir, bearing),
+      wind_strength: Calibration.windStrength(data.wind_speed),
+    };
+  }
+
+  // rawData is the forecast before calibration: records must never learn
+  // from their own corrections.
+  function buildRecord({ deviceId, name, spot, date, slot, rawData, observed, photoMeta }) {
+    return {
+      device_id: deviceId,
+      name: (name || "").trim(),
+      spot: spot.name,
+      date,
+      slot,
+      bearing: spot.bearing,
+      forecast: {
+        wave_height: rawData.wave_height,
+        wind_dir: rawData.wind_dir,
+        wind_speed: rawData.wind_speed,
+        swell_dir: rawData.swell_dir,
+        swell_period: rawData.swell_period,
+      },
+      observed: {
+        rating: observed.rating,
+        wave_band: observed.wave_band,
+        wind_side: observed.wind_side,
+        wind_strength: observed.wind_strength,
+      },
+      photo_meta: photoMeta || null,
+    };
+  }
+
+  const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  const CONTROL = /[\u0000-\u001f\u007f]/;
+  const isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const inRange = (v, lo, hi) => typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi;
+  const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+  const charCount = (s) => Array.from(s).length;
+
+  function realDate(s) {
+    if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+    const t = Date.parse(`${s}T00:00:00Z`);
+    return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s;
+  }
+
+  // Returns a list of "field: problem" messages in Japanese; empty when valid.
+  function validateRecord(rec, now) {
+    if (!isObject(rec)) return ["record: 形が正しくありません"];
+    const errors = [];
+    const fail = (field, msg) => errors.push(`${field}: ${msg}`);
+
+    if (typeof rec.device_id !== "string" || !UUID_V4.test(rec.device_id)) fail("device_id", "UUID v4 ではありません");
+    if (typeof rec.name !== "string") fail("name", "文字列ではありません");
+    else if (charCount(rec.name.trim()) > NAME_MAX) fail("name", `${NAME_MAX}文字までです`);
+    else if (CONTROL.test(rec.name)) fail("name", "使えない文字が含まれています");
+    if (typeof rec.spot !== "string" || charCount(rec.spot) < 1 || charCount(rec.spot) > SPOT_MAX) {
+      fail("spot", `1〜${SPOT_MAX}文字で指定してください`);
+    }
+
+    const { min, max } = dateRange(now);
+    const dateOk = realDate(rec.date);
+    if (!dateOk) fail("date", "日付が正しくありません");
+    else if (rec.date < min || rec.date > max) fail("date", "今日から30日前までの日付にしてください");
+    if (!SLOT_ORDER.includes(rec.slot)) fail("slot", "morning / afternoon / evening のどれかにしてください");
+    else if (dateOk && rec.date === max && !slotStarted(rec.date, rec.slot, now)) fail("slot", "まだ始まっていない時間帯です");
+
+    if (!inRange(rec.bearing, 0, 360)) fail("bearing", "0〜360 にしてください");
+    const fc = rec.forecast;
+    if (!isObject(fc)) fail("forecast", "形が正しくありません");
+    else {
+      if (!inRange(fc.wave_height, 0, 20)) fail("forecast.wave_height", "0〜20 にしてください");
+      if (!inRange(fc.wind_dir, 0, 360)) fail("forecast.wind_dir", "0〜360 にしてください");
+      if (!inRange(fc.wind_speed, 0, 60)) fail("forecast.wind_speed", "0〜60 にしてください");
+      if (!inRange(fc.swell_dir, 0, 360)) fail("forecast.swell_dir", "0〜360 にしてください");
+      if (!inRange(fc.swell_period, 0, 30)) fail("forecast.swell_period", "0〜30 にしてください");
+    }
+    const ob = rec.observed;
+    if (!isObject(ob)) fail("observed", "形が正しくありません");
+    else {
+      if (!isInt(ob.rating, 1, 5)) fail("observed.rating", "1〜5 の整数にしてください");
+      if (!isInt(ob.wave_band, 0, Calibration.WAVE_BANDS.length - 1)) fail("observed.wave_band", "0〜7 の整数にしてください");
+      if (!Object.prototype.hasOwnProperty.call(Calibration.WIND_SIDES, ob.wind_side)) fail("observed.wind_side", "off / side / on のどれかにしてください");
+      if (!Object.prototype.hasOwnProperty.call(Calibration.WIND_STRENGTHS, ob.wind_strength)) fail("observed.wind_strength", "calm / light / strong のどれかにしてください");
+    }
+    const pm = rec.photo_meta;
+    if (pm != null) {
+      if (!isObject(pm)) fail("photo_meta", "形が正しくありません");
+      else {
+        if (pm.lat != null && !inRange(pm.lat, -90, 90)) fail("photo_meta.lat", "−90〜90 にしてください");
+        if (pm.lon != null && !inRange(pm.lon, -180, 180)) fail("photo_meta.lon", "−180〜180 にしてください");
+        if (pm.taken_at != null && (typeof pm.taken_at !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(pm.taken_at))) {
+          fail("photo_meta.taken_at", "YYYY-MM-DDTHH:MM にしてください");
+        }
+      }
+    }
+    return errors;
+  }
+
+  // --- EXIF (JPEG only) ---
+
+  // Returns { lat, lon, taken_at } (each possibly null), or null when the
+  // file is not a JPEG, has no usable EXIF, or is cut short. Never throws.
+  function readExif(buffer) {
+    try {
+      const view = new DataView(buffer);
+      if (view.getUint16(0) !== 0xffd8) return null;
+      let offset = 2;
+      while (offset + 4 <= view.byteLength) {
+        if (view.getUint8(offset) !== 0xff) return null;
+        const marker = view.getUint8(offset + 1);
+        if (marker === 0xda || marker === 0xd9) return null; // image data: no EXIF before it
+        const size = view.getUint16(offset + 2);
+        if (marker === 0xe1 && view.getUint32(offset + 4) === 0x45786966 && view.getUint16(offset + 8) === 0) {
+          return readTiff(new DataView(buffer, offset + 10, size - 8));
+        }
+        offset += 2 + size;
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function readTiff(tiff) {
+    const order = tiff.getUint16(0);
+    if (order !== 0x4949 && order !== 0x4d4d) return null;
+    const le = order === 0x4949;
+    const u16 = (o) => tiff.getUint16(o, le);
+    const u32 = (o) => tiff.getUint32(o, le);
+    if (u16(2) !== 42) return null;
+
+    function entries(ifdOffset) {
+      const out = new Map();
+      const count = u16(ifdOffset);
+      for (let i = 0; i < count; i++) {
+        const e = ifdOffset + 2 + i * 12;
+        out.set(u16(e), { type: u16(e + 2), count: u32(e + 4), at: e + 8 });
+      }
+      return out;
+    }
+    const valueOffset = (entry, bytes) => (entry.count * bytes <= 4 ? entry.at : u32(entry.at));
+    function ascii(entry) {
+      const start = valueOffset(entry, 1);
+      let s = "";
+      for (let i = 0; i < entry.count; i++) {
+        const c = tiff.getUint8(start + i);
+        if (c === 0) break;
+        s += String.fromCharCode(c);
+      }
+      return s;
+    }
+    function degrees(entry) {
+      const start = u32(entry.at); // 3 rationals never fit inline
+      let deg = 0;
+      for (let i = 0; i < 3; i++) deg += u32(start + i * 8) / u32(start + i * 8 + 4) / 60 ** i;
+      return deg;
+    }
+
+    const ifd0 = entries(u32(4));
+    let takenAt = null;
+    if (ifd0.has(0x8769)) {
+      const exif = entries(u32(ifd0.get(0x8769).at));
+      if (exif.has(0x9003)) {
+        const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2})/.exec(ascii(exif.get(0x9003)));
+        if (m) takenAt = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`;
+      }
+    }
+    let lat = null;
+    let lon = null;
+    if (ifd0.has(0x8825)) {
+      const gps = entries(u32(ifd0.get(0x8825).at));
+      if ([1, 2, 3, 4].every((tag) => gps.has(tag))) {
+        const la = degrees(gps.get(2)) * (ascii(gps.get(1)) === "S" ? -1 : 1);
+        const lo = degrees(gps.get(4)) * (ascii(gps.get(3)) === "W" ? -1 : 1);
+        if (Number.isFinite(la) && Number.isFinite(lo)) {
+          lat = la;
+          lon = lo;
+        }
+      }
+    }
+    if (takenAt === null && lat === null) return null;
+    return { lat, lon, taken_at: takenAt };
+  }
+
+  // --- photo location ---
+
+  function distanceKm(a, b) {
+    const R = 6371;
+    const rad = (d) => (d * Math.PI) / 180;
+    const dLat = rad(b.lat - a.lat);
+    const dLon = rad(b.lon - a.lon);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  // { spot, km } for the spot nearest the photo when that is not the chosen
+  // spot and the chosen spot is more than 1.0 km away; otherwise null.
+  function suggestSpot(meta, current, spots) {
+    if (!meta || typeof meta.lat !== "number" || typeof meta.lon !== "number") return null;
+    const at = { lat: meta.lat, lon: meta.lon };
+    let nearest = null;
+    let nearestKm = Infinity;
+    for (const s of spots) {
+      const km = distanceKm(at, s);
+      if (km < nearestKm) {
+        nearest = s;
+        nearestKm = km;
+      }
+    }
+    if (!nearest || nearest.name === current.name) return null;
+    if (distanceKm(at, current) <= SUGGEST_KM) return null;
+    return { spot: nearest, km: nearestKm };
+  }
+
+  return {
+    jstNow, shiftDay, dateRange, slotStarted, defaultSession, slotForTime, sessionFromPhoto,
+    initialObserved, buildRecord, validateRecord, readExif, distanceKm, suggestSpot,
+  };
+});
+```
+
+- [ ] **Step 4: テストが通ることを確かめる**
+
+Run: `node --test feedback.test.js`
+Expected: `ℹ tests 38`、`ℹ pass 38`、`ℹ fail 0`
+
+- [ ] **Step 5: 全体のテストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 192`、`ℹ fail 0`
+
+- [ ] **Step 6: コミットする**
+
+```bash
+git add feedback.js feedback.test.js
+git commit -F - <<'EOF'
+feat: add feedback record building and validation
+
+入力パネルの初期値（日本時間の時間帯）、送る記録の組み立て、
+ブラウザと Worker で共用する入力チェック、JPEG の EXIF から撮影時刻・
+撮影位置を読む処理、撮影位置に近いポイントの提案を feedback.js にまとめた。
+DOM には触らない。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
+
+---
+
+### Task 3: 週間予報に採点関数を渡せるようにする（`forecast.js`）
+
+**Files:**
+- Modify: `forecast.js`（`weeklyForecast`）
+- Test: `forecast.test.js`
+
+**Interfaces:**
+- Consumes: Task 1 の `Calibration.apply(rawData, spot, cal)`。テストでだけ使う。
+- Produces: `Forecast.weeklyForecast(marine, forecast, dates, bearing, scorer)`
+  - `scorer(data)` は `{data, scores}` を返す。省略すると今と同じ `{data, scores: Scoring.scoreSpot(data, bearing)}` になる。
+  - 各日の `maxWaveHeight` は、`scorer` が返した `data.wave_height` から取る。
+  - データが欠けた時間帯では `scorer` を呼ばない。
+
+- [ ] **Step 1: 失敗するテストを書く**
+
+`forecast.test.js` を2か所変える。1つ目は `calibration.js` の読み込み。
+
+置き換える前：
+```js
+const S = require("./scoring.js");
+```
+置き換えた後：
+```js
+const S = require("./scoring.js");
+const C = require("./calibration.js");
+```
+
+2つ目。ファイルの末尾に次を足す。
+
+```js
+// --- weeklyForecast scorer ---
+
+test("weeklyForecast without a scorer matches the default scorer exactly", () => {
+  const marine = marineSeries();
+  const forecast = forecastSeries();
+  const plain = F.weeklyForecast(marine, forecast, WEEK, 90);
+  const explicit = F.weeklyForecast(marine, forecast, WEEK, 90, (data) => ({ data, scores: S.scoreSpot(data, 90) }));
+  assert.deepEqual(plain, explicit);
+});
+
+test("weeklyForecast uses the scorer's data and scores, and maxWaveHeight follows the scored data", () => {
+  const scorer = (data) => {
+    const scaled = { ...data, wave_height: data.wave_height * 2 };
+    return { data: scaled, scores: { ...S.scoreSpot(scaled, 90), total: 7 } };
+  };
+  const days = F.weeklyForecast(marineSeries(), forecastSeries(), WEEK, 90, scorer);
+  assert.equal(days[0].slots.morning.data.wave_height, 2.5);
+  assert.equal(days[0].slots.morning.scores.total, 7);
+  assert.equal(days[0].maxWaveHeight, 2.5);
+});
+
+test("weeklyForecast never calls the scorer for a missing slot", () => {
+  const calls = [];
+  const scorer = (data) => { calls.push(data); return { data, scores: S.scoreSpot(data, 90) }; };
+  const days = F.weeklyForecast(marineSeries(), forecastSeries(), ["2026-09-25", "2026-09-26"], 90, scorer);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(days[1].slots, { morning: null, afternoon: null, evening: null });
+});
+
+test("weeklyForecast with Calibration.apply and no calibration matches the plain weekly forecast", () => {
+  const marine = marineSeries({ swell_wave_height: (di, h) => 0.4 + di * 0.3 + h / 100 });
+  const forecast = forecastSeries({ windspeed_10m: (di, h) => di + h / 10 });
+  const spot = { name: "一宮", bearing: 90 };
+  assert.deepEqual(
+    F.weeklyForecast(marine, forecast, WEEK, 90, (data) => C.apply(data, spot, null)),
+    F.weeklyForecast(marine, forecast, WEEK, 90),
+  );
+});
+```
+
+- [ ] **Step 2: テストが失敗することを確かめる**
+
+Run: `node --test forecast.test.js`
+Expected: `ℹ tests 21`、`ℹ pass 19`、`ℹ fail 2`
+- 失敗するのは次の2件。今の `weeklyForecast` は5番目の引数を無視するため。
+  - `weeklyForecast uses the scorer's data and scores, ...`
+  - `weeklyForecast never calls the scorer for a missing slot`
+
+- [ ] **Step 3: 実装を書く**
+
+`forecast.js` の `weeklyForecast` を次のとおり変える。
+
+**1. `weeklyForecast` に任意の `scorer` を足す**
+
+置き換える前：
+```js
+  function weeklyForecast(marine, forecast, dates, bearing) {
+```
+置き換えた後：
+```js
+  // scorer(data) returns the cell { data, scores }; the app passes one that
+  // applies feedback calibration. maxWaveHeight follows the returned data.
+  function weeklyForecast(marine, forecast, dates, bearing, scorer) {
+    const score = scorer || ((data) => ({ data, scores: Scoring.scoreSpot(data, bearing) }));
+```
+
+**2. セルは `score(data)` で作り、最大波高は返ってきた `data` から取る**
+
+置き換える前：
+```js
+        slots[slot] = data ? { data, scores: Scoring.scoreSpot(data, bearing) } : null;
+        if (data) heights.push(data.wave_height);
+```
+置き換えた後：
+```js
+        slots[slot] = data ? score(data) : null;
+        if (slots[slot]) heights.push(slots[slot].data.wave_height);
+```
+
+- [ ] **Step 4: テストが通ることを確かめる**
+
+Run: `node --test forecast.test.js`
+Expected: `ℹ tests 21`、`ℹ pass 21`、`ℹ fail 0`
+
+- [ ] **Step 5: 全体のテストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 196`、`ℹ fail 0`
+
+- [ ] **Step 6: コミットする**
+
+```bash
+git add forecast.js forecast.test.js
+git commit -F - <<'EOF'
+feat: let weeklyForecast take a scorer
+
+週間予報の各セルを作る関数を任意で渡せるようにした。渡さなければ今と
+同じ結果になる。アプリは補正をかける関数を渡す。最大波高は、返ってきた
+（補正後の）波高から取る。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
+
+---
+
+### Task 4: Worker（`POST /feedback`、`GET /calibration`）
+
+**Files:**
+- Create: `worker/schema.sql`、`worker/d1-sqlite.mjs`（テスト専用）、`worker/handler.mjs`、`worker/index.mjs`、`worker/wrangler.toml`、`.gitignore`
+- Test: `worker/worker.test.mjs`（新規）
+
+**Interfaces:**
+- Consumes:
+  - Task 1 の `Calibration.compute(records)` と `Calibration.metrics(records)`
+  - Task 2 の `Feedback.validateRecord(rec, now)`、`Feedback.jstNow(now)`、`Feedback.shiftDay(date, days)`
+  - `.mjs` から UMD の `.js` を default import で読む（`import Calibration from "../calibration.js"`）。
+- Produces:
+  - `worker/handler.mjs` の `export async function handle(request, env, now)`
+    - `env` は `{DB, PHOTOS, ALLOWED_ORIGINS, IP_SALT}`。
+    - `POST /feedback`（multipart。`record` は JSON の文字列、`photo` は JPEG で任意）
+      - 成功：`200 {"ok": true, "id", "updated"}`
+      - 失敗：`400 {"error", "errors"}` / `403` / `413` / `415` / `429 {"error": "今日はこれ以上送れません", "limit": "device" | "ip" | "total"}` / `500`
+    - `OPTIONS /feedback`：CORS の事前確認
+    - `GET /calibration`：補正を返す。`?metrics=1` のときだけ `metrics` を足す。`Cache-Control: public, max-age=300` と `Access-Control-Allow-Origin: *` を付ける。
+  - `worker/d1-sqlite.mjs` の `export function createD1(db)`：`node:sqlite` の `DatabaseSync` を D1 の `prepare().bind().first()/all()/run()` で使えるようにする。Task 5・6 の確認用 Worker もこれを使う。
+  - `worker/schema.sql`：`feedback` と `submissions` のテーブル。Task 8・9 の wrangler でもそのまま流す。
+
+- [ ] **Step 1: テーブル定義とテスト用の D1 を置く**
+
+`worker/schema.sql` を次の内容で作る。
+
+```sql
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  spot TEXT NOT NULL,
+  date TEXT NOT NULL,            -- YYYY-MM-DD（日本時間）
+  slot TEXT NOT NULL,            -- morning | afternoon | evening
+  bearing REAL NOT NULL,         -- 送った当時のポイントの向き
+  fc_wave_height REAL NOT NULL,  -- ここから5列は補正前の予報
+  fc_wind_dir REAL NOT NULL,
+  fc_wind_speed REAL NOT NULL,
+  fc_swell_dir REAL NOT NULL,
+  fc_swell_period REAL NOT NULL,
+  rating INTEGER NOT NULL,       -- 1..5
+  wave_band INTEGER NOT NULL,    -- 0..7
+  wind_side TEXT NOT NULL,       -- off | side | on
+  wind_strength TEXT NOT NULL,   -- calm | light | strong
+  photo_key TEXT,
+  photo_lat REAL,
+  photo_lon REAL,
+  photo_taken_at TEXT,           -- YYYY-MM-DDTHH:MM（日本時間）
+  ip_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL,      -- ISO 8601（UTC）
+  updated_at TEXT NOT NULL,
+  UNIQUE (device_id, spot, date, slot)
+);
+
+CREATE TABLE IF NOT EXISTS submissions (
+  id INTEGER PRIMARY KEY,
+  device_id TEXT NOT NULL,
+  ip_hash TEXT NOT NULL,
+  day TEXT NOT NULL              -- YYYY-MM-DD（日本時間）
+);
+CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
+```
+
+`worker/d1-sqlite.mjs` を次の内容で作る。
+
+```js
+// Test-only: wraps node:sqlite in the subset of the D1 API the Worker uses
+// (prepare().bind().first()/all()/run()). Rows are copied into plain objects
+// because node:sqlite returns null-prototype rows.
+export function createD1(db) {
+  return {
+    prepare(sql) {
+      const stmt = db.prepare(sql);
+      const bound = (params) => ({
+        bind: (...args) => bound(args),
+        async first() {
+          const row = stmt.get(...params);
+          return row ? { ...row } : null;
+        },
+        async all() {
+          return { results: stmt.all(...params).map((row) => ({ ...row })), success: true };
+        },
+        async run() {
+          const info = stmt.run(...params);
+          return { success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
+        },
+      });
+      return bound([]);
+    },
+  };
+}
+```
+
+- [ ] **Step 2: 失敗するテストを書く**
+
+`worker/worker.test.mjs` を次の内容で作る。R2 は `Map` に入れる作りもので置き換え、D1 は `schema.sql` をそのまま流した `node:sqlite` を使う。
+
+```js
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import Calibration from "../calibration.js";
+import { handle } from "./handler.mjs";
+import { createD1 } from "./d1-sqlite.mjs";
+
+const ORIGIN = "https://tk0407.github.io";
+const NOW = new Date("2026-09-23T03:00:00Z"); // 12:00 in Japan
+const SCHEMA = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
+
+function memoryR2(map) {
+  return {
+    async put(key, value) {
+      map.set(key, new Uint8Array(value));
+    },
+    async delete(key) {
+      map.delete(key);
+    },
+  };
+}
+
+function setup() {
+  const sqlite = new DatabaseSync(":memory:");
+  sqlite.exec(SCHEMA);
+  const photos = new Map();
+  const env = {
+    DB: createD1(sqlite),
+    PHOTOS: memoryR2(photos),
+    ALLOWED_ORIGINS: `${ORIGIN}, http://localhost:8000`,
+    IP_SALT: "test-salt",
+  };
+  const rows = (sql, ...args) => sqlite.prepare(sql).all(...args).map((r) => ({ ...r }));
+  return { sqlite, photos, env, rows };
+}
+
+const deviceId = (i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+
+function record(overrides = {}) {
+  return {
+    device_id: deviceId(1),
+    name: "たろう",
+    spot: "一宮",
+    date: "2026-09-23",
+    slot: "morning",
+    bearing: 100,
+    forecast: { wave_height: 0.9, wind_dir: 270, wind_speed: 3.2, swell_dir: 95, swell_period: 9.5 },
+    observed: { rating: 4, wave_band: 3, wind_side: "off", wind_strength: "light" },
+    photo_meta: { lat: 35.34, lon: 140.39, taken_at: "2026-09-23T07:42" },
+    ...overrides,
+  };
+}
+
+function jpeg(size = 64, fill = 1) {
+  const bytes = new Uint8Array(size).fill(fill);
+  bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+  return bytes;
+}
+
+function feedbackRequest({ rec = record(), photo = null, ip = "203.0.113.7", origin = ORIGIN, body, contentType } = {}) {
+  const headers = { "CF-Connecting-IP": ip };
+  if (origin) headers.Origin = origin;
+  if (contentType) headers["Content-Type"] = contentType;
+  if (body === undefined) {
+    body = new FormData();
+    body.append("record", typeof rec === "string" ? rec : JSON.stringify(rec));
+    if (photo) body.append("photo", new Blob([photo], { type: "image/jpeg" }), "photo.jpg");
+  }
+  return new Request("https://api.example/feedback", { method: "POST", headers, body });
+}
+
+async function send(env, options = {}, now = NOW) {
+  const res = await handle(feedbackRequest(options), env, now);
+  return { status: res.status, headers: res.headers, body: await res.json() };
+}
+
+// --- POST /feedback ---
+
+test("POST stores one record, the photo and a submission", async () => {
+  const { env, photos, rows } = setup();
+  const res = await send(env, { photo: jpeg() });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { ok: true, id: 1, updated: false });
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+
+  const [row] = rows("SELECT * FROM feedback");
+  assert.equal(row.spot, "一宮");
+  assert.equal(row.name, "たろう");
+  assert.equal(row.fc_wave_height, 0.9);
+  assert.equal(row.rating, 4);
+  assert.equal(row.wind_side, "off");
+  assert.equal(row.photo_lat, 35.34);
+  assert.equal(row.photo_taken_at, "2026-09-23T07:42");
+  assert.match(row.photo_key, /^photos\/[0-9a-f-]{36}\.jpg$/);
+  assert.match(row.ip_hash, /^[0-9a-f]{64}$/);
+  assert.equal(row.created_at, NOW.toISOString());
+  assert.deepEqual([...photos.keys()], [row.photo_key]);
+  assert.deepEqual(photos.get(row.photo_key), jpeg());
+  assert.deepEqual(rows("SELECT day FROM submissions"), [{ day: "2026-09-23" }]);
+});
+
+test("POST without a photo stores null photo fields even when photo_meta is sent", async () => {
+  const { env, photos, rows } = setup();
+  assert.equal((await send(env)).status, 200);
+  const [row] = rows("SELECT photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback");
+  assert.deepEqual(row, { photo_key: null, photo_lat: null, photo_lon: null, photo_taken_at: null });
+  assert.equal(photos.size, 0);
+});
+
+test("resending the same session overwrites it and keeps created_at", async () => {
+  const { env, rows } = setup();
+  await send(env);
+  const later = new Date("2026-09-23T04:00:00Z");
+  const res = await send(env, { rec: record({ observed: { rating: 2, wave_band: 1, wind_side: "on", wind_strength: "strong" } }) }, later);
+  assert.deepEqual(res.body, { ok: true, id: 1, updated: true });
+  const all = rows("SELECT rating, wave_band, created_at, updated_at FROM feedback");
+  assert.deepEqual(all, [{ rating: 2, wave_band: 1, created_at: NOW.toISOString(), updated_at: later.toISOString() }]);
+  assert.equal(rows("SELECT * FROM submissions").length, 2);
+});
+
+test("a different slot, date or spot from the same device is a separate record", async () => {
+  const { env, rows } = setup();
+  await send(env);
+  await send(env, { rec: record({ slot: "afternoon" }) });
+  await send(env, { rec: record({ date: "2026-09-22" }) });
+  await send(env, { rec: record({ spot: "志田下" }) });
+  assert.equal(rows("SELECT * FROM feedback").length, 4);
+});
+
+test("resending without a photo keeps the earlier photo and its location", async () => {
+  const { env, photos, rows } = setup();
+  await send(env, { photo: jpeg() });
+  const [before] = rows("SELECT photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback");
+  await send(env, { rec: record({ photo_meta: null }) });
+  assert.deepEqual(rows("SELECT photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback"), [before]);
+  assert.deepEqual([...photos.keys()], [before.photo_key]);
+});
+
+test("resending with a new photo replaces the file and deletes the old one", async () => {
+  const { env, photos, rows } = setup();
+  await send(env, { photo: jpeg(64, 1) });
+  const [{ photo_key: oldKey }] = rows("SELECT photo_key FROM feedback");
+  await send(env, { photo: jpeg(64, 2), rec: record({ photo_meta: { lat: 35.1, lon: 140.2, taken_at: null } }) });
+  const [row] = rows("SELECT photo_key, photo_lat, photo_taken_at FROM feedback");
+  assert.notEqual(row.photo_key, oldKey);
+  assert.equal(row.photo_lat, 35.1);
+  assert.equal(row.photo_taken_at, null);
+  assert.deepEqual([...photos.keys()], [row.photo_key]);
+  assert.deepEqual(photos.get(row.photo_key), jpeg(64, 2));
+});
+
+test("an invalid record gets 400 naming the field, and nothing is stored", async () => {
+  const { env, photos, rows } = setup();
+  const res = await send(env, { photo: jpeg(), rec: record({ observed: { rating: 9, wave_band: 3, wind_side: "off", wind_strength: "light" } }) });
+  assert.equal(res.status, 400);
+  assert.match(res.body.error, /observed\.rating/);
+  assert.deepEqual(res.body.errors.map((e) => e.split(":")[0]), ["observed.rating"]);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+  assert.equal(rows("SELECT * FROM submissions").length, 0);
+  assert.equal(photos.size, 0);
+});
+
+test("malformed bodies get 400, not 500", async () => {
+  const { env, rows } = setup();
+  const notJson = await send(env, { rec: "{" });
+  assert.equal(notJson.status, 400);
+  assert.match(notJson.body.error, /^record:/);
+
+  const missing = new FormData();
+  missing.append("other", "x");
+  assert.equal((await send(env, { body: missing })).status, 400);
+
+  const plain = await send(env, { body: "hello", contentType: "text/plain" });
+  assert.equal(plain.status, 400);
+  assert.equal(plain.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+
+  const brokenMultipart = await send(env, { body: "--x\r\nbroken", contentType: "multipart/form-data; boundary=x" });
+  assert.equal(brokenMultipart.status, 400);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+});
+
+test("a photo that is not a JPEG gets 415", async () => {
+  const { env, photos } = setup();
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  assert.equal((await send(env, { photo: png })).status, 415);
+  assert.equal((await send(env, { photo: new Uint8Array(0) })).status, 415);
+  assert.equal(photos.size, 0);
+});
+
+test("photos are accepted up to 1,572,864 bytes and rejected with 413 above", async () => {
+  const { env, photos } = setup();
+  assert.equal((await send(env, { photo: jpeg(1572864) })).status, 200);
+  assert.equal((await send(env, { photo: jpeg(1572865) })).status, 413);
+  assert.equal(photos.size, 1);
+});
+
+test("a request body over 2 MB gets 413", async () => {
+  const { env, rows } = setup();
+  const res = await send(env, { photo: jpeg(2 * 1024 * 1024) });
+  assert.equal(res.status, 413);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+});
+
+// --- daily limits ---
+
+test("the 21st submission from one device in a day gets 429 device", async () => {
+  const { env } = setup();
+  for (let i = 0; i < 20; i++) assert.equal((await send(env, { ip: `198.51.100.${i}` })).status, 200);
+  const res = await send(env, { ip: "198.51.100.99" });
+  assert.equal(res.status, 429);
+  assert.equal(res.body.limit, "device");
+});
+
+test("the 31st submission from one connection in a day gets 429 ip", async () => {
+  const { env } = setup();
+  for (let i = 0; i < 30; i++) assert.equal((await send(env, { rec: record({ device_id: deviceId(i) }) })).status, 200);
+  const res = await send(env, { rec: record({ device_id: deviceId(99) }) });
+  assert.equal(res.status, 429);
+  assert.equal(res.body.limit, "ip");
+});
+
+test("the 101st submission in a day overall gets 429 total", async () => {
+  const { env } = setup();
+  for (let i = 0; i < 100; i++) {
+    assert.equal((await send(env, { rec: record({ device_id: deviceId(i) }), ip: `10.0.${i >> 8}.${i & 255}` })).status, 200);
+  }
+  const res = await send(env, { rec: record({ device_id: deviceId(500) }), ip: "192.0.2.1" });
+  assert.equal(res.status, 429);
+  assert.equal(res.body.limit, "total");
+});
+
+test("limits restart at midnight Japan time even though the clock is UTC", async () => {
+  const { env, rows } = setup();
+  const lastMinute = new Date("2026-09-23T14:59:00Z"); // 23:59 on the 23rd in Japan
+  const midnight = new Date("2026-09-23T15:00:00Z"); // 00:00 on the 24th in Japan
+  for (let i = 0; i < 20; i++) assert.equal((await send(env, {}, lastMinute)).status, 200);
+  assert.equal((await send(env, {}, lastMinute)).status, 429);
+  assert.equal((await send(env, {}, midnight)).status, 200);
+  assert.deepEqual(rows("SELECT day, COUNT(*) AS n FROM submissions GROUP BY day ORDER BY day"), [
+    { day: "2026-09-23", n: 20 },
+    { day: "2026-09-24", n: 1 },
+  ]);
+});
+
+test("each submission purges submission rows older than 3 days", async () => {
+  const { env, sqlite, rows } = setup();
+  const insert = sqlite.prepare("INSERT INTO submissions (device_id, ip_hash, day) VALUES ('d', 'h', ?)");
+  for (const day of ["2026-09-19", "2026-09-20", "2026-09-22"]) insert.run(day);
+  await send(env);
+  assert.deepEqual(rows("SELECT day FROM submissions ORDER BY day").map((r) => r.day), ["2026-09-20", "2026-09-22", "2026-09-23"]);
+});
+
+// --- CORS and configuration ---
+
+test("allowed origins get CORS headers on OPTIONS and POST", async () => {
+  const { env } = setup();
+  for (const origin of [ORIGIN, "http://localhost:8000"]) {
+    const res = await handle(new Request("https://api.example/feedback", { method: "OPTIONS", headers: { Origin: origin } }), env, NOW);
+    assert.equal(res.status, 204);
+    assert.equal(res.headers.get("Access-Control-Allow-Origin"), origin);
+    assert.match(res.headers.get("Access-Control-Allow-Methods"), /POST/);
+  }
+  assert.equal((await send(env, { origin: "http://localhost:8000" })).headers.get("Access-Control-Allow-Origin"), "http://localhost:8000");
+});
+
+test("other or missing origins get 403 and nothing is stored", async () => {
+  const { env, rows } = setup();
+  const options = await handle(new Request("https://api.example/feedback", { method: "OPTIONS", headers: { Origin: "https://evil.example" } }), env, NOW);
+  assert.equal(options.headers.get("Access-Control-Allow-Origin"), null);
+  assert.equal((await send(env, { origin: "https://evil.example" })).status, 403);
+  assert.equal((await send(env, { origin: null })).status, 403);
+  assert.equal((await send(env, { origin: `${ORIGIN}.evil.example` })).status, 403);
+  assert.equal((await send(env, { origin: "https://tk0407.github" })).status, 403); // a prefix of an allowed origin
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+});
+
+test("a missing IP_SALT gets 500 and nothing is stored", async () => {
+  const { env, rows } = setup();
+  delete env.IP_SALT;
+  assert.equal((await send(env)).status, 500);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+});
+
+test("when saving the record fails, the uploaded photo is removed and 500 is returned", async () => {
+  const { env, photos, rows } = setup();
+  const realDb = env.DB;
+  env.DB = {
+    prepare(sql) {
+      if (sql.startsWith("INSERT INTO feedback")) {
+        const failing = { bind: () => failing, first: async () => { throw new Error("D1 unavailable"); } };
+        return failing;
+      }
+      return realDb.prepare(sql);
+    },
+  };
+  const res = await send(env, { photo: jpeg() });
+  assert.equal(res.status, 500);
+  assert.equal(photos.size, 0);
+  assert.equal(rows("SELECT * FROM submissions").length, 0);
+});
+
+test("unknown paths get 404 and GET /feedback gets 405", async () => {
+  const { env } = setup();
+  assert.equal((await handle(new Request("https://api.example/nope"), env, NOW)).status, 404);
+  assert.equal((await handle(new Request("https://api.example/feedback"), env, NOW)).status, 405);
+});
+
+// --- GET /calibration ---
+
+const getCalibration = async (env, query = "") => {
+  const res = await handle(new Request(`https://api.example/calibration${query}`), env, NOW);
+  return { status: res.status, headers: res.headers, text: await res.clone().text(), body: await res.json() };
+};
+
+test("GET /calibration with no records returns the default weights", async () => {
+  const { env } = setup();
+  const res = await getCalibration(env);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, {
+    version: 1,
+    n: 0,
+    spots: {},
+    weights: { ...Calibration.DEFAULT_WEIGHTS },
+    weights_learned: false,
+    generated_at: NOW.toISOString(),
+  });
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal(res.headers.get("Cache-Control"), "public, max-age=300");
+});
+
+test("GET /calibration matches Calibration.compute and leaks no personal data", async () => {
+  const { env, rows } = setup();
+  for (let i = 0; i < 3; i++) {
+    const forecast = { wave_height: 0.6, wind_dir: 270, wind_speed: 3.2, swell_dir: 95, swell_period: 9.5 };
+    await send(env, { rec: record({ device_id: deviceId(i), forecast }), photo: jpeg() });
+  }
+  const res = await getCalibration(env);
+  const stored = rows("SELECT * FROM feedback ORDER BY id");
+  const { generated_at, ...cal } = res.body;
+  assert.deepEqual(cal, Calibration.compute(stored));
+  assert.equal(cal.n, 3);
+  assert.ok(cal.spots["一宮"].wave_factor > 1);
+  assert.equal("metrics" in res.body, false);
+  for (const secret of ["たろう", deviceId(0), "photos/", "35.34", stored[0].ip_hash]) {
+    assert.equal(res.text.includes(secret), false, secret);
+  }
+});
+
+test("GET /calibration?metrics=1 adds leave-one-out metrics", async () => {
+  const { env, rows } = setup();
+  for (let i = 0; i < 3; i++) await send(env, { rec: record({ device_id: deviceId(i) }) });
+  const res = await getCalibration(env, "?metrics=1");
+  assert.deepEqual(res.body.metrics, Calibration.metrics(rows("SELECT * FROM feedback ORDER BY id")));
+  assert.equal(res.body.metrics.n, 3);
+});
+```
+
+- [ ] **Step 3: テストが失敗することを確かめる**
+
+Run: `node --test worker/worker.test.mjs`
+Expected: FAIL。`Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../worker/handler.mjs'`
+
+- [ ] **Step 4: 実装を書く**
+
+`worker/handler.mjs` を次の内容で作る。
+
+```js
+// POST /feedback stores one session record (and optional photo);
+// GET /calibration returns the corrections computed from all records.
+import Calibration from "../calibration.js";
+import Feedback from "../feedback.js";
+
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 1572864; // 1.5 MB
+const DAILY_LIMITS = [["device", 20], ["ip", 30], ["total", 100]];
+const KEEP_SUBMISSION_DAYS = 3;
+
+const CALIBRATION_COLUMNS =
+  "device_id, spot, bearing, fc_wave_height, fc_wind_dir, fc_wind_speed, fc_swell_dir, fc_swell_period, rating, wave_band, wind_side, wind_strength";
+
+const UPSERT = `INSERT INTO feedback (device_id, name, spot, date, slot, bearing,
+    fc_wave_height, fc_wind_dir, fc_wind_speed, fc_swell_dir, fc_swell_period,
+    rating, wave_band, wind_side, wind_strength,
+    photo_key, photo_lat, photo_lon, photo_taken_at, ip_hash, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT (device_id, spot, date, slot) DO UPDATE SET
+    name = excluded.name, bearing = excluded.bearing,
+    fc_wave_height = excluded.fc_wave_height, fc_wind_dir = excluded.fc_wind_dir,
+    fc_wind_speed = excluded.fc_wind_speed, fc_swell_dir = excluded.fc_swell_dir,
+    fc_swell_period = excluded.fc_swell_period,
+    rating = excluded.rating, wave_band = excluded.wave_band,
+    wind_side = excluded.wind_side, wind_strength = excluded.wind_strength,
+    photo_key = COALESCE(excluded.photo_key, feedback.photo_key),
+    photo_lat = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_lat ELSE excluded.photo_lat END,
+    photo_lon = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_lon ELSE excluded.photo_lon END,
+    photo_taken_at = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_taken_at ELSE excluded.photo_taken_at END,
+    ip_hash = excluded.ip_hash, updated_at = excluded.updated_at
+  RETURNING id`;
+
+function json(body, status, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", ...headers },
+  });
+}
+
+function allowedOrigin(origin, env) {
+  if (!origin) return false;
+  return (env.ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).includes(origin);
+}
+
+const corsFor = (origin) => ({ "Access-Control-Allow-Origin": origin, Vary: "Origin" });
+
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const isJpeg = (bytes) => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+
+export async function handle(request, env, now) {
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin");
+  if (url.pathname === "/feedback") {
+    if (request.method === "OPTIONS") {
+      if (!allowedOrigin(origin, env)) return new Response(null, { status: 403 });
+      return new Response(null, {
+        status: 204,
+        headers: { ...corsFor(origin), "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400" },
+      });
+    }
+    if (request.method !== "POST") return json({ error: "POST で送ってください" }, 405);
+    if (!allowedOrigin(origin, env)) return json({ error: "このサイトからは送れません" }, 403);
+    const cors = corsFor(origin);
+    try {
+      return await postFeedback(request, env, now, cors);
+    } catch (e) {
+      return json({ error: "サーバーでエラーが起きました" }, 500, cors);
+    }
+  }
+  if (url.pathname === "/calibration" && request.method === "GET") return getCalibration(url, env, now);
+  return json({ error: "見つかりません" }, 404);
+}
+
+async function postFeedback(request, env, now, cors) {
+  const reply = (body, status) => json(body, status, cors);
+  if (!env.IP_SALT) return reply({ error: "サーバーの設定が足りません" }, 500);
+
+  if (Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES) return reply({ error: "送信が大きすぎます" }, 413);
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_BODY_BYTES) return reply({ error: "送信が大きすぎます" }, 413);
+
+  let form;
+  try {
+    form = await new Response(body, { headers: { "Content-Type": request.headers.get("Content-Type") || "" } }).formData();
+  } catch (e) {
+    return reply({ error: "送信の形が正しくありません" }, 400);
+  }
+  let rec;
+  try {
+    rec = JSON.parse(form.get("record"));
+  } catch (e) {
+    return reply({ error: "record: JSON ではありません" }, 400);
+  }
+  const errors = Feedback.validateRecord(rec, now);
+  if (errors.length) return reply({ error: errors.join(" / "), errors }, 400);
+
+  const photo = form.get("photo");
+  let photoBytes = null;
+  if (photo !== null) {
+    if (typeof photo === "string") return reply({ error: "写真は JPEG にしてください" }, 415);
+    photoBytes = new Uint8Array(await photo.arrayBuffer());
+    if (photoBytes.byteLength > MAX_PHOTO_BYTES) return reply({ error: "写真が大きすぎます" }, 413);
+    if (!isJpeg(photoBytes)) return reply({ error: "写真は JPEG にしてください" }, 415);
+  }
+
+  const day = Feedback.jstNow(now).date;
+  const ipHash = await sha256Hex((request.headers.get("CF-Connecting-IP") || "") + env.IP_SALT);
+  const counts = await env.DB.prepare(
+    "SELECT COALESCE(SUM(device_id = ?), 0) AS device, COALESCE(SUM(ip_hash = ?), 0) AS ip, COUNT(*) AS total FROM submissions WHERE day = ?",
+  ).bind(rec.device_id, ipHash, day).first();
+  for (const [limit, max] of DAILY_LIMITS) {
+    if (counts[limit] >= max) return reply({ error: "今日はこれ以上送れません", limit }, 429);
+  }
+
+  const existing = await env.DB.prepare(
+    "SELECT id, photo_key FROM feedback WHERE device_id = ? AND spot = ? AND date = ? AND slot = ?",
+  ).bind(rec.device_id, rec.spot, rec.date, rec.slot).first();
+
+  let photoKey = null;
+  if (photoBytes) {
+    photoKey = `photos/${crypto.randomUUID()}.jpg`;
+    await env.PHOTOS.put(photoKey, photoBytes, { httpMetadata: { contentType: "image/jpeg" } });
+  }
+  const meta = (photoKey && rec.photo_meta) || {};
+  const stamp = now.toISOString();
+  let row;
+  try {
+    row = await env.DB.prepare(UPSERT).bind(
+      rec.device_id, rec.name.trim(), rec.spot, rec.date, rec.slot, rec.bearing,
+      rec.forecast.wave_height, rec.forecast.wind_dir, rec.forecast.wind_speed, rec.forecast.swell_dir, rec.forecast.swell_period,
+      rec.observed.rating, rec.observed.wave_band, rec.observed.wind_side, rec.observed.wind_strength,
+      photoKey, meta.lat ?? null, meta.lon ?? null, meta.taken_at ?? null, ipHash, stamp, stamp,
+    ).first();
+  } catch (e) {
+    if (photoKey) await env.PHOTOS.delete(photoKey);
+    return reply({ error: "保存できませんでした" }, 500);
+  }
+
+  await env.DB.prepare("INSERT INTO submissions (device_id, ip_hash, day) VALUES (?, ?, ?)").bind(rec.device_id, ipHash, day).run();
+  await env.DB.prepare("DELETE FROM submissions WHERE day < ?").bind(Feedback.shiftDay(day, -KEEP_SUBMISSION_DAYS)).run();
+  if (photoKey && existing && existing.photo_key) await env.PHOTOS.delete(existing.photo_key);
+  return reply({ ok: true, id: row.id, updated: Boolean(existing) }, 200);
+}
+
+async function getCalibration(url, env, now) {
+  const { results } = await env.DB.prepare(`SELECT ${CALIBRATION_COLUMNS} FROM feedback ORDER BY id`).all();
+  const body = { ...Calibration.compute(results), generated_at: now.toISOString() };
+  if (url.searchParams.get("metrics") === "1") body.metrics = Calibration.metrics(results);
+  return json(body, 200, { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300" });
+}
+```
+
+`worker/index.mjs` を次の内容で作る。
+
+```js
+// Cloudflare Worker entry. The logic lives in handler.mjs so tests can pass
+// their own clock; the Worker always uses the real time.
+import { handle } from "./handler.mjs";
+
+export default {
+  fetch(request, env) {
+    return handle(request, env, new Date());
+  },
+};
+```
+
+- [ ] **Step 5: テストが通ることを確かめる**
+
+Run: `node --test worker/worker.test.mjs`
+Expected: `ℹ tests 24`、`ℹ pass 24`、`ℹ fail 0`
+- `node:sqlite` の ExperimentalWarning が出ることがあるが、問題ない。
+
+- [ ] **Step 6: wrangler の設定と .gitignore を置く**
+
+`worker/wrangler.toml` を次の内容で作る。`database_id` は Task 9 で入れる。
+
+```toml
+name = "surf-check-feedback"
+main = "index.mjs"
+compatibility_date = "2026-09-01"
+
+[vars]
+# 本番はサイトのオリジンだけ。ローカル開発は worker/.dev.vars で上書きする（README 参照）。
+ALLOWED_ORIGINS = "https://tk0407.github.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "surf-check-feedback"
+# database_id: filled in at deploy
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "surf-check-photos"
+```
+
+リポジトリの直下に `.gitignore` を次の内容で作る。
+
+```
+worker/.dev.vars
+worker/.wrangler/
+```
+
+Run: `git check-ignore worker/.dev.vars worker/.wrangler/x`
+Expected: 2行とも表示される（どちらも無視される）。
+
+- [ ] **Step 7: 全体のテストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 220`、`ℹ fail 0`
+
+- [ ] **Step 8: コミットする**
+
+```bash
+git add worker/schema.sql worker/d1-sqlite.mjs worker/handler.mjs worker/index.mjs worker/worker.test.mjs worker/wrangler.toml .gitignore
+git commit -F - <<'EOF'
+feat: add feedback worker with D1 and R2
+
+実況フィードバックを受ける Cloudflare Worker を追加した。POST /feedback は
+入力チェック・写真の確認（JPEG、1.5MB まで）・日本時間の1日ごとの回数上限・
+同じ組の上書きを行い、D1 に記録、R2 に写真を保存する。GET /calibration は
+記録からその都度補正を計算して返す。テストは node:sqlite を D1 の代わりに使う。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
+
+---
+
+### Task 5: サイトで補正を読み、ランキングと週間予報にかける
+
+**Files:**
+- Modify: `app.js`、`index.html`、`style.css`
+- 確認用（コミットしない）：`$VERIFY/` の `cdp.mjs`、`common.mjs`、`static.mjs`、`fake-worker.mjs`、`serve.sh`、`scenario-equiv.mjs`
+
+**Interfaces:**
+- Consumes:
+  - Task 1 の `Calibration.validate`、`Calibration.apply`、`Calibration.summaryLabel`
+  - Task 3 の `Forecast.weeklyForecast(..., scorer)`
+  - Task 4 の `worker/handler.mjs` の `handle`、`worker/d1-sqlite.mjs` の `createD1`、`worker/schema.sql`。確認用の Worker が使う。
+- Produces（Task 6 が使う）:
+  - `app.js` の `FEEDBACK_API`（`const`、今は `""`）、`CALIBRATION`（`let`。補正の JSON または `null`）、`calibrationChip(spot)`、`loadCalibration()`
+  - `rankSpot` の返り値に `rawData`（補正前の予報）が加わる。
+  - 確認用の道具一式が `$VERIFY` にそろう。
+
+**確認用の道具について**
+
+アプリには DOM のテストが無い。そのため、ヘッドレス Chrome を CDP で直接動かして画面を確かめる。道具はリポジトリの外に置き、コミットしない。
+
+- `REPO`：リポジトリの直下（`/Users/tkasai/Projects/surf-check-deploy`）
+- `VERIFY`：リポジトリの外の作業用ディレクトリ。Claude Code なら、そのセッションのスクラッチパッドの下の `verify/`。
+
+以下のコマンドは、この2つを export してから実行する。
+
+```bash
+export REPO=/Users/tkasai/Projects/surf-check-deploy
+export VERIFY=<スクラッチパッド>/verify   # 例: /private/tmp/claude-501/<プロジェクト>/<セッション>/scratchpad/verify
+mkdir -p "$VERIFY"
+```
+
+`serve.sh start` は次のものを立てる。
+
+| ポート | 中身 | 用途 |
 |---|---|---|
-| 座標 | 35.04, 140.021 | 逆ジオで「和田町仁我浦」。白渚（和田町白渚）とは別の浜 |
-| 方位 | 135° | SO「和田・Js前 … ビーチの向き＝南東」 |
-| カメラ1 | YouTube 和田浦海岸 | oEmbed のタイトルが「南房総ライブカメラ　和田浦海岸」で一致 |
-| カメラ2 | Surfers Ocean 和田・Js前 | 白渚と同じページだがエリアが同じなのでテストの制約を満たす |
+| 8001 | 作業ツリーのコピー。`FEEDBACK_API = "http://localhost:8787"` に書き換える | 補正あり |
+| 8002 | 作業ツリーのそのままのコピー。`FEEDBACK_API` は空 | 補正を取りに行かない場合 |
+| 8003 | `git merge-base HEAD origin/main` の時点のコピー | 「今と同じ」の比較の基準 |
+| 8787 | 確認用の Worker | `worker/handler.mjs` を `node:sqlite`（D1 の代わり）と、ディレクトリ（R2 の代わり）で動かす |
 
-SO のページは和田町の2ポイントを明確に区別している。
+- 8000 には触らない。
+- 確認用の Worker の DB と写真は、起動のたびに作り直す。
+- `IP_SALT` は起動のたびにランダムに作り、どこにも書かない。
 
-- 和田・Js前（南房総市和田町**仁我浦**・YouTubeライブ動画 南房総市提供）
-- 和田・白渚（南房総市和田町**白渚**・ライブ画像 ＢＣＭ提供）
+`scenario-equiv.mjs` は、3つの場合それぞれで、8003 と次の4つが一致するかを比べる。
 
-これを読み落として YouTube カメラを白渚に付けていたのが今回の誤り。
+- 比べるもの
+  - ランキング（地域 湘南・今日・昼）の順位・点数・値と HTML
+  - 共有 URL
+  - 週間予報の値と、セルを開いた詳細の HTML
+- 比べる場合
+  - `plain`：8002
+  - `api`：8001。Worker は動いていて、記録は0件。
+  - `worker-down`：8001。Worker は止めてある。
+- HTML を比べる前に取り除くもの
+  - 潮位グラフの svg の中身。描いた時刻で変わるため。
+  - 「行ってきた」ボタン（Task 6 以降）
 
-### 方位を変えなかった25件について
+- [ ] **Step 1: 確認用の道具を作る**
 
-- **SOと実測が食い違った6件**（釣ヶ崎・太東・御宿・平砂浦・平井海岸、および
-  測定不能の部原・千倉）。とくに九十九里は全長60kmでほぼ一定の弧なのに、SO の
-  値は志田下68°から片貝135°まで散らばる。SO の「向き」は汀線の法線ではなく
-  ブレイク単位の向きか狙ううねりの方位を指しているらしく、単独の根拠にできない。
-- **SOに記述が無い15件**。実測しかなく、その実測は湾では±20°ずれることが
-  分かっているので、登録値を覆す根拠としては弱い。
+`$VERIFY/cdp.mjs`：
 
-### 副産物：座標の疑わしいポイント
+```js
+// Minimal CDP client over Node's global WebSocket (no packages).
+import { spawn } from "node:child_process";
+import { writeFileSync, rmSync } from "node:fs";
 
-方位の実測中に、方位とは別の問題として見つかったもの。**後述の「追加作業：座標を浜の上へ直す」で全件直した。**
+const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-| ポイント | 登録座標 | 症状 |
-|---|---|---|
-| 部原 | 35.023, 140.128 | 半径5kmの全方位が海。沖に置かれている |
-| 千倉 | 34.972, 139.925 | 半径3km以内に海が無い。約4km内陸 |
-| 片貝 | 35.502, 140.493 | 汀線まで4.67km |
-| 野手浜 | 35.616, 140.633 | 汀線まで4.32km |
-| サンライズ | 35.46, 140.458 | 汀線まで4.03km。実際は一宮町東浪見（後述） |
-| 御宿 | 35.183, 140.4 | 汀線まで3.08km |
-| 波崎シーサイドパーク | 35.815, 140.685 | 汀線まで3.02km |
+export async function launch(port = 9333) {
+  const profile = new URL(`./chrome-profile-${port}`, import.meta.url).pathname; // throwaway profile
+  rmSync(profile, { recursive: true, force: true });
+  const proc = spawn(CHROME, ["--headless=new", `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
+    "--no-first-run", "--no-default-browser-check", "--window-size=375,812", "about:blank"], { stdio: "ignore" });
+  let target;
+  for (let i = 0; i < 50 && !target; i++) {
+    await sleep(200);
+    try {
+      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+      target = list.find((t) => t.type === "page");
+    } catch (e) { /* not up yet */ }
+  }
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((r) => ws.addEventListener("open", r, { once: true }));
+  let id = 0;
+  const pending = new Map();
+  const logs = [];
+  const listeners = new Map();
+  ws.addEventListener("message", (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.method && listeners.has(msg.method)) listeners.get(msg.method)(msg.params);
+    if (msg.id && pending.has(msg.id)) {
+      const { resolve, reject } = pending.get(msg.id);
+      pending.delete(msg.id);
+      msg.error ? reject(new Error(msg.error.message)) : resolve(msg.result);
+    } else if (msg.method === "Runtime.exceptionThrown") {
+      logs.push(`EXCEPTION ${msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text}`);
+    } else if (msg.method === "Runtime.consoleAPICalled" && ["error", "warning"].includes(msg.params.type)) {
+      logs.push(`console.${msg.params.type} ${msg.params.args.map((a) => a.value ?? a.description).join(" ")}`);
+    } else if (msg.method === "Log.entryAdded" && msg.params.entry.level === "error") {
+      logs.push(`log ${msg.params.entry.text} ${msg.params.entry.url || ""}`);
+    }
+  });
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
+    const n = ++id;
+    pending.set(n, { resolve, reject });
+    ws.send(JSON.stringify({ id: n, method, params }));
+  });
+  await send("Runtime.enable");
+  await send("Page.enable");
+  await send("Log.enable");
+  await send("DOM.enable");
+  await send("Emulation.setDeviceMetricsOverride", { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
+  await send("Emulation.setTimezoneOverride", { timezoneId: "Asia/Tokyo" });
 
-Open-Meteo は最寄りの海グリッドに丸めるので数km程度ならデータは返るが、
-浜がどこを指しているかが曖昧になる。とくに部原と千倉は浜の上に無かった。
+  const page = {
+    send, logs,
+    on(method, fn) { listeners.set(method, fn); },
+    async eval(expr) {
+      const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true });
+      if (r.exceptionDetails) throw new Error(`eval failed: ${expr}\n${r.exceptionDetails.exception?.description}`);
+      return r.result.value;
+    },
+    async waitFor(expr, timeout = 20000) {
+      const end = Date.now() + timeout;
+      while (Date.now() < end) {
+        if (await page.eval(`Boolean(${expr})`)) return;
+        await sleep(150);
+      }
+      throw new Error(`timeout waiting for: ${expr}`);
+    },
+    async goto(url) {
+      await send("Page.navigate", { url });
+      await page.waitFor(`document.readyState === "complete"`);
+    },
+    async click(selector) {
+      const ok = await page.eval(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; el.scrollIntoView({block: "center"}); el.click(); return true; })()`);
+      if (!ok) throw new Error(`no element: ${selector}`);
+    },
+    async screenshot(path) {
+      const r = await send("Page.captureScreenshot", { format: "png" });
+      writeFileSync(path, Buffer.from(r.data, "base64"));
+    },
+    async setFile(selector, file) {
+      const { root } = await send("DOM.getDocument", { depth: -1, pierce: true });
+      const { nodeId } = await send("DOM.querySelector", { nodeId: root.nodeId, selector });
+      await send("DOM.setFileInputFiles", { nodeId, files: [file] });
+    },
+    close() { ws.close(); proc.kill(); },
+  };
+  return page;
+}
+```
 
-### 既知の制限
+`$VERIFY/common.mjs`：
 
-- `波崎シーサイドパーク` と `波崎`、`茅ヶ崎パーク` と `パイプライン（茅ヶ崎）`
-  は同じカメラを共有している。隣り合う同じ浜なので誤りではないが、カードを
-  並べると同じリンクが2回出る。テストは「同一エリア内なら共有してよい」で
-  固定してある。
-- `玉石` と `由比ヶ浜` の Surfers Ocean のリンク先はどちらも「鎌倉」ページ。
-  あのページが七里ヶ浜・稲村ケ崎・由比ヶ浜をまとめて載せているため。
+```js
+// Dates in Japan time, so the scenarios run the same at any hour.
+export function jstDate(offsetDays = 0) {
+  const d = new Date(Date.now() + 9 * 3600e3 + offsetDays * 86400e3);
+  return d.toISOString().slice(0, 10);
+}
+export const panelState = `(() => { const d = document.querySelector("dialog.fb-panel"); return {
+  open: d.open, title: d.querySelector(".fb-title").textContent, date: d.querySelector(".fb-date").value,
+  slots: [...d.querySelectorAll("[data-slot]")].map((b) => b.dataset.slot + (b.getAttribute("aria-pressed") === "true" ? "*" : "") + (b.disabled ? "(x)" : "")),
+  pressed: Object.fromEntries([...d.querySelectorAll("[data-field][aria-pressed=true]")].map((b) => [b.dataset.field, b.textContent])),
+  sendDisabled: d.querySelector(".fb-send").disabled, nameRow: Boolean(d.querySelector(".fb-name")),
+  suggest: d.querySelector(".fb-suggest").hidden ? null : d.querySelector(".fb-suggest").textContent,
+  preview: !d.querySelector(".fb-preview").hidden,
+  panelW: [d.scrollWidth, d.clientWidth], docW: [document.documentElement.scrollWidth, innerWidth],
+  status: d.querySelector(".fb-status").textContent, tone: d.querySelector(".fb-status").dataset.tone }; })()`;
+export const defaultsLoaded = `document.querySelector('[data-field="wave_band"][aria-pressed="true"]')`;
+export function check(name, ok, detail) {
+  console.log(`${ok ? "PASS" : "FAIL"} ${name}${ok ? "" : " " + JSON.stringify(detail)}`);
+  if (!ok) process.exitCode = 1;
+}
+export const pageFits = `document.documentElement.scrollWidth <= innerWidth`;
+// Page exceptions fail the run; failed requests (e.g. a stopped worker) are only printed.
+export function checkLogs(page) {
+  const exceptions = page.logs.filter((l) => l.startsWith("EXCEPTION"));
+  check("no page exceptions", exceptions.length === 0, exceptions);
+  for (const l of page.logs) if (!l.startsWith("EXCEPTION")) console.log("  (log)", l);
+  if (page.logs.some((l) => l.includes("status of 429"))) {
+    console.log("NOTE Open-Meteo answered 429 (rate limit): FAILs in this run may come from it; wait a minute and rerun");
+  }
+}
+```
+
+`$VERIFY/static.mjs`：
+
+```js
+// Static file server for the verification copies: node static.mjs <dir> <port>.
+// (python3 -m http.server has a listen backlog of 5, and Chrome's parallel
+// script requests then get reset now and then.)
+import http from "node:http";
+import { readFile } from "node:fs/promises";
+import { join, normalize, extname } from "node:path";
+
+const [root, port] = process.argv.slice(2);
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8", ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".ico": "image/x-icon" };
+http.createServer(async (req, res) => {
+  const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
+  const file = join(root, normalize(path === "/" ? "/index.html" : path));
+  try {
+    const body = await readFile(file);
+    res.writeHead(200, { "Content-Type": TYPES[extname(file)] || "application/octet-stream" });
+    res.end(body);
+    console.log(req.method, req.url, 200);
+  } catch {
+    res.writeHead(404).end();
+    console.log(req.method, req.url, 404);
+  }
+}).listen(Number(port), () => console.log(`serving ${root} on ${port}`));
+```
+
+`$VERIFY/fake-worker.mjs`：
+
+```js
+// Stand-in for `wrangler dev` (verification only, never committed): serves
+// $REPO/worker/handler.mjs on :8787 with node:sqlite as D1 and a directory as R2.
+// The database and photos are recreated on every start.
+import http from "node:http";
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
+
+const repo = process.env.REPO;
+const { handle } = await import(`${repo}/worker/handler.mjs`);
+const { createD1 } = await import(`${repo}/worker/d1-sqlite.mjs`);
+const dir = new URL("./", import.meta.url).pathname;
+const dbPath = `${dir}feedback.sqlite`;
+const photoDir = `${dir}photos/`;
+rmSync(dbPath, { force: true });
+rmSync(photoDir, { recursive: true, force: true });
+mkdirSync(photoDir);
+const sqlite = new DatabaseSync(dbPath);
+sqlite.exec(readFileSync(`${repo}/worker/schema.sql`, "utf8"));
+const env = {
+  DB: createD1(sqlite),
+  PHOTOS: {
+    async put(key, value) { writeFileSync(photoDir + key.replaceAll("/", "_"), new Uint8Array(value)); },
+    async delete(key) { rmSync(photoDir + key.replaceAll("/", "_"), { force: true }); },
+  },
+  ALLOWED_ORIGINS: "http://localhost:8001",
+  IP_SALT: randomBytes(16).toString("hex"),
+};
+
+http.createServer(async (req, res) => {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) headers.set(k, Array.isArray(v) ? v.join(", ") : v);
+  headers.set("CF-Connecting-IP", req.socket.remoteAddress || "");
+  const hasBody = !["GET", "HEAD"].includes(req.method);
+  const request = new Request(`http://localhost:8787${req.url}`, {
+    method: req.method, headers, body: hasBody ? Buffer.concat(chunks) : undefined,
+  });
+  const response = await handle(request, env, new Date());
+  res.writeHead(response.status, Object.fromEntries(response.headers));
+  res.end(Buffer.from(await response.arrayBuffer()));
+  console.log(req.method, req.url, response.status);
+}).listen(8787, () => console.log("fake worker on 8787"));
+```
+
+`$VERIFY/serve.sh`：
+
+```sh
+#!/bin/sh
+# Serves copies of the site for the browser checks (verification only, never committed).
+#   8001: working tree, FEEDBACK_API = http://localhost:8787
+#   8002: working tree as is (FEEDBACK_API empty)
+#   8003: $BASE_REF (default: where HEAD left origin/main), for the "same as before" comparison
+#   8787: fake worker ($VERIFY/fake-worker.mjs)
+# Port 8000 is never touched: the owner's own server may be on it.
+set -eu
+: "${REPO:?set REPO to the repo root}" "${VERIFY:?set VERIFY to this directory}"
+BASE_REF="${BASE_REF:-$(git -C "$REPO" merge-base HEAD origin/main)}"
+port_up() { lsof -tiTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
+wait_up() { for _ in $(seq 50); do port_up "$1" && return 0; sleep 0.2; done; echo "port $1 did not start" >&2; exit 1; }
+stop_port() { pids=$(lsof -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null || true); [ -z "$pids" ] || kill $pids; }
+
+case "${1:-}" in
+start)
+  for p in 8001 8002 8003 8787; do if port_up $p; then echo "port $p is in use" >&2; exit 1; fi; done
+  for d in api plain base; do rm -rf "$VERIFY/$d"; mkdir -p "$VERIFY/$d"; done
+  rsync -a --exclude .git "$REPO/" "$VERIFY/api/"
+  rsync -a --exclude .git "$REPO/" "$VERIFY/plain/"
+  git -C "$REPO" archive "$BASE_REF" | tar -x -C "$VERIFY/base"
+  sed -i '' 's|^const FEEDBACK_API = "";|const FEEDBACK_API = "http://localhost:8787";|' "$VERIFY/api/app.js"
+  grep -q '^const FEEDBACK_API = "http://localhost:8787";' "$VERIFY/api/app.js" ||
+    echo "note: no FEEDBACK_API line in app.js yet; 8001 serves the tree as is" >&2
+  node "$VERIFY/static.mjs" "$VERIFY/api" 8001 >"$VERIFY/http-8001.log" 2>&1 &
+  node "$VERIFY/static.mjs" "$VERIFY/plain" 8002 >"$VERIFY/http-8002.log" 2>&1 &
+  node "$VERIFY/static.mjs" "$VERIFY/base" 8003 >"$VERIFY/http-8003.log" 2>&1 &
+  REPO="$REPO" node "$VERIFY/fake-worker.mjs" >"$VERIFY/worker.log" 2>&1 &
+  for p in 8001 8002 8003 8787; do wait_up $p; done
+  echo "serving 8001 8002 8003 8787"
+  ;;
+worker-stop) stop_port 8787; echo "worker stopped" ;;
+worker-start) REPO="$REPO" node "$VERIFY/fake-worker.mjs" >"$VERIFY/worker.log" 2>&1 & wait_up 8787; echo "worker started" ;;
+stop) for p in 8001 8002 8003 8787; do stop_port $p; done; echo "stopped" ;;
+*) echo "usage: serve.sh start|stop|worker-stop|worker-start" >&2; exit 2 ;;
+esac
+```
+
+`$VERIFY/scenario-equiv.mjs`：
+
+```js
+// Compares the served copies with $BASE_REF on 8003.
+//   plain       8002 (FEEDBACK_API empty): byte-identical, no /calibration request
+//   api         8001, worker up with an empty database: identical apart from the buttons
+//   worker-down 8001, worker stopped: identical apart from the buttons
+// usage: node scenario-equiv.mjs plain api   |   node scenario-equiv.mjs worker-down
+import { launch } from "./cdp.mjs";
+import { jstDate, check, checkLogs } from "./common.mjs";
+
+const cases = process.argv.slice(2);
+const PORTS = { plain: 8002, api: 8001, "worker-down": 8001 };
+const today = jstDate(0);
+const clean = `(html) => html
+  .replace(/<svg class="tide-curve"([^>]*)>[\\s\\S]*?<\\/svg>/g, '<svg class="tide-curve"$1></svg>')
+  .replace(/<button type="button" class="feedback-open"[^>]*>[^<]*<\\/button>/g, "")`;
+
+async function capture(port, cdpPort) {
+  const page = await launch(cdpPort);
+  try {
+    await page.goto(`http://localhost:${port}/index.html?region=湘南&date=${today}&slot=afternoon`);
+    await page.waitFor(`document.querySelector(".ranking-card") || document.querySelector("#results .failed")`, 60000);
+    const ranking = await page.eval(`(() => { const clean = ${clean}; return {
+      html: clean(document.getElementById("results").innerHTML),
+      rows: LAST_RESULTS.map((r) => ({ name: r.spot.name, scores: r.scores, data: r.data })),
+      url: location.pathname + location.search,
+      buttons: document.querySelectorAll(".feedback-open").length,
+      chips: document.querySelectorAll(".chip.calib").length,
+      calibrationRequests: performance.getEntriesByType("resource").filter((e) => e.name.split("?")[0].endsWith("/calibration")).length }; })()`);
+    await page.goto(`http://localhost:${port}/index.html?region=湘南&mode=weekly`);
+    await page.waitFor(`document.querySelector(".wk-cell") || document.querySelector("#weekly .failed")`, 60000);
+    await page.eval(`document.querySelector("button.wk-cell").click()`);
+    const weekly = await page.eval(`({ html: document.getElementById("weekly").innerHTML,
+      rows: WEEKLY_RESULTS.map((r) => ({ name: r.spot.name, days: r.days, best: r.best })) })`);
+    checkLogs(page);
+    return { ranking, weekly };
+  } finally {
+    page.close();
+  }
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const base = await capture(8003, 9410);
+check("base copy rendered a ranking", base.ranking.rows.length > 0, base.ranking.rows.length);
+for (const [i, name] of cases.entries()) {
+  const got = await capture(PORTS[name], 9411 + i);
+  check(`${name}: ranking order, scores and values match`, same(base.ranking.rows, got.ranking.rows));
+  check(`${name}: ranking HTML matches (buttons removed)`, base.ranking.html === got.ranking.html);
+  check(`${name}: share URL matches`, base.ranking.url === got.ranking.url, [base.ranking.url, got.ranking.url]);
+  check(`${name}: weekly values match`, same(base.weekly.rows, got.weekly.rows));
+  check(`${name}: weekly HTML matches (detail open)`, base.weekly.html === got.weekly.html);
+  check(`${name}: no calibration chip`, got.ranking.chips === 0, got.ranking.chips);
+  if (name === "plain") {
+    check("plain: no 行ってきた button", got.ranking.buttons === 0, got.ranking.buttons);
+    check("plain: no /calibration request", got.ranking.calibrationRequests === 0, got.ranking.calibrationRequests);
+  }
+  if (name === "api") check("api: one /calibration request", got.ranking.calibrationRequests === 1, got.ranking.calibrationRequests);
+  console.log(`  (${name}: ${got.ranking.buttons} buttons)`);
+}
+```
+
+- [ ] **Step 2: 変える前の状態で比較を流し、失敗することを確かめる**
+
+```bash
+sh "$VERIFY/serve.sh" start
+node "$VERIFY/scenario-equiv.mjs" plain api
+```
+
+Expected:
+- 表示・点数の比較はすべて `PASS`。
+- `FAIL api: one /calibration request 0` が出て、終了コードは 1。補正をまだ取りに行っていないため。
+- `serve.sh start` は `note: no FEEDBACK_API line in app.js yet ...` を出す。これは正常。
+
+止めて、2分待つ。
+
+```bash
+sh "$VERIFY/serve.sh" stop
+sleep 120
+```
+
+- [ ] **Step 3: `app.js` を変える**
+
+次の9か所を、上から順に置き換える。
+
+**1. 定数と状態（`const WEEK_DAYS = 7;` の下と `let SPOTS = [];` の下）**
+
+置き換える前：
+```js
+const WEEK_DAYS = 7;
+
+let SPOTS = [];
+```
+置き換えた後：
+```js
+const WEEK_DAYS = 7;
+// 実況フィードバックの Worker の URL（末尾の / は付けない）。空のあいだは
+// 補正を取りに行かず、「行ってきた」ボタンも出さない。
+const FEEDBACK_API = "";
+const CALIBRATION_TIMEOUT_MS = 2000;
+
+let SPOTS = [];
+let CALIBRATION = null;
+let calibrationReady = Promise.resolve();
+```
+
+**2. 補正の読み込み（`fetchSpotData` の直後）**
+
+置き換える前：
+```js
+  return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
+}
+```
+置き換えた後：
+```js
+  return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
+}
+
+// 補正は起動時に取りに行き、最初の検索は最大 2 秒だけ待つ。遅れて届いた補正は
+// 次の検索から使う。取れない・形が違うときは補正なし（今と同じ表示）のまま。
+function loadCalibration() {
+  if (!FEEDBACK_API) return Promise.resolve();
+  const load = fetch(`${FEEDBACK_API}/calibration`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => { if (Calibration.validate(json)) CALIBRATION = json; })
+    .catch(() => {});
+  const timeout = new Promise((resolve) => setTimeout(resolve, CALIBRATION_TIMEOUT_MS));
+  return Promise.race([load, timeout]);
+}
+```
+
+**3. `rankSpot`：補正前の値を `rawData` として持ち、補正後の `data` と `scores` を使う**
+
+置き換える前：
+```js
+  const data = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!data) throw new Error("予報データなし");
+  const scores = Scoring.scoreSpot(data, spot.bearing);
+  const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
+  const tideTrend = tideTrendLabel(marine, slot, date);
+  const tideSeries = daySeries(marine, date);
+  return { spot, scores, data, tide, tideTrend, tideSeries };
+```
+置き換えた後：
+```js
+  const rawData = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!rawData) throw new Error("予報データなし");
+  const { data, scores } = Calibration.apply(rawData, spot, CALIBRATION);
+  const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
+  const tideTrend = tideTrendLabel(marine, slot, date);
+  const tideSeries = daySeries(marine, date);
+  return { spot, scores, data, rawData, tide, tideTrend, tideSeries };
+```
+
+**4. 「実況補正」の表示（`reasonChips` の直後）**
+
+置き換える前：
+```js
+  return chips.join("");
+}
+```
+置き換えた後：
+```js
+  return chips.join("");
+}
+
+function calibrationChip(spot) {
+  const label = Calibration.summaryLabel(spot.name, CALIBRATION);
+  return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
+}
+```
+
+**5. `resultCard` の理由の行**
+
+置き換える前：
+```js
+    <div class="reason-row">${reasonChips(result)}</div>
+```
+置き換えた後：
+```js
+    <div class="reason-row">${reasonChips(result)}${calibrationChip(result.spot)}</div>
+```
+
+**6. `weeklySpot`：週間予報にも補正をかける**
+
+置き換える前：
+```js
+  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing);
+```
+置き換えた後：
+```js
+  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing,
+    (data) => Calibration.apply(data, spot, CALIBRATION));
+```
+
+**7. `weeklyDetail` の理由の行**
+
+置き換える前：
+```js
+    <div class="reason-row">${reasonChips({ scores })}</div>
+```
+置き換えた後：
+```js
+    <div class="reason-row">${reasonChips({ scores })}${calibrationChip(spot)}</div>
+```
+
+**8. `check()`：最初の検索の前に補正を待つ（最大2秒）**
+
+置き換える前：
+```js
+  try {
+    if (currentMode() === "weekly") await runWeekly();
+```
+置き換えた後：
+```js
+  try {
+    await calibrationReady;
+    if (currentMode() === "weekly") await runWeekly();
+```
+
+**9. 起動時に補正の取得を始める**
+
+置き換える前：
+```js
+window.addEventListener("DOMContentLoaded", async () => {
+  initDate();
+```
+置き換えた後：
+```js
+window.addEventListener("DOMContentLoaded", async () => {
+  calibrationReady = loadCalibration();
+  initDate();
+```
+
+- [ ] **Step 4: `index.html` を変える**
+
+アセットの `?v=` を上げる。
+
+```bash
+sed -i '' 's/?v=20260924/?v=20260925/g' index.html
+grep -c '?v=20260925' index.html
+```
+
+Expected: `8`。
+
+`app.js` の中の `spots.json?v=20260924` は変えない（`spots.json` は変えていないため）。
+
+続けて、スクリプトを1つ足す。
+
+**1. `calibration.js` を `share.js` の後、`app.js` の前に読み込む**
+
+置き換える前：
+```html
+  <script src="share.js?v=20260925"></script>
+  <script src="app.js?v=20260925"></script>
+```
+置き換えた後：
+```html
+  <script src="share.js?v=20260925"></script>
+  <script src="calibration.js?v=20260925"></script>
+  <script src="app.js?v=20260925"></script>
+```
+
+- [ ] **Step 5: `style.css` の末尾に足す**
+
+空行を1行あけて、次を足す。
+
+```css
+/* 実況フィードバック */
+.chip.calib {
+  border-color: rgba(18, 69, 89, 0.18);
+  background: var(--soft);
+  color: var(--deep);
+  white-space: normal;
+}
+```
+
+- [ ] **Step 6: テストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 220`、`ℹ fail 0`
+
+- [ ] **Step 7: 補正を取りに行かない場合・記録0件の場合に、今と同じであることを確かめる**
+
+```bash
+sh "$VERIFY/serve.sh" start
+node "$VERIFY/scenario-equiv.mjs" plain api
+```
+
+Expected: すべて `PASS`、終了コード 0。
+- 特に次の2行が出ること。
+  - `PASS plain: no /calibration request`
+  - `PASS api: one /calibration request`
+- `(api: 0 buttons)` と表示される。
+
+- [ ] **Step 8: Worker が止まっているときも、今と同じであることを確かめる**
+
+```bash
+sh "$VERIFY/serve.sh" worker-stop
+sleep 120
+node "$VERIFY/scenario-equiv.mjs" worker-down
+sh "$VERIFY/serve.sh" stop
+```
+
+Expected:
+- すべて `PASS`、終了コード 0。
+- `(log) ... ERR_CONNECTION_REFUSED http://localhost:8787/calibration` が出るのは正常。
+
+`NOTE Open-Meteo answered 429` が出て `FAIL` があったときは、Open-Meteo の回数制限による失敗。次の手順でやり直す。
+
+```bash
+sh "$VERIFY/serve.sh" stop
+sleep 120
+sh "$VERIFY/serve.sh" start
+# 失敗したシナリオをもう一度流す（worker-down なら先に worker-stop する）
+```
+
+- [ ] **Step 9: コミットする**
+
+```bash
+git add app.js index.html style.css
+git commit -F - <<'EOF'
+feat: apply feedback calibration to the ranking and weekly views
+
+起動時に Worker の /calibration を読み（最大2秒待つ）、ランキング・週間予報・
+共有に補正をかけるようにした。記録のあるポイントには「実況補正」の表示を出す。
+FEEDBACK_API が空のあいだは取りに行かない。補正が無い・取れないときの表示と
+点数が origin/main と同じであることを、ブラウザで比べて確かめた。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
 
 ---
 
-## 追加作業：座標を浜の上へ直す
+### Task 6: 「行ってきた」ボタンと入力パネル
 
-ユーザーの指示「直して欲しい」（部原と千倉が浜を指していない件）を受けた作業。
-調べ始めてすぐ、浜の上に無いポイントは2件ではなく広範囲だと分かったので、33件すべてを対象にした。
+**Files:**
+- Create: `feedback-panel.js`
+- Modify: `app.js`、`index.html`、`style.css`
+- 確認用（コミットしない）：`$VERIFY/make-photo.mjs`、`$VERIFY/scenario-send.mjs`、`$VERIFY/scenario-offline.mjs`
 
-### チェックリスト
+**Interfaces:**
+- Consumes:
+  - Task 1 の `Calibration.WAVE_BANDS` / `WIND_SIDES` / `WIND_STRENGTHS` / `adjust`
+  - Task 2 の `Feedback.defaultSession`、`dateRange`、`slotStarted`、`initialObserved`、`sessionFromPhoto`、`readExif`、`suggestSpot`、`buildRecord`、`validateRecord`
+  - Task 4 の `POST /feedback` の応答
+    - `200 {"ok", "id", "updated"}`
+    - `400 {"error", "errors"}`
+    - `413`、`415`
+    - `429 {"error", "limit"}`
+  - Task 5 の `FEEDBACK_API`、`CALIBRATION`、`calibrationChip`、`loadCalibration`、`rankSpot` の `rawData`
+  - Task 5 で作った `$VERIFY` の道具（`cdp.mjs`、`common.mjs`、`serve.sh`、`fake-worker.mjs`、`scenario-equiv.mjs`）
+- Produces: `window.FeedbackPanel = {open(opts), hasSent(spotName, date, slot)}`
+  - `opts` は `{api, spot, spots, card: {date, slot, rawData}, calibration, fetchConditions(spot, date, slot) -> Promise<rawData>, onSent()}`。
+  - 送信済みの組は `localStorage` に `スポット名|日付|時間帯` の集合で持つ。
 
-- [x] 33件すべてについて、登録座標を逆ジオコーディングして所在の大字を出す
-- [x] Surfers Ocean が各ページに書いている住所と突き合わせ、「別の浜に居る」ものを洗い出す
-- [x] 別の浜に居るものは、正しい住所を国土地理院の住所検索で座標化してから汀線へ出す
-- [x] 正しい浜に居るものは、浜の向きに沿って直交に汀線へ寄せる
-- [x] 新座標を逆ジオコーディングして、期待した大字に入ったか1件ずつ確認する
-- [x] 座標が大きく動いたポイントは方位も測り直す
-- [x] 33件すべてを Open-Meteo の実APIに通し、4指標が揃うことを確認する
-- [x] `node --test` が 118/118 のままであることを確認する
+`REPO` と `VERIFY` を、Task 5 で道具を置いた場所に合わせて export しておく。
 
-### 方法
+```bash
+export REPO=/Users/tkasai/Projects/surf-check-deploy
+export VERIFY=<スクラッチパッド>/verify   # Task 5 で cdp.mjs などを置いたディレクトリ
+```
 
-2段構えにした。単に「今の座標を最寄りの汀線へ寄せる」だけだと、白渚のときと同じ
-「別の浜に寄せてしまう」誤りを繰り返すため。
+**429 のとき**（Step 8〜10 のどれでも）：`NOTE Open-Meteo answered 429` が出て `FAIL` があったら、Open-Meteo の回数制限による失敗。次の手順でやり直す。Worker の DB と Chrome のプロファイルは起動のたびに作り直すので、送信のシナリオも最初からやり直せる。
 
-1. **所在の判定** — 国土地理院の逆ジオコーダ（`LonLatToAddress`）は海の上では
-   `results` が `null` になる。これを陸／海の判定に使い、同時に陸なら大字名が取れる。
-   登録座標をこれにかけ、Surfers Ocean の各ページが書いている住所と一致するかを見た。
-   一致すれば「同じ浜の上で沖にずれているだけ」、違えば「別の浜に居る」。
-2. **汀線への出し方** — 浜が向く方位に沿ってまっすぐ150m刻みで進み、陸→海が
-   入れ替わった区間を11回二分して、陸側の点を採る。方位に沿って進むので
-   岸沿いの位置がずれない。出発点が海なら逆向き（内陸側）へ進む。
-   入り江など方位が海岸線と直交しない場所では、代わりに全方位を探して最寄りの汀線を採った。
+```bash
+sh "$VERIFY/serve.sh" stop
+sleep 120
+sh "$VERIFY/serve.sh" start
+# 失敗したシナリオをもう一度流す（scenario-offline なら先に worker-stop して 2 分待つ）
+```
 
-### 結果：1km以上動かしたポイント（17件）
+- [ ] **Step 1: 確認用のシナリオを作る**
 
-| ポイント | 旧座標 | 新座標 | 移動 | 逆ジオコーディング | 理由 |
-|---|---|---|---|---|---|
-| 花籠ポイント | 35.197, 140.345 | 35.017, 139.9869 | 38.25km | 和田町海発 | 移設：登録値は御宿町岩和田の沖。SOは白渚･花篭前･千倉の順に並べる＝和田町南部へ約38km |
-| 部原 | 35.023, 140.128 | 35.159, 140.3323 | 23.98km | 部原 | 移設：登録値は南房総市江見の沖。勝浦市部原へ約24km |
-| 木戸 | 35.395, 140.408 | 35.578, 140.4977 | 21.95km | 木戸 | 移設：登録値は長生村一松。山武市木戸(木戸浜)へ約23km |
-| 吉崎浜 | 35.685, 140.715 | 35.6725, 140.6247 | 8.33km | 東小笹 | 移設：登録値は旭市行内。匝瑳市吉崎の沖側の汀線へ約9km |
-| 御宿 | 35.183, 140.417 | 35.1819, 140.3527 | 5.85km | 浜 | 移設：登録値は岩和田の沖。御宿町浜(中央海水浴場)へ |
-| 野手浜 | 35.645, 140.66 | 35.6576, 140.6018 | 5.48km | 野手 | 移設：登録値は匝瑳市神宮寺の沖。匝瑳市野手へ |
-| 片貝 | 35.502, 140.493 | 35.5239, 140.4493 | 4.66km | 九十九里町片貝 | 移設：登録値は大網白里市南今泉(白里海岸)の沖。SOの住所は九十九里町片貝 |
-| サンライズ | 35.46, 140.458 | 35.3563, 140.3918 | 12.34km | 東浪見 | 移設：登録値は白子町牛込の沖。ユーザー提供の住所（一宮町東浪見7450-1）を番地で座標化 |
-| 平砂浦 | 34.913, 139.843 | 34.9397, 139.8174 | 3.78km | 洲宮 | 移設：登録値は南房総市白浜町滝口の沖。館山市平砂浦海岸へ |
-| 千倉 | 34.972, 139.925 | 34.9655, 139.9605 | 3.31km | 千倉町北朝夷 | 移設：登録値は千倉町瀬戸の内陸。千倉海岸(北朝夷)へ |
-| 波崎シーサイドパーク | 35.815, 140.82 | 35.8016, 140.7911 | 3.02km | 矢田部 | 直交：沖から汀線へ3.1km |
-| 飯岡 | 35.703, 140.745 | 35.7004, 140.7123 | 2.99km | 横根 | 移設：登録値は旭市上永井(飯岡漁港の東)。飯岡海岸(横根)へ |
-| 東浪見 | 35.33, 140.398 | 35.3455, 140.3931 | 1.85km | 東浪見 | 移設：登録値はいすみ市岬町中原(太東)。ユーザー提供の住所（一宮町東浪見7500-8）を番地で座標化 |
-| マルキポイント | 35.091, 140.082 | 35.1212, 140.133 | 4.32km | 東町 | 移設：ユーザー提供の住所（鴨川市東町994-20 坂下駐車場隣）を番地で座標化 |
-| 平井海岸 | 35.945, 140.675 | 35.965, 140.6859 | 2.44km | 大字平井 | 移設：登録値は鹿嶋市内陸。平井海岸の汀線へ |
-| 波崎 | 35.785, 140.83 | 35.7719, 140.8154 | 1.97km | 波崎 | 直交：沖から汀線へ2.0km |
-| 太東 | 35.298, 140.388 | 35.2923, 140.4072 | 1.86km | 岬町和泉 | 直交：沖1.9kmから汀線へ |
+`$VERIFY/make-photo.mjs`：JPEG に、撮影時刻と GPS 入りのリトルエンディアンの EXIF を差し込む。
 
-### 汀線へ寄せただけのポイント（14件）
+```js
+// Splices an EXIF APP1 (DateTimeOriginal + GPS, little-endian) into a real JPEG.
+import { readFileSync, writeFileSync } from "node:fs";
+const [src, out, takenAt, lat, lon] = process.argv.slice(2);
+const u16 = (v) => [v & 255, v >> 8];
+const u32 = (v) => [v & 255, (v >> 8) & 255, (v >> 16) & 255, v >>> 24];
+const entry = (tag, type, count, value) => [...u16(tag), ...u16(type), ...u32(count), ...value];
+const ascii = (s) => Array.from(s + "\0", (c) => c.charCodeAt(0));
+const inline = (s) => [...ascii(s), 0, 0, 0, 0].slice(0, 4);
+const dms = (deg) => { const d = Math.floor(deg); const m = Math.floor((deg - d) * 60); return [d, m, ((deg - d) * 60 - m) * 60]; };
+const rationals = (v) => v.flatMap((x) => [...u32(Math.round(x * 100)), ...u32(100)]);
+const exifAt = 8 + 2 + 24 + 4;
+const gpsAt = exifAt + 2 + 12 + 4 + 20;
+const tiff = [0x49, 0x49, ...u16(42), ...u32(8), ...u16(2),
+  ...entry(0x8769, 4, 1, u32(exifAt)), ...entry(0x8825, 4, 1, u32(gpsAt)), ...u32(0),
+  ...u16(1), ...entry(0x9003, 2, 20, u32(exifAt + 18)), ...u32(0), ...ascii(takenAt),
+  ...u16(4), ...entry(1, 2, 2, inline("N")), ...entry(2, 5, 3, u32(gpsAt + 54)),
+  ...entry(3, 2, 2, inline("E")), ...entry(4, 5, 3, u32(gpsAt + 78)), ...u32(0),
+  ...rationals(dms(Number(lat))), ...rationals(dms(Number(lon)))];
+const app1 = [0xff, 0xe1, (tiff.length + 8) >> 8, (tiff.length + 8) & 255, 0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff];
+const jpeg = readFileSync(src);
+writeFileSync(out, Buffer.concat([jpeg.subarray(0, 2), Buffer.from(app1), jpeg.subarray(2)]));
+```
 
-| ポイント | 新座標 | 移動 | 逆ジオコーディング |
-|---|---|---|---|
-| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 1.35km | 東浪見 |
-| 吉浜 | 35.144, 139.1153 | 0.94km | 吉浜 |
-| パイプライン（茅ヶ崎） | 35.3174, 139.4186 | 0.6km | 菱沼海岸 |
-| 一宮 | 35.367, 140.3915 | 0.59km | 一宮 |
-| 鵠沼 | 35.3136, 139.4726 | 0.52km | 鵠沼海岸一丁目 |
-| 茅ヶ崎パーク | 35.3182, 139.4045 | 0.47km | 中海岸三丁目 |
-| 稲村ケ崎 | 35.3022, 139.525 | 0.36km | 稲村ガ崎一丁目 |
-| 国府津 | 35.2749, 139.2044 | 0.33km | 国府津一丁目 |
-| 由比ヶ浜 | 35.3084, 139.5443 | 0.27km | 由比ガ浜四丁目 |
-| 玉石 | 35.3031, 139.5192 | 0.26km | 稲村ガ崎三丁目 |
-| 辻堂 | 35.3184, 139.4481 | 0.05km | 辻堂西海岸三丁目 |
-| 和田浦 | 35.0399, 140.0212 | 0.02km | 和田町仁我浦 |
-| 千歳 | 34.9901, 139.9718 | 0.02km | 千倉町白子 |
-| 白渚 | 35.0331, 140.0069 | 0.01km | 和田町白渚 |
+`$VERIFY/scenario-send.mjs`：Worker は動いていて、記録は0件の状態から始める。流れは次のとおり。
 
-変更なし：トップサンテ、七里ヶ浜
+1. 2タップで送る。
+2. 写真を付ける。撮影時刻と撮影位置は、昨日の夕方の太東にしてある。
+3. ポイントを太東に切り替えて送る。
+4. 同じ組で送り直す。
+5. 「実況補正」の表示と、375px の幅に収まることを確かめる。
 
-### 座標の移動にともなって直した方位（5件）
+```js
+// Worker up, empty database: 2-tap send, photo (EXIF time + GPS), resend, chip.
+import { launch } from "./cdp.mjs";
+import { jstDate, panelState, defaultsLoaded, pageFits, check, checkLogs } from "./common.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 
-旧座標が別の海岸を指していたため、旧方位もその別の海岸の向きだった。新座標で汀線法線を測り直し、差が30°を超えた5件だけ実測値に合わせた。
+const dir = new URL("./", import.meta.url).pathname;
+const repo = process.env.REPO;
+const today = jstDate(0);
+const yesterday = jstDate(-1);
+const spots = JSON.parse(readFileSync(`${repo}/spots.json`, "utf8"));
+const taito = spots.find((s) => s.name === "太東");
+execFileSync("sips", ["-s", "format", "jpeg", "-z", "1200", "900", `${repo}/apple-touch-icon.png`, "--out", `${dir}base.jpg`], { stdio: "ignore" });
+execFileSync("node", [`${dir}make-photo.mjs`, `${dir}base.jpg`, `${dir}photo.jpg`,
+  `${yesterday.replaceAll("-", ":")} 17:30:00`, String(taito.lat), String(taito.lon)]);
+const rows = () => new DatabaseSync(`${dir}feedback.sqlite`, { readOnly: true })
+  .prepare("SELECT spot, date, slot, name, rating, wave_band, wind_side, wind_strength, photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback ORDER BY id").all();
+const rankingUrl = `http://localhost:8001/index.html?region=千葉北&date=${today}&slot=morning`;
+const cardIndex = (name) => page.eval(`LAST_RESULTS.findIndex((r) => r.spot.name === ${JSON.stringify(name)})`);
+const sendAndWait = async () => {
+  await page.click(".fb-send");
+  await page.waitFor(`document.querySelector(".fb-status").textContent === "送りました"`);
+  await page.waitFor(`!document.querySelector("dialog.fb-panel").open`, 5000);
+};
 
-| ポイント | 旧方位 | 新方位 | 新座標での実測法線 |
-|---|---|---|---|
-| 木戸 | 95 | 130 | 130 |
-| 御宿 | 115 | 160 | 160 |
-| 部原 | 148 | 115 | 115 |
-| 千倉 | 175 | 95 | 95 |
-| 平井海岸 | 90 | 55 | 55 |
+const page = await launch(9401);
+try {
+  await page.goto(rankingUrl);
+  await page.waitFor(`document.querySelectorAll(".feedback-open").length > 0`, 60000);
+  const labels = await page.eval(`[...document.querySelectorAll(".feedback-open")].map((b) => b.textContent)`);
+  const cards = await page.eval(`document.querySelectorAll(".ranking-card").length`);
+  check("every ranking card has a 行ってきた button", labels.length === cards && labels.every((l) => l === "行ってきた"), { labels, cards });
+  check("no calibration chip while the database is empty", (await page.eval(`document.querySelectorAll(".chip.calib").length`)) === 0);
+  check("ranking fits 375px", await page.eval(pageFits));
+  await page.screenshot(`${dir}1-card.png`);
 
-### 判断に迷った3件（うち2件はユーザーから住所をもらって確定）
+  // 2 taps: rating, then send
+  const ichi = await cardIndex("一宮");
+  await page.click(`.feedback-open[data-index="${ichi}"]`);
+  await page.waitFor(defaultsLoaded);
+  const expected = await page.eval(`Feedback.defaultSession({ date: ${JSON.stringify(today)}, slot: "morning" }, new Date())`);
+  let s = await page.eval(panelState);
+  check("panel opens on the card's session (or the latest begun one)", s.date === expected.date && s.slots.includes(`${expected.slot}*`), { s, expected });
+  check("panel defaults wave, wind side and wind strength from the forecast", ["wave_band", "wind_side", "wind_strength"].every((k) => s.pressed[k]), s.pressed);
+  check("send stays disabled until a rating is chosen", s.sendDisabled === true);
+  check("name row shows before the first send", s.nameRow === true);
+  check("panel fits 375px", s.panelW[0] <= s.panelW[1] && s.docW[0] <= s.docW[1], s);
+  await page.screenshot(`${dir}2-panel.png`);
+  await page.click('[data-field="rating"][data-value="4"]');
+  check("choosing a rating enables send", (await page.eval(panelState)).sendDisabled === false);
+  await sendAndWait();
+  check("card label becomes 送り直す", (await page.eval(`document.querySelector('.feedback-open[data-index="${ichi}"]').textContent`)) === "送り直す");
+  let r = rows();
+  check("one row saved for 一宮 with rating 4 and no photo",
+    r.length === 1 && r[0].spot === "一宮" && r[0].date === expected.date && r[0].slot === expected.slot && r[0].rating === 4 && r[0].photo_key === null, r);
 
-- **花籠ポイント（確定）** — ユーザーから住所をもらった。
-  〒299-2712 千葉県南房総市和田町海発1591-2。
-  Surfers Ocean の並び順（「白渚･花篭前･千倉」）から南房総市和田町海発と推定していたが、
-  大字はその推定どおりだった。国土地理院に和田町海発の地番データが無く、1591番地は
-  解決せず大字の代表点 `35.018497, 139.981873` に落ちるため、座標は推定時のまま
-  `35.017, 139.9868`。**大字までは住所で確定、浜に沿った位置は代表点から出したまま。**
-  38km動かした判断そのものは正しかったことになる。
-- **マルキポイント（確定）** — ユーザーから住所をもらった。
-  〒296-0041 千葉県鴨川市東町994-20 坂下駐車場隣。
-  Surfers Ocean は鴨川ページで「鴨川市東町」、和田ページの本文では「マルキ(勝浦市)」と
-  書いていて食い違っていた。鴨川ページのほうが正しかった。
-  ただし自分は東町を前原海岸のことだと取り違えて前原の汀線に置いており、これも誤りだった。
-  国土地理院の住所検索で994番地を座標化すると `35.122055, 140.131256`（逆ジオコーディングで「東町」）で、
-  前原海岸より約4km北東。ここから方位120°に沿って0.3km出た `35.1212, 140.1330` を採用した。
-- **サンライズ（確定）** — ユーザーから2回住所をもらった。1回目の
-  「大網白里市南今泉4881-1」は誤りで、正しくは
-  **〒299-4303 千葉県長生郡一宮町東浪見7450-1**。
-  つまり登録名にあった「（白里）」は最初から誤りで、Surfers Ocean の
-  一宮町東浪見の「サンライズ」と同じポイントだった。名前から「（白里）」を外した。
-  7450番地を座標化すると `35.356945, 140.388992`、そこから方位105°に沿って汀線まで出し、
-  陸側の `35.3563, 140.3918`（逆ジオコーディングで「東浪見」）を採用した。
-  → 詳細は「追加作業：サンライズの住所訂正」。
+  // photo: EXIF time moves the session, GPS suggests 太東
+  await page.click(`.feedback-open[data-index="${ichi}"]`);
+  await page.waitFor(defaultsLoaded);
+  check("name row is hidden after the first send", (await page.eval(panelState)).nameRow === false);
+  await page.setFile(".fb-file", `${dir}photo.jpg`);
+  await page.waitFor(`!document.querySelector(".fb-preview").hidden`);
+  await page.waitFor(`document.querySelector(".fb-date").value === ${JSON.stringify(yesterday)} && ${defaultsLoaded}`, 30000);
+  s = await page.eval(panelState);
+  check("photo time moves the session to yesterday evening", s.date === yesterday && s.slots.includes("evening*"), s);
+  check("photo location suggests 太東", Boolean(s.suggest && s.suggest.includes("太東")), s.suggest);
+  await page.screenshot(`${dir}3-photo.png`);
+  await page.click(".fb-switch");
+  await page.waitFor(`document.querySelector(".fb-title").textContent.startsWith("太東") && ${defaultsLoaded}`, 30000);
+  s = await page.eval(panelState);
+  check("switching moves the panel to 太東 and hides the suggestion", s.suggest === null && s.preview === true, s);
+  await page.click('[data-field="rating"][data-value="3"]');
+  await page.click('[data-field="wind_side"][data-value="on"]');
+  await sendAndWait();
+  r = rows();
+  const t = r[1] || {};
+  check("second row saved for 太東 yesterday evening with the photo",
+    r.length === 2 && t.spot === "太東" && t.date === yesterday && t.slot === "evening" && t.rating === 3 && t.wind_side === "on" && typeof t.photo_key === "string", r);
+  check("photo location and time are recorded",
+    Math.abs(t.photo_lat - taito.lat) < 0.001 && Math.abs(t.photo_lon - taito.lon) < 0.001 && t.photo_taken_at === `${yesterday}T17:30`, t);
+  const photos = readdirSync(`${dir}photos`).map((f) => readFileSync(`${dir}photos/${f}`));
+  check("stored photo is a JPEG without EXIF",
+    photos.length === 1 && photos[0][0] === 0xff && photos[0][1] === 0xd8 && !photos[0].includes(Buffer.from("Exif\0\0")), photos.map((p) => p.length));
 
-### 大字が期待と違ったが採用した3件
+  // reload without the HTTP cache (the calibration is cached 5 minutes): chips and labels
+  await page.send("Network.enable");
+  await page.send("Network.setCacheDisabled", { cacheDisabled: true });
+  await page.goto(rankingUrl);
+  await page.waitFor(`document.querySelectorAll(".feedback-open").length > 0`, 60000);
+  const after = await page.eval(`Object.fromEntries(LAST_RESULTS.map((r, i) => [r.spot.name, {
+    label: document.querySelector('.feedback-open[data-index="' + i + '"]').textContent,
+    chip: document.querySelectorAll(".ranking-card")[i].querySelector(".chip.calib")?.textContent || null }]))`);
+  check("sent label survives a reload", after["一宮"].label === "送り直す" && after["太東"].label === "行ってきた", after);
+  check("chips appear only on the spots with feedback",
+    Object.entries(after).every(([n, v]) => (["一宮", "太東"].includes(n) ? v.chip?.startsWith("実況補正 1件") : v.chip === null)), after);
+  await page.eval(`document.querySelectorAll(".ranking-card")[${ichi}].querySelector(".reason-row").scrollIntoView({ block: "center" })`);
+  await page.screenshot(`${dir}4-chip.png`);
 
-汀線ぎわの細長い大字が、内陸側の大字と別名になっているケース。
+  // resending the same session replaces the row
+  await page.click(`.feedback-open[data-index="${await cardIndex("一宮")}"]`);
+  await page.waitFor(defaultsLoaded);
+  await page.click('[data-field="rating"][data-value="5"]');
+  await sendAndWait();
+  r = rows();
+  check("resend replaces the 一宮 row instead of adding one", r.length === 2 && r.filter((x) => x.spot === "一宮").length === 1 && r.find((x) => x.spot === "一宮").rating === 5, r);
 
-| ポイント | 内陸側 | 汀線の大字 | 判断 |
-|---|---|---|---|
-| 吉崎浜 | 匝瑳市吉崎 | 東小笹 | 吉崎の真沖。吉崎は汀線まで届いていない |
-| 平砂浦 | 館山市布沼 | 洲宮 | 洲宮も平砂浦海岸に面している |
-| 波崎シーサイドパーク | 神栖市波崎 | 矢田部 | 波崎の北隣。波崎本体と4km離れ、別ポイントとして成立する |
+  // weekly: no button, chip in the day detail
+  await page.goto(`http://localhost:8001/index.html?region=千葉北&mode=weekly`);
+  await page.waitFor(`document.querySelector(".wk-cell")`, 60000);
+  check("weekly view has no 行ってきた button", (await page.eval(`document.querySelectorAll(".feedback-open").length`)) === 0);
+  const wi = await page.eval(`WEEKLY_RESULTS.findIndex((r) => r.spot.name === "一宮")`);
+  await page.click(`.wk-card[data-index="${wi}"] button.wk-cell`);
+  const wchip = await page.eval(`document.querySelector('.wk-card[data-index="${wi}"] .wk-detail .chip.calib')?.textContent || null`);
+  check("weekly detail shows the chip", Boolean(wchip && wchip.startsWith("実況補正 1件")), wchip);
+  check("weekly fits 375px", await page.eval(pageFits));
+  checkLogs(page);
+} catch (e) {
+  check("scenario ran to the end", false, e.message);
+  console.log(page.logs);
+  await page.screenshot(`${dir}fail.png`);
+} finally {
+  page.close();
+}
+```
 
-### 検証（実際の出力）
+`$VERIFY/scenario-offline.mjs`：Worker を止めた状態で確かめる。
+- ランキングは出る。
+- 送信に失敗しても、入力と写真が残る。
 
-`node --test` → `ℹ pass 118 / ℹ fail 0`。
+```js
+// Worker stopped: the ranking still shows, and a failed send keeps the input.
+import { launch } from "./cdp.mjs";
+import { jstDate, defaultsLoaded, check, checkLogs } from "./common.mjs";
 
-33件すべてを Open-Meteo の marine / forecast 両APIに通し、`slotConditions` →
-`scoreSpot` まで流して4指標（波高・周期・うねり向き・風）が揃うことを確認した。
-欠損はゼロ件。スコアは片貝46点、飯岡56点、平砂浦59点、鵠沼65点、由比ヶ浜65点など。
+const dir = new URL("./", import.meta.url).pathname;
+const page = await launch(9402);
+try {
+  await page.goto(`http://localhost:8001/index.html?region=千葉北&date=${jstDate(0)}&slot=morning`);
+  await page.waitFor(`document.querySelectorAll(".feedback-open").length > 0`, 60000);
+  check("ranking shows without calibration chips", (await page.eval(`document.querySelectorAll(".chip.calib").length`)) === 0);
+  const j = await page.eval(`LAST_RESULTS.findIndex((r) => r.spot.name === "東浪見")`);
+  await page.click(`.feedback-open[data-index="${j}"]`);
+  await page.waitFor(defaultsLoaded);
+  await page.click('[data-field="rating"][data-value="2"]');
+  await page.setFile(".fb-file", `${dir}base.jpg`);
+  await page.waitFor(`!document.querySelector(".fb-preview").hidden`);
+  await page.click(".fb-send");
+  await page.waitFor(`document.querySelector(".fb-status").dataset.tone === "error"`, 20000);
+  const s = await page.eval(`({ status: document.querySelector(".fb-status").textContent,
+    open: document.querySelector("dialog.fb-panel").open,
+    rating: document.querySelector('[data-field="rating"][aria-pressed="true"]')?.dataset.value,
+    photoKept: !document.querySelector(".fb-preview").hidden,
+    sendEnabled: !document.querySelector(".fb-send").disabled,
+    label: document.querySelector('.feedback-open[data-index="${j}"]').textContent })`);
+  check("failed send says so and keeps the panel open", s.status === "送れませんでした。もう一度送ってください" && s.open, s);
+  check("failed send keeps the rating and the photo", s.rating === "2" && s.photoKept && s.sendEnabled, s);
+  check("card label is unchanged", s.label === "行ってきた", s);
+  await page.screenshot(`${dir}5-error.png`);
+  checkLogs(page);
+} catch (e) {
+  check("scenario ran to the end", false, e.message);
+  console.log(page.logs);
+  await page.screenshot(`${dir}fail.png`);
+} finally {
+  page.close();
+}
+```
 
-海の格子までの距離は0.8〜16.6km。Open-Meteo の波浪モデルは格子が粗く、
-陸寄りの点は最寄りの海格子に丸められるため、これは座標を直しても残る。
-ただし風は陸の格子をそのまま使うので、浜の上に置いた分だけ実際の浜の風に近づいた。
+- [ ] **Step 2: 変える前の状態で送信のシナリオを流し、失敗することを確かめる**
 
-### 今回やらなかったこと
+```bash
+sh "$VERIFY/serve.sh" start
+node "$VERIFY/scenario-send.mjs"
+sh "$VERIFY/serve.sh" stop
+```
 
-- 方位は、座標が別の浜へ移った5件（木戸・御宿・部原・千倉・平井海岸）だけ直した。
-  差が30°以下の28件は触っていない。実測法線は直線的な海岸では±5°だが、
-  湾や岬では最大20°ほど浅く出ることが前のフェーズで分かっているため。
-- 「サンライズ（白里）」の名前は、次の節で「サンライズ」に直した。
+Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(".feedback-open").length > 0` で失敗する。終了コードは 0 以外。
+
+このあと2分待つ（`sleep 120`）。
+
+- [ ] **Step 3: `feedback-panel.js` を作る**
+
+```js
+// Browser-only feedback panel: the <dialog>, photo resizing and the POST.
+// Everything it needs comes in through open(); it reads no app.js globals.
+// The rules (defaults, validation, EXIF) live in feedback.js, which is tested.
+(function (root) {
+  const { Feedback, Calibration, Forecast, Share } = root;
+  const escapeHtml = Share.escapeHtml;
+
+  const STORAGE = { device: "surfcheck.device_id", name: "surfcheck.name", sent: "surfcheck.sent" };
+  const MAX_SIDE = 1600;
+  const MAX_PHOTO_BYTES = 1572864;
+  const QUALITIES = [0.8, 0.6];
+  const CLOSE_AFTER_MS = 1200;
+  const RATINGS = ["ダメ", "イマイチ", "ふつう", "良い", "最高"];
+  const MESSAGES = {
+    loading: "予報を読み込んでいます…",
+    forecastFailed: "予報を取得できませんでした",
+    photoFailed: "写真を読み込めませんでした",
+    photoTooBig: "写真が大きすぎます",
+    rejectedPhoto: "写真を送れませんでした（大きさ・形式）",
+    limited: "今日はこれ以上送れません",
+    failed: "送れませんでした。もう一度送ってください",
+    sending: "送っています…",
+    sent: "送りました",
+  };
+  const FIELDS = {
+    rating: RATINGS.map((label, i) => [String(i + 1), `${i + 1} ${label}`]),
+    wave_band: Calibration.WAVE_BANDS.map((band, i) => [String(i), band.label]),
+    wind_side: Object.entries(Calibration.WIND_SIDES),
+    wind_strength: Object.entries(Calibration.WIND_STRENGTHS).map(([key, s]) => [key, s.label]),
+  };
+  const NUMERIC_FIELDS = ["rating", "wave_band"];
+
+  // localStorage can throw (private mode, blocked storage); the panel still
+  // works without it, it just forgets between visits.
+  function load(key) {
+    try { return root.localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function save(key, value) {
+    try { root.localStorage.setItem(key, value); } catch (e) { /* not persisted */ }
+  }
+
+  let sessionDeviceId = null;
+  function deviceId() {
+    const stored = load(STORAGE.device);
+    if (stored) return stored;
+    sessionDeviceId = sessionDeviceId || root.crypto.randomUUID();
+    save(STORAGE.device, sessionDeviceId);
+    return sessionDeviceId;
+  }
+
+  function sentList() {
+    try {
+      const list = JSON.parse(load(STORAGE.sent) || "[]");
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+  const sentKey = (spotName, date, slot) => `${spotName}|${date}|${slot}`;
+  function hasSent(spotName, date, slot) {
+    return sentList().includes(sentKey(spotName, date, slot));
+  }
+  function markSent(spotName, date, slot) {
+    const list = sentList();
+    const key = sentKey(spotName, date, slot);
+    if (!list.includes(key)) save(STORAGE.sent, JSON.stringify([...list, key]));
+  }
+
+  function decodeImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("decode")); };
+      img.src = url;
+    });
+  }
+
+  function encodeJpeg(canvas, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  }
+
+  // Longest side MAX_SIDE, JPEG at 0.8 then 0.6; null when both stay over
+  // MAX_PHOTO_BYTES. Re-encoding through a canvas drops all EXIF, GPS included.
+  async function resizePhoto(file) {
+    const img = await decodeImage(file);
+    const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    for (const quality of QUALITIES) {
+      const blob = await encodeJpeg(canvas, quality);
+      if (!blob) throw new Error("encode");
+      if (blob.size <= MAX_PHOTO_BYTES) return blob;
+    }
+    return null;
+  }
+
+  async function failureMessage(res) {
+    if (!res || res.status >= 500) return MESSAGES.failed;
+    if (res.status === 413 || res.status === 415) return MESSAGES.rejectedPhoto;
+    if (res.status === 429) return MESSAGES.limited;
+    if (res.status === 400) {
+      try {
+        const body = await res.json();
+        if (body && typeof body.error === "string") return body.error;
+      } catch (e) { /* fall through */ }
+    }
+    return MESSAGES.failed;
+  }
+
+  function choiceRow(label, field) {
+    const buttons = FIELDS[field].map(([value, text]) =>
+      `<button type="button" class="fb-choice" data-field="${field}" data-value="${escapeHtml(value)}" aria-pressed="false">${escapeHtml(text)}</button>`).join("");
+    return `<div class="fb-row"><span class="fb-label">${label}</span><div class="fb-choices" role="group" aria-label="${label}">${buttons}</div></div>`;
+  }
+
+  function panelHtml(showName) {
+    const slots = Forecast.SLOT_ORDER.map((slot) =>
+      `<button type="button" class="fb-choice" data-slot="${slot}" aria-pressed="false">${Share.SLOT_SHORT[slot]}</button>`).join("");
+    const nameRow = showName
+      ? `<div class="fb-row"><label class="fb-label" for="fb-name">名前</label><input id="fb-name" class="fb-name" maxlength="20" autocomplete="nickname" placeholder="任意"></div>`
+      : "";
+    return `<div class="fb-form">
+      <div class="fb-head">
+        <b class="fb-title"></b>
+        <button type="button" class="fb-close" aria-label="閉じる">×</button>
+      </div>
+      <div class="fb-when">
+        <input type="date" class="fb-date" aria-label="日付" required>
+        <div class="fb-choices" role="group" aria-label="時間帯">${slots}</div>
+      </div>
+      <p class="fb-suggest" hidden><span class="fb-suggest-text"></span><button type="button" class="fb-switch"></button></p>
+      ${choiceRow("総合", "rating")}
+      ${choiceRow("波", "wave_band")}
+      ${choiceRow("風向き", "wind_side")}
+      ${choiceRow("風の強さ", "wind_strength")}
+      <div class="fb-row"><span class="fb-label">写真</span><div class="fb-photo">
+        <label class="fb-photo-add">写真を追加<input type="file" accept="image/*" class="fb-file"></label>
+        <span class="fb-preview" hidden><img alt="選んだ写真"><button type="button" class="fb-photo-remove">取り消す</button></span>
+        <span class="fb-hint">任意</span>
+      </div></div>
+      ${nameRow}
+      <p class="fb-status" role="status" aria-live="polite"></p>
+      <button type="button" class="fb-send" disabled>送る</button>
+    </div>`;
+  }
+
+  let dialog = null;
+
+  // opts: { api, spot, spots, card: { date, slot, rawData }, calibration,
+  //         fetchConditions(spot, date, slot) -> Promise<rawData>, onSent() }
+  function open(opts) {
+    if (!dialog) {
+      dialog = document.createElement("dialog");
+      dialog.className = "fb-panel";
+      document.body.appendChild(dialog);
+    }
+    dialog.innerHTML = panelHtml(sentList().length === 0);
+    const $ = (sel) => dialog.querySelector(sel);
+    const initial = Feedback.defaultSession(opts.card, new Date());
+    const state = {
+      spot: opts.spot,
+      date: initial.date,
+      slot: initial.slot,
+      rawData: null,
+      observed: { rating: null, wave_band: null, wind_side: null, wind_strength: null },
+      photo: null,
+      suggestion: null,
+      sessionTouched: false,
+      loadSeq: 0,
+      sending: false,
+      done: false,
+      closeTimer: null,
+    };
+
+    function setStatus(text, tone) {
+      const el = $(".fb-status");
+      el.textContent = text || "";
+      el.dataset.tone = tone || "";
+    }
+
+    function syncSession() {
+      const now = new Date();
+      const { min, max } = Feedback.dateRange(now);
+      $(".fb-title").textContent = `${state.spot.name}  ${Share.mdLabel(state.date)}`;
+      const dateEl = $(".fb-date");
+      dateEl.min = min;
+      dateEl.max = max;
+      dateEl.value = state.date;
+      dialog.querySelectorAll("[data-slot]").forEach((btn) => {
+        btn.disabled = !Feedback.slotStarted(state.date, btn.dataset.slot, now);
+        btn.setAttribute("aria-pressed", String(btn.dataset.slot === state.slot));
+      });
+    }
+
+    function syncChoices() {
+      dialog.querySelectorAll("[data-field]").forEach((btn) => {
+        const field = btn.dataset.field;
+        btn.setAttribute("aria-pressed", String(String(state.observed[field]) === btn.dataset.value));
+        btn.disabled = field !== "rating" && !state.rawData;
+      });
+      $(".fb-send").disabled = state.sending || state.done || !state.rawData || state.observed.rating === null;
+    }
+
+    function syncPhoto() {
+      const preview = $(".fb-preview");
+      preview.hidden = !state.photo;
+      $(".fb-photo-add").hidden = Boolean(state.photo);
+      if (state.photo) preview.querySelector("img").src = state.photo.url;
+      const row = $(".fb-suggest");
+      row.hidden = !state.suggestion;
+      if (state.suggestion) {
+        const { spot, km } = state.suggestion;
+        $(".fb-suggest-text").textContent = `写真は ${spot.name} 付近（約 ${km.toFixed(1)}km）で撮られています`;
+        $(".fb-switch").textContent = `${spot.name}に変える`;
+      }
+    }
+
+    async function loadForecast() {
+      const seq = ++state.loadSeq;
+      state.rawData = null;
+      Object.assign(state.observed, { wave_band: null, wind_side: null, wind_strength: null });
+      syncSession();
+      syncChoices();
+      const card = opts.card;
+      let raw = null;
+      if (card.rawData && state.spot === opts.spot && state.date === card.date && state.slot === card.slot) {
+        raw = card.rawData;
+      } else {
+        setStatus(MESSAGES.loading);
+        try {
+          raw = await opts.fetchConditions(state.spot, state.date, state.slot);
+        } catch (e) {
+          raw = null;
+        }
+        if (seq !== state.loadSeq) return; // a newer date, slot or spot took over
+      }
+      if (!raw) {
+        setStatus(MESSAGES.forecastFailed, "error");
+        syncChoices();
+        return;
+      }
+      state.rawData = raw;
+      // Defaults come from what the card showed (calibrated); the record keeps raw.
+      const shown = Calibration.adjust(raw, state.spot.name, opts.calibration);
+      Object.assign(state.observed, Feedback.initialObserved(shown, state.spot.bearing));
+      if ($(".fb-status").textContent === MESSAGES.loading) setStatus("");
+      syncChoices();
+    }
+
+    function changeSession(date, slot, byHand) {
+      if (byHand) state.sessionTouched = true;
+      const next = Feedback.defaultSession({ date, slot }, new Date());
+      if (next.date === state.date && next.slot === state.slot) {
+        syncSession();
+        return;
+      }
+      state.date = next.date;
+      state.slot = next.slot;
+      loadForecast();
+    }
+
+    function clearPhoto() {
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
+      state.photo = null;
+      state.suggestion = null;
+      $(".fb-file").value = "";
+      syncPhoto();
+    }
+
+    async function onPhoto(file) {
+      clearPhoto();
+      if (!file) return;
+      if ($(".fb-status").dataset.tone === "error") setStatus("");
+      let meta = null;
+      try {
+        meta = Feedback.readExif(await file.arrayBuffer());
+      } catch (e) {
+        meta = null;
+      }
+      let blob;
+      try {
+        blob = await resizePhoto(file);
+      } catch (e) {
+        setStatus(MESSAGES.photoFailed, "error");
+        return;
+      }
+      if (!blob) {
+        setStatus(MESSAGES.photoTooBig, "error");
+        return;
+      }
+      state.photo = { blob, url: URL.createObjectURL(blob), meta };
+      state.suggestion = Feedback.suggestSpot(meta, state.spot, opts.spots);
+      syncPhoto();
+      if (meta && meta.taken_at && !state.sessionTouched) {
+        const session = Feedback.sessionFromPhoto(meta.taken_at, new Date());
+        if (session) changeSession(session.date, session.slot, false);
+      }
+    }
+
+    function switchSpot() {
+      if (!state.suggestion) return;
+      state.spot = state.suggestion.spot;
+      state.suggestion = null;
+      syncPhoto();
+      loadForecast();
+    }
+
+    async function send() {
+      if (state.sending || state.done || !state.rawData || state.observed.rating === null) return;
+      const nameEl = $(".fb-name");
+      const record = Feedback.buildRecord({
+        deviceId: deviceId(),
+        name: nameEl ? nameEl.value : load(STORAGE.name) || "",
+        spot: state.spot,
+        date: state.date,
+        slot: state.slot,
+        rawData: state.rawData,
+        observed: state.observed,
+        photoMeta: state.photo ? state.photo.meta : null,
+      });
+      const errors = Feedback.validateRecord(record, new Date());
+      if (errors.length) {
+        setStatus(errors.join(" / "), "error");
+        return;
+      }
+      const body = new FormData();
+      body.append("record", JSON.stringify(record));
+      if (state.photo) body.append("photo", state.photo.blob, "photo.jpg");
+      state.sending = true;
+      syncChoices();
+      setStatus(MESSAGES.sending);
+      let res = null;
+      try {
+        res = await fetch(`${opts.api}/feedback`, { method: "POST", body });
+      } catch (e) {
+        res = null;
+      }
+      state.sending = false;
+      if (res && res.ok) {
+        state.done = true;
+        markSent(record.spot, record.date, record.slot);
+        if (nameEl) save(STORAGE.name, record.name);
+        setStatus(MESSAGES.sent, "ok");
+        syncChoices();
+        if (opts.onSent) opts.onSent();
+        state.closeTimer = setTimeout(() => dialog.close(), CLOSE_AFTER_MS);
+        return;
+      }
+      setStatus(await failureMessage(res), "error");
+      syncChoices();
+    }
+
+    // Handlers are assigned (not added) so each open replaces the last one's.
+    dialog.onclick = (e) => {
+      const btn = e.target.closest("button");
+      if (!btn || btn.disabled) return;
+      if (btn.classList.contains("fb-close")) dialog.close();
+      else if (btn.dataset.slot) changeSession(state.date, btn.dataset.slot, true);
+      else if (btn.dataset.field) {
+        const field = btn.dataset.field;
+        state.observed[field] = NUMERIC_FIELDS.includes(field) ? Number(btn.dataset.value) : btn.dataset.value;
+        syncChoices();
+      } else if (btn.classList.contains("fb-photo-remove")) clearPhoto();
+      else if (btn.classList.contains("fb-switch")) switchSpot();
+      else if (btn.classList.contains("fb-send")) send();
+    };
+    dialog.onchange = (e) => {
+      if (e.target.classList.contains("fb-date")) {
+        if (e.target.value) changeSession(e.target.value, state.slot, true);
+        else syncSession();
+      } else if (e.target.classList.contains("fb-file")) {
+        onPhoto(e.target.files[0]);
+      }
+    };
+    dialog.onclose = () => {
+      clearTimeout(state.closeTimer);
+      state.loadSeq += 1;
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
+    };
+
+    syncPhoto();
+    loadForecast();
+    dialog.showModal();
+  }
+
+  root.FeedbackPanel = { open, hasSent };
+})(self);
+```
+
+- [ ] **Step 4: `app.js` を変える**
+
+次の9か所を、上から順に置き換える。
+
+**1. パネル用の予報の取得（`loadCalibration` の直後）**
+
+置き換える前：
+```js
+  return Promise.race([load, timeout]);
+}
+```
+置き換えた後：
+```js
+  return Promise.race([load, timeout]);
+}
+
+// 入力パネル用：その日・時間帯の補正前の予報値。
+async function fetchConditions(spot, date, slot) {
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
+  const data = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!data) throw new Error("予報データなし");
+  return data;
+}
+```
+
+**2. ボタンのラベルと HTML（`calibrationChip` の直後）**
+
+置き換える前：
+```js
+  return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
+}
+```
+置き換えた後：
+```js
+  return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
+}
+
+// session はパネルが最初に開く日・時間帯（Feedback.defaultSession）。null ならボタンを出さない。
+function feedbackLabel(spot, session) {
+  return FeedbackPanel.hasSent(spot.name, session.date, session.slot) ? "送り直す" : "行ってきた";
+}
+
+function feedbackButton(result, index, session) {
+  if (!session) return "";
+  return `<button type="button" class="feedback-open" data-index="${index}">${feedbackLabel(result.spot, session)}</button>`;
+}
+```
+
+**3. `resultCard` の引数に `session` を足す**
+
+置き換える前：
+```js
+function resultCard(result, index) {
+```
+置き換えた後：
+```js
+function resultCard(result, index, session) {
+```
+
+**4. ボタンはライブカメラの行の直後に、同じ行でつなげる（ボタンが無いときの HTML を今と同じにするため）**
+
+置き換える前：
+```js
+    ${Share.camRow(result.spot)}
+  </article>`;
+```
+置き換えた後：
+```js
+    ${Share.camRow(result.spot)}${feedbackButton(result, index, session)}
+  </article>`;
+```
+
+**5. 描画した回の、パネルの初期の日付・時間帯を覚えておく**
+
+置き換える前：
+```js
+let LAST_RANKING_RENDER = null;
+```
+置き換えた後：
+```js
+let LAST_RANKING_RENDER = null;
+let LAST_FEEDBACK_SESSION = null;
+```
+
+**6. `renderResults`：`FEEDBACK_API` があるときだけ session を決める**
+
+置き換える前：
+```js
+  LAST_RANKING_RENDER = { el, date, slot };
+```
+置き換えた後：
+```js
+  LAST_RANKING_RENDER = { el, date, slot };
+  LAST_FEEDBACK_SESSION = FEEDBACK_API ? Feedback.defaultSession({ date, slot }, new Date()) : null;
+```
+
+**7. `renderResults`：カードに session を渡す**
+
+置き換える前：
+```js
+      ${results.map(resultCard).join("")}
+```
+置き換えた後：
+```js
+      ${results.map((r, i) => resultCard(r, i, LAST_FEEDBACK_SESSION)).join("")}
+```
+
+**8. ボタンの押下とラベルの更新（`settleBySpot` の説明コメントの直前）**
+
+置き換える前：
+```js
+// Runs fn for every spot in parallel; spots whose promise rejects are
+```
+置き換えた後：
+```js
+function refreshFeedbackButtons() {
+  if (!LAST_RANKING_RENDER || !LAST_FEEDBACK_SESSION) return;
+  LAST_RANKING_RENDER.el.querySelectorAll(".feedback-open").forEach((btn) => {
+    const result = LAST_RESULTS[Number(btn.dataset.index)];
+    if (result) btn.textContent = feedbackLabel(result.spot, LAST_FEEDBACK_SESSION);
+  });
+}
+
+function onFeedbackClick(e) {
+  const btn = e.target.closest(".feedback-open");
+  if (!btn || !LAST_RANKING_RENDER) return;
+  const result = LAST_RESULTS[Number(btn.dataset.index)];
+  if (!result) return;
+  const { date, slot } = LAST_RANKING_RENDER;
+  FeedbackPanel.open({
+    api: FEEDBACK_API,
+    spot: result.spot,
+    spots: SPOTS,
+    card: { date, slot, rawData: result.rawData },
+    calibration: CALIBRATION,
+    fetchConditions,
+    onSent: refreshFeedbackButtons,
+  });
+}
+
+// Runs fn for every spot in parallel; spots whose promise rejects are
+```
+
+**9. クリックを結果の欄でまとめて受ける**
+
+置き換える前：
+```js
+  resultsEl.addEventListener("pointerleave", hideTideHover);
+```
+置き換えた後：
+```js
+  resultsEl.addEventListener("pointerleave", hideTideHover);
+  resultsEl.addEventListener("click", onFeedbackClick);
+```
+
+- [ ] **Step 5: `index.html` にスクリプトを2つ足す**
+
+**1. `feedback.js` と `feedback-panel.js` を `calibration.js` の後に読み込む**
+
+置き換える前：
+```html
+  <script src="calibration.js?v=20260925"></script>
+  <script src="app.js?v=20260925"></script>
+```
+置き換えた後：
+```html
+  <script src="calibration.js?v=20260925"></script>
+  <script src="feedback.js?v=20260925"></script>
+  <script src="feedback-panel.js?v=20260925"></script>
+  <script src="app.js?v=20260925"></script>
+```
+
+- [ ] **Step 6: `style.css` の末尾に足す**
+
+Task 5 で足した `.chip.calib` の後ろに、空行を1行あけて足す。
+
+```css
+.feedback-open {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 10px;
+  border: 1px solid var(--sea);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--sea);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-panel {
+  width: min(560px, 100%);
+  max-width: 100%;
+  max-height: 92vh;
+  margin: auto auto 0;
+  padding: 0;
+  border: 0;
+  border-radius: 14px 14px 0 0;
+  background: var(--panel);
+  color: var(--ink);
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+
+.fb-panel::backdrop {
+  background: rgba(18, 69, 89, 0.35);
+}
+
+.fb-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.fb-head,
+.fb-when,
+.fb-row {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.fb-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fb-title {
+  color: var(--deep);
+  font-size: 1rem;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fb-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--deep);
+  font: inherit;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.fb-when {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fb-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.fb-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fb-choice {
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.fb-choice[aria-pressed="true"] {
+  border-color: var(--sea);
+  background: var(--sea);
+  color: #fff;
+}
+
+.fb-choice:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-date,
+.fb-name {
+  width: 100%;
+  min-width: 0;
+  height: 39px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.fb-photo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fb-photo-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 4px 12px;
+  border: 1px dashed var(--sea);
+  border-radius: 8px;
+  color: var(--sea);
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-photo-add input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fb-photo-add[hidden],
+.fb-preview[hidden],
+.fb-suggest[hidden] {
+  display: none;
+}
+
+.fb-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fb-preview img {
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.fb-photo-remove,
+.fb-switch {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--deep);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-hint {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.fb-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(244, 201, 107, 0.24);
+  font-size: 0.82rem;
+}
+
+.fb-status {
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.fb-status[data-tone="error"] {
+  color: #b84a3c;
+}
+
+.fb-status[data-tone="ok"] {
+  color: var(--good);
+  font-weight: 800;
+}
+
+.fb-send {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--sea);
+  color: #fff;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.fb-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+```
+
+- [ ] **Step 7: テストを流す**
+
+Run: `node --test`
+Expected: `ℹ tests 220`、`ℹ fail 0`
+
+- [ ] **Step 8: 送信のシナリオを流す**
+
+```bash
+sh "$VERIFY/serve.sh" start
+node "$VERIFY/scenario-send.mjs"
+```
+
+Expected: すべて `PASS`、終了コード 0。主な確認項目は次のとおり。
+- 全カードに「行ってきた」が出て、375px の幅に収まる。
+- パネルの初期値
+  - 波・風向き・風の強さの初期値が入る。
+  - 総合を選ぶまで「送る」を押せない。
+  - 名前の行が出る。
+- 総合 4 → 送る（2タップ）
+  - 「送りました」と出てパネルが閉じる。
+  - ラベルが「送り直す」になる。
+  - D1 に1行できる。
+- 2回目にパネルを開いたとき、名前の行は出ない。
+- 写真を付けたとき
+  - 日付・時間帯が昨日の夕方に変わる。
+  - 太東への切り替えの提案が出る。
+- 太東に切り替えて送ったとき
+  - 2行目ができ、写真の位置と時刻が入る。
+  - R2 の写真は JPEG で、EXIF（`Exif\0\0`）が残っていない。
+- キャッシュを切って読み直したとき
+  - ラベルが残る。
+  - 「実況補正 1件」が一宮と太東にだけ出る。
+- 同じ組で送り直すと、行が増えずに上書きされる。
+- 週間予報
+  - ボタンは出ない。
+  - 詳細に「実況補正」が出る。
+  - 375px の幅に収まる。
+
+`$VERIFY/1-card.png`〜`4-chip.png` を開いて、見た目が崩れていないことを目で確かめる。
+
+- [ ] **Step 9: Worker が止まっているときのシナリオを流す**
+
+```bash
+sh "$VERIFY/serve.sh" worker-stop
+sleep 120
+node "$VERIFY/scenario-offline.mjs"
+```
+
+Expected: すべて `PASS`。
+- ランキングは出て、「実況補正」の表示は無い。
+- 送ると「送れませんでした。もう一度送ってください」が error の色で出る。
+- パネルは開いたまま。総合と写真が残り、「送る」をもう一度押せる。
+- ボタンのラベルは変わらない。
+
+`$VERIFY/5-error.png` を目で確かめる。
+
+- [ ] **Step 10: ボタンを足したあとも、今と同じであることを確かめる**
+
+```bash
+sh "$VERIFY/serve.sh" stop
+sleep 120
+sh "$VERIFY/serve.sh" start
+node "$VERIFY/scenario-equiv.mjs" plain api
+sh "$VERIFY/serve.sh" stop
+```
+
+Expected: すべて `PASS`。
+- `PASS plain: no 行ってきた button` が出る。
+- `(api: N buttons)` の N は、ランキングのカードの数と同じ。
+- 比べる HTML からはボタンを取り除いているので、それ以外は1バイトも違わない。
+
+`NOTE Open-Meteo answered 429` が出て `FAIL` があったときは、このタスクの最初にある「429 のとき」の手順でやり直す。
+
+- [ ] **Step 11: コミットする**
+
+```bash
+git add feedback-panel.js app.js index.html style.css
+git commit -F - <<'EOF'
+feat: add the session feedback panel to ranking cards
+
+ランキングの各カードに「行ってきた」ボタンを置き、下から出る入力パネルで
+総合・波・風向き・風の強さ・写真を送れるようにした。波と風の初期値は
+カードの予報なので、最短2タップで送れる。写真の撮影時刻で日付・時間帯を
+合わせ、撮影位置が離れていれば近いポイントを提案する。送った組は端末に
+覚えて「送り直す」と表示する。FEEDBACK_API が空のあいだはボタンを出さない。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
 
 ---
 
-## 追加作業：サンライズの住所訂正
+### Task 7: README
 
-ユーザーから訂正。1回目にもらった「大網白里市南今泉4881-1」は誤りで、
-正しくは **〒299-4303 千葉県長生郡一宮町東浪見7450-1**。
+**Files:**
+- Modify: `README.md`
 
-### チェックリスト
+**Interfaces:**
+- Consumes: Task 1〜6 のファイル名と振る舞い、Task 4 の `wrangler.toml` の名前（`surf-check-feedback`、`surf-check-photos`）
+- Produces: 記録の消し方・ポイント名の書き換え方の手順。Task 9 の公開で使う。
 
-- [x] 住所を座標化し、汀線の陸側まで出す
-- [x] 「サンライズ（白里）」と東浪見が90mで重なる問題を解く
-- [x] 名前から誤りの「（白里）」を外す
-- [x] カメラの割り当てを実態に合わせる
-- [x] 逆ジオコーディングと実データで検証する
-- [x] `node --test`
+- [ ] **Step 1: README を書き換える**
 
-### 何が起きていたか
+`README.md` を次の内容にする。今の README に次を足したもの。
+- 冒頭の説明の「サーバー・APIキー不要」を書き換える。
+- 構成に新しいファイルと `worker/` を足す。
+- 次の節を足す。
+  - 「実況フィードバックと補正」
+  - 「ローカルで動かす」の Worker の部分
+  - 「フィードバック用 Worker の公開」
+  - 「記録の消し方」
+  - 「ポイント名を変えたとき」
 
-前のフェーズで「（白里）」という登録名を住所の裏付けとして信用し、
-白里海岸に置いた。名前自体が誤りだったので、裏付けにならなかった。
+````markdown
+# 🏄 サーフチェック (Web)
 
-正しい住所で置き直すと `35.3563, 140.3918`。これは登録済みの東浪見
-`35.3555, 140.3919` から **約90m** しかなく、実質同じ点になってしまう。
+エリア・日付・時間帯を選ぶと、関東のサーフポイントを波質スコアでランキング表示する静的Webアプリ。
+「週間予報」タブでは、エリア内の各ポイントの7日分のスコアを朝・昼・夕で一覧でき、セルをタップすると詳細を表示する。
+予報データは [Open-Meteo](https://open-meteo.com)（Marine + Forecast API）をブラウザから直接取得する（APIキー不要）。
+実際に行った人の実況フィードバックの受け付けと補正の計算だけ、Cloudflare Worker（`worker/`）を使う。Worker が無くてもサイトは今までどおり動く。
 
-### 東浪見をどう扱ったか
+公開: GitHub Pages（Settings → Pages → Deploy from a branch / `main` / root）。
 
-Surfers Ocean の「東浪見」URL のページは、実体がタイトル「サンライズ(一宮町)」で、
-カメラも「サンライズ･東浪見ライブカメラ」、エリアを
-「シーサイドオーツカ･サンライズ･東浪見」とひとまとめにしている。
-⑦の駐車場一覧に載る東浪見7449 / 7432 / 7397-2 はすべて「サンライズ駐車場」で、
-東浪見という名前の駐車場は無い。つまり SO 側には東浪見の独立した位置の手がかりが無い。
-
-一方、BCM の採番は一宮 3/31・サンライズ 3/32・志田下 3/34 で、間の 3/33 が空いている。
-一宮エリアで北から一宮→サンライズ→東浪見→志田下→太東と並ぶ並びは、
-白渚と和田浦のときと同じく「同じ大字に別のブレイクがある」ケースなので、分けたまま残した。
-
-東浪見は、住所で確定したサンライズと志田下の中間から汀線へ出して暫定的に置いた。
-**この時点では住所の裏付けが無い推定だった。**
-→ 直後にユーザーから住所をもらい、次の節で確定させている。
-
-### 変更後の一宮エリア
-
-| ポイント | 座標 | 方位 | 隣との距離 | カメラ |
-| --- | --- | --- | --- | --- |
-| 一宮 | 35.367, 140.3915 | 90 | — | 2 |
-| サンライズ | 35.3563, 140.3918 | 90 | 1.19km | 2 |
-| 東浪見 | 35.3455, 140.3931 | 105 | 1.21km | 1 |
-| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 100 | 1.09km | 2 |
-| 太東 | 35.2923, 140.4072 | 110 | 4.97km | 2 |
-
-### 名前とカメラ
-
-- `サンライズ（白里）` → **`サンライズ`**。「（白里）」は誤りと判明したため外した。
-- サンライズのカメラを2本にした。Surfers Ocean のサンライズページ（実体が
-  「東浪見」URL のもの）と、元から付いていた BCM サンライズ `wave-detail/3/32/`。
-  優先度は YouTube → Surfers Ocean → BCM なので SO を先に置いた。
-- 東浪見は同じ SO ページを共有する。カメラ名が「サンライズ･東浪見ライブカメラ」で
-  東浪見を名指ししているため。1つのURLを隣接ポイントで共有するのは
-  白渚/和田浦・波崎/波崎シーサイドパーク・茅ヶ崎パーク/パイプライン・玉石/由比ヶ浜と同じ扱いで、
-  `spots.test.js` の「共有URLは同一リージョン内に限る」も満たしている（どちらも千葉北）。
-
-### 方位
-
-サンライズは実測法線90°で登録値90°と差0°、東浪見は実測85°で登録値105°と差20°。
-どちらも「差が30°を超えたときだけ直す」という基準に掛からないので据え置いた。
-
-### 検証（実際の出力）
+## 構成
 
 ```
-東浪見     35.3502,140.3925 大字=東浪見 スコア=37/39/39
-サンライズ   35.3563,140.3918 大字=東浪見 スコア=37/39/39
+index.html        UI
+style.css
+scoring.js        採点ロジック
+forecast.js       時間帯平均・週間予報の組み立て（ランキングと共用）
+share.js          表示ラベルの整形、共有テキスト・共有カード・共有URLの組み立て
+calibration.js    実況フィードバックからの補正の計算と、予報・採点へのかけ方（サイトと Worker で共用）
+feedback.js       入力パネルの初期値、記録の組み立てと入力チェック、写真の EXIF 読み取り（サイトと Worker で共用）
+feedback-panel.js 入力パネルの描画と操作、写真の縮小、送信（ブラウザ専用）
+app.js            取得→描画、タブ切替
+spots.json        スポットデータ
+scoring.test.js   テスト（採点）
+forecast.test.js  テスト（時間帯平均・週間予報）
+share.test.js     テスト（共有テキスト・共有URL・復元）
+spots.test.js     テスト（spots.json の形とライブカメラのURL）
+calibration.test.js  テスト（補正の計算・かけ方・検証値）
+feedback.test.js  テスト（初期値・入力チェック・EXIF・近いポイント）
 
-33ポイント中 欠損あり=0件
-ℹ pass 118
-ℹ fail 0
+worker/
+  index.mjs       Worker の入口（handler.mjs に今の時刻を渡すだけ）
+  handler.mjs     POST /feedback と GET /calibration、CORS、回数の上限
+  schema.sql      D1 のテーブル定義
+  wrangler.toml   Worker 名、D1・R2 の紐づけ、ALLOWED_ORIGINS
+  d1-sqlite.mjs   テスト専用。Node 内蔵の node:sqlite を D1 と同じ呼び方で使う
+  worker.test.mjs テスト（Worker）
 ```
 
-座標を決める途中で `35.3563, 140.3919` が逆ジオコーディングで「海上」に落ちたため、
-西へ10m寄せて `140.3918` にした。
+## 共有機能
 
-※ このとき「他の32件と同じく陸側に揃えている」と書いたが、これは誤りだった。
-33件を全部逆ジオコーディングすると11件（飯岡・吉崎浜・野手浜・マルキ・千倉・平井海岸・
-波崎・吉浜・茅ヶ崎パーク・辻堂・七里ヶ浜）が「海上」を返す。座標を小数4桁（約10m）に
-丸めた時点で汀線のどちら側に落ちるかが決まるだけで、揃ってはいない。
-Open-Meteo は波浪を最寄りの海格子、風を最寄りの陸格子から取り、どちらも格子が
-10m より遥かに粗いので実害は無い。揃えるために11件を動かすことはしていない。
+ランキング結果の下に「LINEで送る」「画像で共有」の2つのボタンがある。LINEで送ると、上位3件のポイント名・点数・波と風を短いテキストにまとめ、結果を再現できるURL（`?region=&date=&slot=`）を添えてLINEのトーク選択画面を開く。「画像で共有」は同じ上位3件を1080×1080のカード画像としてcanvasに描画し、対応する端末では共有シートから、それ以外ではダウンロードで保存できる。共有URLを開くとエリア・日付・時間帯が自動で入り、そのままチェックが実行されて同じランキングが再現される。
+
+「週間予報」タブにも同じ「LINEで送る」「画像で共有」が付いている。共有されるのは各日のベスト（ポイント・時間帯・点数）の7行で、週で最も点数が高い日には★が付く。共有URLは `?region=...&mode=weekly` で、開くと週間予報タブが選ばれた状態でエリアが入る。ただし週間の共有URLには日付を入れていないため、表示される7日分は常に「開いた日から」になる。共有した翌日以降に開くと、エリアとタブは再現されるが期間はずれる。`mode` の付かないランキングの共有URLは日付・時間帯を含むので、従来どおり同じ内容が再現される。
+
+## ライブカメラ
+
+検索結果のカードの一番下に「ライブカメラ」の行が出る。リンクは別タブで開く（埋め込み再生はしない）。出典は `spots.json` の `cams` に持たせてあり、1ポイントあたり最大2本。並びは優先度順（YouTube → Surfers Ocean → BCM）で、先頭から2本を出す。カメラが無いポイント、名前の一致する生きたカメラが見つからなかったポイントでは行ごと出さない（32ポイント中26ポイントに行が出る）。
+
+```json
+{ "name": "部原", "cams": [{ "label": "YouTube サンセット", "url": "https://..." }] }
+```
+
+リンク先は YouTube のライブ配信、Surfers Ocean のポイント別ページ、BCM SurfPatrol の `wave-detail` ページの3種類。いずれも無料で見られる。`spots.test.js` がホスト・本数・https・エリアをまたぐ使い回しをテストで止めている。ライブ配信は止まることがあるので、リンク切れに気づいたら `spots.json` を直す。
+
+## 実況フィードバックと補正
+
+ランキングの各カードの一番下に「行ってきた」ボタンがある。押すと入力パネルが下から開き、その回の総合評価（1〜5）・波のサイズ・風向き（オフ／サイド／オン）・風の強さ・写真1枚（任意）を送れる。波・風の初期値はカードに出ていた予報なので、予報どおりだったなら総合を選んで「送る」の2タップで済む。潮は入力も記録もしない。
+
+- 同じ端末・ポイント・日付・時間帯で送り直すと上書きになる（ボタンのラベルが「送り直す」に変わる）。
+- 写真は長辺1600pxの JPEG に縮めてから送り、EXIF は残さない。元の写真から撮影時刻が読めれば日付と時間帯を合わせ、撮影位置が選んだポイントから1.0kmを超えて離れていて、ほかのポイントの方が近ければ、そちらに切り替える提案を出す。iPhone の Safari などは位置情報を消してから渡すことが多いので、読めたら使う扱い。
+- 送信は1日に1端末20件・1回線30件・全体100件まで。
+
+貯まった記録（予報と実況の組）から、Worker の `GET /calibration` がその都度次の補正を計算する。
+
+- ポイントごとの波サイズの倍率（0.5〜2倍）と風速のずれ（±4m/s）。件数が少ないうちは「補正なし」側へ強く寄せる。
+- ランキングの配点（風向き・風速・うねりの向き・周期・波高、合計85点）。15件貯まるまでは今の配点のまま。
+
+サイトは起動時に補正を読み（最大2秒待つ）、ランキング・週間予報・共有テキストと共有画像にかける。記録のあるポイントのカードには「実況補正 7件（波×1.2・風+0.6m/s）」のように出る。補正が読めないとき、記録が0件のときは、表示も点数も補正なしと同じ。補正の計算には必ず補正前の予報を使う。`scoring.js` は変えていない。
+
+補正の効果は `GET /calibration?metrics=1` で見られる（記録を1件ずつ抜いて残りで予測する leave-one-out）。`wave_band_mae` の `calibrated` が `raw` より小さく、`rating_concordance` の `calibrated` が `default` より大きければ、補正が効いている。
+
+`app.js` の `FEEDBACK_API` が空文字のときは補正を取りに行かず、「行ってきた」ボタンも出さない。記録や写真を見る画面は無い。写真は Cloudflare の管理画面（R2）で見る。
+
+## ローカルで動かす
+
+```bash
+python -m http.server 8000
+# http://localhost:8000/
+```
+
+フィードバックまで試すときは、Worker もローカルで立てる（ローカルの D1 と R2 を使う）。
+
+```bash
+cd worker
+# 開発用の設定。.gitignore 済み。IP_SALT はその場で作った使い捨ての値にする
+printf 'ALLOWED_ORIGINS=http://localhost:8000\nIP_SALT=%s\n' "$(openssl rand -hex 16)" > .dev.vars
+npx wrangler@4 d1 execute surf-check-feedback --local --file schema.sql
+npx wrangler@4 dev
+# http://localhost:8787/calibration?metrics=1
+```
+
+`app.js` の `FEEDBACK_API` を一時的に `"http://localhost:8787"` にして試す（この変更はコミットしない）。送った記録と写真は次で確かめられる。
+
+```bash
+npx wrangler@4 d1 execute surf-check-feedback --local --command "SELECT id, spot, date, slot, rating, wave_band, photo_key FROM feedback"
+npx wrangler@4 r2 object get surf-check-photos/<photo_key> --local --file /tmp/photo.jpg
+```
+
+## テスト
+
+```bash
+node --test
+```
+
+`fail 0` で全件成功すること。件数はテストを足すたびに変わるので、ここには書かない。
+
+## フィードバック用 Worker の公開
+
+Cloudflare のアカウントと `npx wrangler@4 login` が済んでいる前提。コマンドは `worker/` で実行する。
+
+1. `npx wrangler@4 d1 create surf-check-feedback` を実行し、出力された `database_id` を `wrangler.toml` に書く。
+2. `npx wrangler@4 r2 bucket create surf-check-photos`
+3. `npx wrangler@4 d1 execute surf-check-feedback --remote --file schema.sql`
+4. `openssl rand -hex 32 | npx wrangler@4 secret put IP_SALT`。値は画面にもファイルにも出さずに渡す（回線ごとの回数制限に使う IP のハッシュの塩）。
+5. `npx wrangler@4 deploy`
+6. 表示された URL（`https://surf-check-feedback.<アカウント>.workers.dev`）を `app.js` の `FEEDBACK_API` に入れ、`index.html` の `?v=` を上げて GitHub Pages に出す。
+
+`ALLOWED_ORIGINS`（`wrangler.toml`）はサイトのオリジンだけにしてある。サイトのドメインを変えたら、ここも直して `deploy` し直す。
+
+### 記録の消し方
+
+頼まれて消すときは、先に写真の名前を控えてから消す。`<端末ID>` は `SELECT id, device_id, name, spot, date, slot FROM feedback ORDER BY updated_at DESC LIMIT 20` などで探す。
+
+```bash
+# ある端末の記録
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT photo_key FROM feedback WHERE device_id = '<端末ID>' AND photo_key IS NOT NULL"
+npx wrangler@4 r2 object delete surf-check-photos/<photo_key> --remote   # 控えた写真ごとに
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM feedback WHERE device_id = '<端末ID>'"
+
+# 日付の範囲で消す（写真は同じ条件の SELECT photo_key で控えてから消す）
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM feedback WHERE date BETWEEN '2026-10-01' AND '2026-10-07'"
+```
+
+### ポイント名を変えたとき
+
+記録はポイントを名前で持っている。`spots.json` で名前を変えたら、記録側も書き換える。書き換えなくてもエラーにはならないが、そのポイントに補正がかからなくなる。
+
+```bash
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "UPDATE feedback SET spot = '<新しい名前>' WHERE spot = '<古い名前>'"
+```
+
+## スポット・採点ロジックの大元
+
+このリポジトリは公開用。スポット定義(`spots.yaml`)と採点ロジック(Python版)の出所は
+別プロジェクト `notion_tools` 側。スポットを更新する場合はそちらで `spots.json` を再生成し、
+`spots.json`（および変更時は `scoring.js`）を本リポジトリへ反映する。
+
+**注意:** `cams`（ライブカメラ）は `notion_tools` 側には無く、本リポジトリの `spots.json` にだけ持たせている。`spots.json` を再生成するときは `cams` を消さないこと。`spots.test.js` に「どのエリアにもカメラ付きのポイントが1つ以上ある」テストを置いてあるので、丸ごと落ちた場合はテストが落ちる。
+
+## データソース
+
+Open-Meteo の GFS-Wave 系の数値予報モデル。実測値ではない点に注意。
+````
+
+- [ ] **Step 2: 書いたことと実物が合っているかを確かめる**
+
+```bash
+for f in calibration.js feedback.js feedback-panel.js calibration.test.js feedback.test.js worker/index.mjs worker/handler.mjs worker/schema.sql worker/wrangler.toml worker/d1-sqlite.mjs worker/worker.test.mjs; do test -f "$f" || echo "missing $f"; done
+grep -n 'surf-check-feedback\|surf-check-photos' worker/wrangler.toml
+grep -c 'IP_SALT=' README.md
+node --test 2>&1 | grep -E '^ℹ (tests|fail)'
+```
+
+Expected:
+- `missing` は1行も出ない。
+- `wrangler.toml` に2つの名前が出る。
+- `IP_SALT=` は README の中で1回だけ出てくる（`openssl rand` で作る例の行）。値そのものは書いていない。
+- `ℹ tests 220`、`ℹ fail 0`
+
+- [ ] **Step 3: コミットする**
+
+```bash
+git add README.md
+git commit -F - <<'EOF'
+docs: describe session feedback, the worker and its upkeep
+
+README に、実況フィードバックと補正の説明、構成の新しいファイル、Worker を
+ローカルで動かす方法、公開の手順、記録の消し方とポイント名の書き換え方を
+足した。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
 
 ---
 
-## 追加作業：東浪見と花籠の住所確定、志田下の連鎖修正
+### Task 8: `wrangler dev` でのローカル確認（ユーザーの承認が必要）
 
-ユーザーから残り2件の住所をもらった。
+**Files:**
+- 作るがコミットしない：`worker/.dev.vars`（`.gitignore` 済み）、`worker/.wrangler/`（ローカルの D1・R2。`.gitignore` 済み）
 
-- 東浪見：〒299-4303 千葉県長生郡一宮町東浪見7500-8
-- 花籠：〒299-2712 千葉県南房総市和田町海発1591-2
+**Interfaces:**
+- Consumes:
+  - Task 4 の Worker 一式と `schema.sql`
+  - Task 6 の `$VERIFY/photo.jpg`（`scenario-send.mjs` が作った、EXIF 付きの JPEG）
+  - Task 5 の `$VERIFY/static.mjs`
+- Produces: 本物の実行環境（workerd + ローカルの D1 / R2）で、Task 5・6 の確認用 Worker と同じ振る舞いになることの確認。コードの変更は無い。
 
-### チェックリスト
+- [ ] **Step 1: ユーザーの承認を得る**
 
-- [x] 2件の住所を座標化して汀線へ出す
-- [x] 東浪見が志田下と11mで重なる問題を解く
-- [x] 志田下の位置を独立した根拠で決め直す
-- [x] 全33件を逆ジオコーディングと実データで検証する
-- [x] `node --test`
+`npx wrangler@4` は、npm から wrangler を取ってきて実行する。初めて実行する前に、ユーザーに次のように尋ね、承認を待つ。
 
-### 東浪見（確定）
+「ローカルで Worker を動かすために `npx wrangler@4`（Cloudflare 公式の開発ツール。npm から取得、package.json は作らない）を実行してよいですか」
 
-7500番地は国土地理院で解決した（`35.346275, 140.389618`「千葉県一宮町東浪見７５００番地」）。
-そこから方位105°で汀線へ出して `35.3455, 140.3931`（逆ジオコーディングで「東浪見」）。
+承認が得られなければ、このタスクと Task 9 は行わない。そのときは tasks/todo.md の結果の記録に、次のように書いて終える。
 
-前の節で暫定的に置いた `35.3502` から0.53km南。これで東浪見は推定ではなくなった。
+「ローカル確認は Task 5・6 の確認用 Worker（node:sqlite）で行った。wrangler での確認は未実施」
 
-### 花籠（大字まで確定、座標は据え置き）
+- [ ] **Step 2: 開発用の設定を作る**
 
-国土地理院に**和田町海発の地番データが無い**。1591 でも 1500 でも 1700 でも
-同じ大字の代表点 `35.018497, 139.981873` を返し、`title` も「番地」が付かない
-「千葉県南房総市和田町海発」のままなので、番地は解決していない。
-
-ただし大字「和田町海発」はユーザーの住所と一致しており、これは Surfers Ocean の
-並び順から推定していたとおりだった。代表点から出した汀線も既存値とまったく同じ
-（移動 0.00km）。座標は `35.017, 139.9868` のまま据え置いた。
-
-和田町海発の汀線は約35.0165〜35.025の約1kmで、浜に沿った位置の不確かさはこの範囲。
-
-### 志田下を1.1km南へ（連鎖）
-
-東浪見の新座標 `35.3455, 140.3931` は、登録済みの釣ヶ崎（志田下）`35.3456, 140.3931`
-から**11m**。両方が正しいことはあり得ないので、志田下のほうを独立した根拠で確かめた。
-
-| 根拠 | 内容 |
-| --- | --- |
-| Wikipedia の座標 | 「釣ヶ崎海岸」= `35.33588889, 140.39463889` |
-| Wikipedia のリダイレクト | 「志田下」→「釣ヶ崎海岸」。SOのページ名「志田下(釣ヶ崎)」と一致 |
-| Wikipedia の本文 | 「九十九里浜の**南端**に位置する海岸」 |
-| 大字の境界（実測） | 汀線を南へ辿ると 35.3320 までが東浪見、35.3305 からいすみ市岬町中原。東浪見の南端は約35.331 |
-
-4つとも「東浪見大字の南の端」を指しており、登録値 35.3456 は1.1km北すぎた。
-Wikipedia の点から方位100°で汀線へ出し、`35.3358, 140.3949`（逆ジオコーディングで
-「東浪見」）を採用した。
-
-なお SO が志田下の駐車場として載せる「一宮町東浪見6961-7」は国土地理院で解決せず
-大字の代表点に落ちるため、根拠には使っていない。番地が解決したかどうかは
-`title` に「番地」が付くかで判定している。
-
-### 番地が解決したもの・しなかったもの
-
-| 住所 | 結果 |
-| --- | --- |
-| 東浪見7449（SO・サンライズ駐車場） | ✓ `35.355904, 140.389099` |
-| 東浪見7450（ユーザー・サンライズ） | ✓ `35.356945, 140.388992` |
-| 東浪見7500（ユーザー・東浪見） | ✓ `35.346275, 140.389618` |
-| 東浪見7700 | ✓ `35.342079, 140.381851` |
-| 東浪見6961-7 / 7432 / 7397-2 | ✗ 大字の代表点 |
-| 和田町海発1591-2 ほか | ✗ 大字の代表点（地番データ自体が無い） |
-
-解決した4件は番地が大きいほど南で、7450（サンライズ）→7500（東浪見）→7700 の順に
-並ぶ。ユーザーの2つの住所が北から順に並ぶことと矛盾しない。
-
-### 変更後の一宮エリア
-
-| ポイント | 座標 | 方位 | 隣との距離 | 根拠 |
-| --- | --- | --- | --- | --- |
-| 一宮 | 35.367, 140.3915 | 90 | — | 既存 |
-| サンライズ | 35.3563, 140.3918 | 90 | 1.19km | 住所（東浪見7450-1） |
-| 東浪見 | 35.3455, 140.3931 | 105 | 1.21km | 住所（東浪見7500-8） |
-| 釣ヶ崎（志田下） | 35.3358, 140.3949 | 100 | 1.09km | Wikipedia + 大字の境界 |
-| 太東 | 35.2923, 140.4072 | 110 | 4.97km | 既存 |
-
-5点がほぼ1km等間隔に並び、実際の一宮エリアのブレイクの並びと合う。
-
-### 方位
-
-| ポイント | 登録 | 実測法線 | 差 | 判断 |
-| --- | --- | --- | --- | --- |
-| 東浪見 | 105 | 80 | 25° | 据え置き（30°以下） |
-| 釣ヶ崎（志田下） | 100 | 70 | 30° | 据え置き（30°超ではない。海率15/36で太東崎の影響を受けている） |
-| 花籠ポイント | 110 | 130 | 20° | 据え置き（30°以下） |
-
-### 検証（実際の出力）
-
-```
-釣ヶ崎（志田下）  35.3358,140.3949 大字=東浪見      スコア=37/39/39
-東浪見       35.3455,140.3931 大字=東浪見      スコア=37/39/39
-花籠ポイント    35.017,139.9868  大字=和田町海発   スコア=45/37/34
-
-33ポイント中 欠損あり=0件
-全33件で最も近い2点: 玉石／稲村ケ崎 = 0.54km
-ℹ pass 119
-ℹ fail 0
+```bash
+cd "$REPO/worker"
+printf 'ALLOWED_ORIGINS=http://localhost:8000,http://localhost:8001\nIP_SALT=%s\n' "$(openssl rand -hex 16)" > .dev.vars
+git -C "$REPO" check-ignore worker/.dev.vars
+git -C "$REPO" status --short
 ```
 
-一番近い2点が湘南の玉石／稲村ケ崎の0.54kmになり、一宮エリアの重なりは解消した。
+Expected:
+- `check-ignore` が `worker/.dev.vars` を表示する。
+- `status` に `.dev.vars` が出ない。
 
-### 追加したテスト
+`IP_SALT` の値は表示しない（`cat .dev.vars` はしない）。
 
-`spots.test.js` に「別のポイント同士が同じ地点に重ならない（100m以上離れている）」を足した。
-今回の2つの重なり（サンライズと東浪見の90m、東浪見と志田下の11m）は、どちらも
-spots.json だけを見れば外部データ無しで分かる矛盾だったのに、指摘されるまで気づかなかった。
+- [ ] **Step 3: ローカルの D1 にテーブルを作り、Worker を立てる**
 
-閾値100mは現実の最小間隔（玉石と稲村ケ崎の約540m）より十分小さく、正しいデータを
-落とさずに座標の取り違えだけを捕まえる。テストを通すために閾値を選んだのではなく、
-90mの重なりも捕まる値にしてある。
+```bash
+cd "$REPO/worker"
+npx wrangler@4 d1 execute surf-check-feedback --local --file schema.sql
+npx wrangler@4 dev --port 8787
+```
 
-赤→緑も確認した。東浪見の座標を志田下と同じにすると
-`AssertionError: 釣ヶ崎（志田下） と 東浪見 が 0m しか離れていない` で落ち、
-正しいデータに戻すと 119/119 通る。
+`wrangler dev` はバックグラウンドで動かし続ける。
 
-これで `node --test` は **119件**（この節の前は118件）。
+Expected: `Ready on http://localhost:8787` が出る。
 
-### 残っている推定
+`database_id` が無いことを理由に止まったときは、次のようにする。
+1. `wrangler.toml` の `# database_id: filled in at deploy` の行を、一時的に `database_id = "local-dev"` に置き換えて、やり直す。
+2. この変更はコミットしない。Task 9 で本物の ID に置き換える。
+3. このタスクの終わりに `git diff worker/wrangler.toml` で元に戻っていることを確かめる。
 
-**無し。** 33件すべてが住所・外部の座標・実測のいずれかで裏付けられた。
-唯一、花籠ポイントだけは大字までの確定で、浜に沿った約1kmの範囲内の位置は
-大字の代表点から出したままである。
+- [ ] **Step 4: API を確かめる**
+
+```bash
+YDAY=$(TZ=Asia/Tokyo date -v-1d +%F)
+DEV1=$(uuidgen | tr A-Z a-z)
+REC1=$(printf '{"device_id":"%s","name":"","spot":"一宮","date":"%s","slot":"evening","bearing":100,"forecast":{"wave_height":0.9,"wind_dir":270,"wind_speed":3.2,"swell_dir":95,"swell_period":9.5},"observed":{"rating":4,"wave_band":5,"wind_side":"off","wind_strength":"strong"},"photo_meta":{"lat":35.34,"lon":140.39,"taken_at":"%sT17:30"}}' "$DEV1" "$YDAY" "$YDAY")
+curl -s http://localhost:8787/calibration; echo
+curl -s -X POST http://localhost:8787/feedback -H 'Origin: http://localhost:8001' -F "record=$REC1" -F "photo=@$VERIFY/photo.jpg;type=image/jpeg"; echo
+curl -s 'http://localhost:8787/calibration?metrics=1'; echo
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8787/feedback -H 'Origin: https://example.com' -F "record=$REC1"
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:8787/feedback -H 'Origin: http://localhost:8001' -F "record=$REC1" -F "photo=@$REPO/apple-touch-icon.png;type=image/jpeg"
+```
+
+Expected（上から順に）:
+1. `{"version":1,"n":0,"spots":{},"weights":{...},"weights_learned":false,"generated_at":"..."}`
+2. `{"ok":true,"id":1,"updated":false}`
+3. `"n":1` で、`"一宮":{"n":1,"wave_factor":...}` の `wave_factor` が 1 より大きい。
+   - 予報 0.9m に対して、アタマ〜オーバー（帯5）と答えたため。
+   - `metrics` が付いている。記録1件なので値は `null`。
+4. `403`（許可していないオリジン）
+5. `415`（PNG は JPEG ではない）
+
+- [ ] **Step 5: D1 の行と R2 の写真を確かめる**
+
+```bash
+cd "$REPO/worker"
+npx wrangler@4 d1 execute surf-check-feedback --local --command "SELECT spot, date, slot, rating, wave_band, photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback"
+KEY=$(npx wrangler@4 d1 execute surf-check-feedback --local --json --command "SELECT photo_key FROM feedback" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s)[0].results[0].photo_key))')
+npx wrangler@4 r2 object get "surf-check-photos/$KEY" --local --file "$VERIFY/r2.jpg"
+cmp "$VERIFY/photo.jpg" "$VERIFY/r2.jpg" && echo same-bytes
+```
+
+Expected:
+- 1行ある。`photo_lat` = 35.34、`photo_lon` = 140.39、`photo_taken_at` = `<昨日>T17:30`。
+- `photo_key` は `photos/<UUID>.jpg` の形。
+- `same-bytes` が出る。
+  - Worker は受け取った写真をそのまま保存する。
+  - EXIF を消すのはブラウザの縮小の段階で、これは Task 6 で確かめた。
+
+- [ ] **Step 6: 記録が増えると補正が変わることを確かめる**
+
+```bash
+DEV2=$(uuidgen | tr A-Z a-z)
+REC2=$(printf '%s' "$REC1" | sed "s/$DEV1/$DEV2/")
+curl -s -X POST http://localhost:8787/feedback -H 'Origin: http://localhost:8001' -F "record=$REC2"; echo
+curl -s 'http://localhost:8787/calibration?metrics=1'; echo
+```
+
+Expected:
+- 2つ目の端末の記録が入り、`"一宮":{"n":2,...}` になる。
+- `wave_factor` は Step 4 より大きい。
+  - 2台の記録なので、「補正なし」側へ寄せる力が相対的に弱まるため。
+- `metrics` の `wave_band_mae`・`wind_strength_hit`・`wind_side_hit` が数値になる。記録2件で leave-one-out が計算できるため。
+  - `rating_concordance` は `null` のまま。2件とも総合が 4 で、比べられる組が無いため。
+
+- [ ] **Step 7: 任意：パソコンのブラウザから送ってもらう**
+
+作業ツリーのコピーを、`FEEDBACK_API` を書き換えて 8001 で配る。
+
+```bash
+rm -rf "$VERIFY/api" && mkdir -p "$VERIFY/api"
+rsync -a --exclude .git "$REPO/" "$VERIFY/api/"
+sed -i '' 's|^const FEEDBACK_API = "";|const FEEDBACK_API = "http://localhost:8787";|' "$VERIFY/api/app.js"
+node "$VERIFY/static.mjs" "$VERIFY/api" 8001
+```
+
+`static.mjs` はバックグラウンドで動かす。
+
+ユーザーに、次を頼む。
+- `http://localhost:8001/` を開き、ランキングのカードから写真付きで1件送る。
+- 送ったら知らせる。
+
+知らせを受けたら Step 5 の SELECT を流し、行が増えていることを確かめる。
+
+ユーザーが断ったら、この Step は飛ばす。
+
+- [ ] **Step 8: 片付ける**
+
+`wrangler dev` と 8001 の `static.mjs` を止める（8000 には触らない）。
+
+```bash
+git -C "$REPO" status --short
+git -C "$REPO" diff --stat
+```
+
+Expected: `?? snapshot.html` 以外に何も出ない。`wrangler.toml` の一時的な変更も残っていない。
+
+コミットは無い。結果を tasks/todo.md の結果の記録に書く。`IP_SALT` の値は書かない。
+
+---
+
+### Task 9: Cloudflare への公開（ユーザーの承認が必要）
+
+**Files:**
+- Modify: `worker/wrangler.toml`（`database_id`）、`app.js`（`FEEDBACK_API`）、`index.html`（`?v=`）
+- 公開後の結果によっては：`README.md`
+
+**Interfaces:**
+- Consumes: Task 4 の Worker 一式、Task 7 の README の手順、Task 8 の確認結果
+- Produces: 公開された Worker の URL と、それを入れた `FEEDBACK_API`
+
+- [ ] **Step 1: ユーザーの準備と承認を確かめる**
+
+ユーザーに、次の3つを頼む・尋ねる。
+1. Cloudflare のアカウントを作る。R2 を有効にするとき、支払い方法の登録を求められることがある（無料枠の中なら請求はない）。
+2. `cd worker && npx wrangler@4 login` を、ユーザー自身の端末で実行する（ブラウザでログインする）。
+3. D1・R2 を作り、Worker を公開してよいかの承認。
+
+3つとも済むまで、次の Step には進まない。
+
+- [ ] **Step 2: D1 と R2 を作り、テーブルを作る**
+
+```bash
+cd "$REPO/worker"
+npx wrangler@4 d1 create surf-check-feedback
+```
+
+出力された `database_id` で、`wrangler.toml` の `# database_id: filled in at deploy` の行を置き換える。
+
+```toml
+database_id = "<出力された ID>"
+```
+
+`database_id` は秘密の値ではない。使うにはアカウントの認証が要る。
+
+```bash
+npx wrangler@4 r2 bucket create surf-check-photos
+npx wrangler@4 d1 execute surf-check-feedback --remote --file schema.sql
+```
+
+Expected: どれもエラーなく終わる。
+
+- [ ] **Step 3: `IP_SALT` を入れる**
+
+値は画面にもファイルにも出さず、そのままパイプで渡す。
+
+```bash
+openssl rand -hex 32 | npx wrangler@4 secret put IP_SALT
+```
+
+Expected: `Success! Uploaded secret IP_SALT`
+
+- [ ] **Step 4: 公開して、動きを確かめる**
+
+```bash
+npx wrangler@4 deploy
+```
+
+表示された URL（`https://surf-check-feedback.<アカウント>.workers.dev`）を `API` とする。
+
+```bash
+API=https://surf-check-feedback.<アカウント>.workers.dev
+curl -s "$API/calibration"; echo
+curl -s -o /dev/null -w '%{http_code}\n' -X OPTIONS "$API/feedback" -H 'Origin: https://tk0407.github.io' -H 'Access-Control-Request-Method: POST'
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$API/feedback" -H 'Origin: https://example.com'
+```
+
+Expected:
+1. `{"version":1,"n":0,"spots":{},...}`
+2. `204`
+3. `403`
+
+- [ ] **Step 5: サイトに URL を入れる**
+
+`app.js` の行を置き換える。
+
+置き換える前：
+```js
+const FEEDBACK_API = "";
+```
+置き換えた後：
+```js
+const FEEDBACK_API = "https://surf-check-feedback.<アカウント>.workers.dev";
+```
+
+`index.html` の `?v=` を、公開する日の日付（YYYYMMDD）に上げる。その日付が 20260925 以下なら 20260926 にする。
+
+```bash
+V=<新しい日付>
+sed -i '' "s/?v=20260925/?v=$V/g" index.html
+grep -c "?v=$V" index.html
+node --test 2>&1 | grep -E '^ℹ (tests|fail)'
+```
+
+Expected:
+- `grep -c` は `11`（アイコン3・CSS 1・スクリプト7。どれも1行に1つ）。
+  - 数が違うときは、`grep -n '?v=' index.html` で上げ漏れがないかを見る。
+- `ℹ tests 220`、`ℹ fail 0`
+
+- [ ] **Step 6: コミットする**
+
+```bash
+git add worker/wrangler.toml app.js index.html
+git commit -F - <<'EOF'
+feat: point the site at the deployed feedback worker
+
+公開した Worker の URL を FEEDBACK_API に入れ、D1 の database_id を
+wrangler.toml に書いた。index.html の ?v= を上げた。
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+EOF
+```
+
+- [ ] **Step 7: 公開後の確認（GitHub Pages に出てから）**
+
+この Step は、ブランチが main に入り、GitHub Pages に出たあとで行う。
+
+1. ユーザーに、スマホで公開サイトを開き、ランキングのカードから写真付きで1件送ってもらう。
+2. 次を流す。
+
+```bash
+cd "$REPO/worker"
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT spot, date, slot, photo_key, photo_lat, photo_lon, photo_taken_at FROM feedback ORDER BY id DESC LIMIT 1"
+npx wrangler@4 r2 object get "surf-check-photos/<photo_key>" --remote --file "$VERIFY/phone.jpg"
+LC_ALL=C grep -c 'Exif' "$VERIFY/phone.jpg"
+```
+
+Expected:
+- R2 の写真に EXIF は残っていない（`grep -c` が `0`）。
+- `photo_lat` / `photo_lon` / `photo_taken_at`
+  - 入っていれば、そのまま使える。
+  - 空（`null`）なら、README の「実況フィードバックと補正」の写真の箇条に次の一文を足す。そして別のブランチで PR にする。
+    - 「この端末（<機種・ブラウザ>）では、端末が位置情報を消すため撮影位置・撮影時刻は使えない」
+
+---
+
+## 結果の記録
+
+実装が終わったら、この下に次のことを書く。
+- 各タスクの結果
+  - テストの件数
+  - ブラウザでの確認の PASS / FAIL
+  - wrangler での確認の結果
+- 途中で決めたこと
+
+秘密の値（`IP_SALT`、認証情報）と、ユーザーの端末 ID・名前は書かない。
