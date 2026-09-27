@@ -82,6 +82,14 @@ function loadCalibration() {
   return Promise.race([load, timeout]);
 }
 
+// 入力パネル用：その日・時間帯の補正前の予報値。
+async function fetchConditions(spot, date, slot) {
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
+  const data = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!data) throw new Error("予報データなし");
+  return data;
+}
+
 function tideTrendLabel(marine, slot, date) {
   const levels = marine.sea_level_height_msl;
   if (!levels) return "";
@@ -257,6 +265,16 @@ function calibrationChip(spot) {
   return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
 }
 
+// session はパネルが最初に開く日・時間帯（Feedback.defaultSession）。null ならボタンを出さない。
+function feedbackLabel(spot, session) {
+  return FeedbackPanel.hasSent(spot.name, session.date, session.slot) ? "送り直す" : "行ってきた";
+}
+
+function feedbackButton(result, index, session) {
+  if (!session) return "";
+  return `<button type="button" class="feedback-open" data-index="${index}">${feedbackLabel(result.spot, session)}</button>`;
+}
+
 // Compass icon: fixed circle with an N reference mark, only the arrow
 // rotates (pointing where the flow is heading).
 // Ring gauge around the compass: arc length = speed (capped at 12 m/s,
@@ -306,7 +324,7 @@ function conditionMetrics(data, bearing) {
     </div>`;
 }
 
-function resultCard(result, index) {
+function resultCard(result, index, session) {
   const rank = index + 1;
   const featured = index === 0 ? " featured" : "";
 
@@ -335,7 +353,7 @@ function resultCard(result, index) {
     </div>
 
     <div class="reason-row">${reasonChips(result)}${calibrationChip(result.spot)}</div>
-    ${Share.camRow(result.spot)}
+    ${Share.camRow(result.spot)}${feedbackButton(result, index, session)}
   </article>`;
 }
 
@@ -344,6 +362,7 @@ let LAST_RESULTS = [];
 // redraw tide curves that were laid out at width 0 while #results was
 // display:none (see drawTideCurves), without re-fetching anything.
 let LAST_RANKING_RENDER = null;
+let LAST_FEEDBACK_SESSION = null;
 
 function drawTideCurves(el, results, date, slot) {
   const now = new Date();
@@ -446,6 +465,7 @@ function wireShareRow(root, payload) {
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
+  LAST_FEEDBACK_SESSION = FEEDBACK_API ? Feedback.defaultSession({ date, slot }, new Date()) : null;
   if (results.length === 0) {
     el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
@@ -458,13 +478,38 @@ function renderResults(el, region, date, slot, results, failed) {
     </div>
     ${shareRow()}
     <div class="ranking-cards">
-      ${results.map(resultCard).join("")}
+      ${results.map((r, i) => resultCard(r, i, LAST_FEEDBACK_SESSION)).join("")}
     </div>
     ${failedNote}`;
   const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
   wireShareRow(el, share);
   drawTideCurves(el, results, date, slot);
   history.replaceState(null, "", share.url);
+}
+
+function refreshFeedbackButtons() {
+  if (!LAST_RANKING_RENDER || !LAST_FEEDBACK_SESSION) return;
+  LAST_RANKING_RENDER.el.querySelectorAll(".feedback-open").forEach((btn) => {
+    const result = LAST_RESULTS[Number(btn.dataset.index)];
+    if (result) btn.textContent = feedbackLabel(result.spot, LAST_FEEDBACK_SESSION);
+  });
+}
+
+function onFeedbackClick(e) {
+  const btn = e.target.closest(".feedback-open");
+  if (!btn || !LAST_RANKING_RENDER) return;
+  const result = LAST_RESULTS[Number(btn.dataset.index)];
+  if (!result) return;
+  const { date, slot } = LAST_RANKING_RENDER;
+  FeedbackPanel.open({
+    api: FEEDBACK_API,
+    spot: result.spot,
+    spots: SPOTS,
+    card: { date, slot, rawData: result.rawData },
+    calibration: CALIBRATION,
+    fetchConditions,
+    onSent: refreshFeedbackButtons,
+  });
 }
 
 // Runs fn for every spot in parallel; spots whose promise rejects are
@@ -745,6 +790,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const resultsEl = document.getElementById("results");
   resultsEl.addEventListener("pointermove", onTideHover);
   resultsEl.addEventListener("pointerleave", hideTideHover);
+  resultsEl.addEventListener("click", onFeedbackClick);
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });
