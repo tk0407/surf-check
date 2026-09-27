@@ -137,7 +137,7 @@ Worker は D1 と R2 への呼び出しをやり直さない（リトライ0回�
    # 何も返らなければ消す
    npx wrangler@4 r2 object delete surf-check-photos/<key> --remote
    ```
-2. 記録から合計を作り直す。1の前にやると、消せていない写真のぶんが数から抜けるので、必ず1の後に行う。
+2. 記録から合計を作り直す。1の前にやると、消せていない写真のぶんが数から抜けるので、必ず1の後に行う。途中で止まっても、同じコマンドをもう一度流せば作り直せる（最初に全部消してから数え直すため）。
    ```bash
    npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM storage_usage; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'global', COALESCE(SUM(photo_bytes), 0), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'device:' || device_id, SUM(photo_bytes), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL GROUP BY device_id"
    ```
