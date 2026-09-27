@@ -15,7 +15,9 @@ const FEEDBACK_API = "";
 const CALIBRATION_TIMEOUT_MS = 2000;
 
 let SPOTS = [];
+// CALIBRATION は今の検索（とその入力パネル）が使う補正、loadedCalibration は Worker から届いた最新の補正。
 let CALIBRATION = null;
+let loadedCalibration = null;
 let calibrationReady = Promise.resolve();
 
 function fmtDate(d) {
@@ -67,12 +69,14 @@ async function fetchSpotData(lat, lon, startDate, endDate) {
 }
 
 // 補正は起動時に取りに行き、最初の検索は最大 2 秒だけ待つ。遅れて届いた補正は
-// 次の検索から使う。取れない・形が違うときは補正なし（今と同じ表示）のまま。
+// loadedCalibration に置くだけにして、次の check() の最初で CALIBRATION に移す
+// (検索の途中で CALIBRATION が書き換わらないようにするため)。取れない・形が
+// 違うときは補正なし（今と同じ表示）のまま。
 function loadCalibration() {
   if (!FEEDBACK_API) return Promise.resolve();
   const load = fetch(`${FEEDBACK_API}/calibration`)
     .then((res) => (res.ok ? res.json() : null))
-    .then((json) => { if (Calibration.validate(json)) CALIBRATION = json; })
+    .then((json) => { if (Calibration.validate(json)) loadedCalibration = json; })
     .catch(() => {});
   const timeout = new Promise((resolve) => setTimeout(resolve, CALIBRATION_TIMEOUT_MS));
   return Promise.race([load, timeout]);
@@ -630,6 +634,7 @@ async function check() {
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
     await calibrationReady;
+    CALIBRATION = loadedCalibration;
     if (currentMode() === "weekly") await runWeekly();
     else await runRanking();
   } finally {
