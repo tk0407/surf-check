@@ -1033,7 +1033,7 @@ EOF
     - `slotForTime(takenAt)` → `"morning"` / `"afternoon"` / `"evening"`
     - `sessionFromPhoto(takenAt, now)` → `{date, slot}` または `null`
   - **記録**
-    - `initialObserved(data, bearing)` → `{rating: null, wave_band, wind_side, wind_strength}`
+    - `initialObserved(data, bearing)` → `{wave_band, wind_side, wind_strength}`（`rating` は含めない。入力パネルは `Object.assign` で重ねるので、先に選ばれた総合を消さない）
     - `buildRecord({deviceId, name, spot, date, slot, rawData, observed, photoMeta})` → 仕様の `POST /feedback` の `record` の形
     - `validateRecord(rec, now)` → 日本語のエラー文の配列。空なら正しい。
   - **写真と位置**
@@ -1041,7 +1041,7 @@ EOF
     - `distanceKm(a, b)`：`a` と `b` は `{lat, lon}`。
     - `suggestSpot(meta, current, spots)` → `{spot, km}` または `null`
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `feedback.test.js` を次の内容で作る。EXIF のテストは、テストの中でバイト列から JPEG を組み立てる（リトルエンディアンとビッグエンディアンの両方）。
 
@@ -1396,12 +1396,12 @@ test("suggestSpot stays quiet without a photo location", () => {
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確かめる**
+- [x] **Step 2: テストが失敗することを確かめる**
 
 Run: `node --test feedback.test.js`
 Expected: FAIL。`Error: Cannot find module './feedback.js'`
 
-- [ ] **Step 3: 実装を書く**
+- [x] **Step 3: 実装を書く**
 
 `feedback.js` を次の内容で作る。
 
@@ -1725,17 +1725,17 @@ Expected: FAIL。`Error: Cannot find module './feedback.js'`
 });
 ```
 
-- [ ] **Step 4: テストが通ることを確かめる**
+- [x] **Step 4: テストが通ることを確かめる**
 
 Run: `node --test feedback.test.js`
 Expected: `ℹ tests 38`、`ℹ pass 38`、`ℹ fail 0`
 
-- [ ] **Step 5: 全体のテストを流す**
+- [x] **Step 5: 全体のテストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 192`、`ℹ fail 0`
 
-- [ ] **Step 6: コミットする**
+- [x] **Step 6: コミットする**
 
 ```bash
 git add feedback.js feedback.test.js
