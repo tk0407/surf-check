@@ -3215,7 +3215,7 @@ mkdir -p "$VERIFY"
   - 潮位グラフの svg の中身。描いた時刻で変わるため。
   - 「行ってきた」ボタン（Task 6 以降）
 
-- [ ] **Step 1: 確認用の道具を作る**
+- [x] **Step 1: 確認用の道具を作る**
 
 `$VERIFY/cdp.mjs`：
 
@@ -3530,7 +3530,7 @@ for (const [i, name] of cases.entries()) {
 }
 ```
 
-- [ ] **Step 2: 変える前の状態で比較を流し、失敗することを確かめる**
+- [x] **Step 2: 変える前の状態で比較を流し、失敗することを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" start
@@ -3549,7 +3549,7 @@ sh "$VERIFY/serve.sh" stop
 sleep 120
 ```
 
-- [ ] **Step 3: `app.js` を変える**
+- [x] **Step 3: `app.js` を変える**
 
 次の9か所を、上から順に置き換える。
 
@@ -3702,7 +3702,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initDate();
 ```
 
-- [ ] **Step 4: `index.html` を変える**
+- [x] **Step 4: `index.html` を変える**
 
 アセットの `?v=` を上げる。
 
@@ -3731,7 +3731,7 @@ Expected: `8`。
   <script src="app.js?v=20260925"></script>
 ```
 
-- [ ] **Step 5: `style.css` の末尾に足す**
+- [x] **Step 5: `style.css` の末尾に足す**
 
 空行を1行あけて、次を足す。
 
@@ -3745,12 +3745,12 @@ Expected: `8`。
 }
 ```
 
-- [ ] **Step 6: テストを流す**
+- [x] **Step 6: テストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 240`、`ℹ fail 0`
 
-- [ ] **Step 7: 補正を取りに行かない場合・記録0件の場合に、今と同じであることを確かめる**
+- [x] **Step 7: 補正を取りに行かない場合・記録0件の場合に、今と同じであることを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" start
@@ -3763,7 +3763,7 @@ Expected: すべて `PASS`、終了コード 0。
   - `PASS api: one /calibration request`
 - `(api: 0 buttons)` と表示される。
 
-- [ ] **Step 8: Worker が止まっているときも、今と同じであることを確かめる**
+- [x] **Step 8: Worker が止まっているときも、今と同じであることを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" worker-stop
@@ -3785,7 +3785,7 @@ sh "$VERIFY/serve.sh" start
 # 失敗したシナリオをもう一度流す（worker-down なら先に worker-stop する）
 ```
 
-- [ ] **Step 9: コミットする**
+- [x] **Step 9: コミットする**
 
 ```bash
 git add app.js index.html style.css
