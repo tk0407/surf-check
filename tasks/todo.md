@@ -1766,7 +1766,7 @@ EOF
   - 各日の `maxWaveHeight` は、`scorer` が返した `data.wave_height` から取る。
   - データが欠けた時間帯では `scorer` を呼ばない。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `forecast.test.js` を2か所変える。1つ目は `calibration.js` の読み込み。
 
@@ -1823,7 +1823,7 @@ test("weeklyForecast with Calibration.apply and no calibration matches the plain
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確かめる**
+- [x] **Step 2: テストが失敗することを確かめる**
 
 Run: `node --test forecast.test.js`
 Expected: `ℹ tests 21`、`ℹ pass 19`、`ℹ fail 2`
@@ -1831,7 +1831,7 @@ Expected: `ℹ tests 21`、`ℹ pass 19`、`ℹ fail 2`
   - `weeklyForecast uses the scorer's data and scores, ...`
   - `weeklyForecast never calls the scorer for a missing slot`
 
-- [ ] **Step 3: 実装を書く**
+- [x] **Step 3: 実装を書く**
 
 `forecast.js` の `weeklyForecast` を次のとおり変える。
 
@@ -1862,17 +1862,17 @@ Expected: `ℹ tests 21`、`ℹ pass 19`、`ℹ fail 2`
         if (slots[slot]) heights.push(slots[slot].data.wave_height);
 ```
 
-- [ ] **Step 4: テストが通ることを確かめる**
+- [x] **Step 4: テストが通ることを確かめる**
 
 Run: `node --test forecast.test.js`
 Expected: `ℹ tests 21`、`ℹ pass 21`、`ℹ fail 0`
 
-- [ ] **Step 5: 全体のテストを流す**
+- [x] **Step 5: 全体のテストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 196`、`ℹ fail 0`
 
-- [ ] **Step 6: コミットする**
+- [x] **Step 6: コミットする**
 
 ```bash
 git add forecast.js forecast.test.js
