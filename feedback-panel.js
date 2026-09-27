@@ -153,6 +153,19 @@
   }
 
   let dialog = null;
+  let current = null;
+
+  // The dialog is shared across every card's panel, and its native "close" event is a
+  // queued task: open() can reassign things and show a new panel before that event for
+  // the OLD panel fires. So a panel's own retirement can't wait on that event; open()
+  // retires the outgoing panel synchronously instead.
+  function retire(state) {
+    if (!state || state.closed) return;
+    state.closed = true;
+    clearTimeout(state.closeTimer);
+    state.loadSeq += 1;
+    if (state.photo) URL.revokeObjectURL(state.photo.url);
+  }
 
   // opts: { api, spot, spots, card: { date, slot, rawData }, calibration,
   //         fetchConditions(spot, date, slot) -> Promise<rawData>, onSent() }
@@ -161,7 +174,13 @@
       dialog = document.createElement("dialog");
       dialog.className = "fb-panel";
       document.body.appendChild(dialog);
+      // A close event that arrives while the dialog is open again belongs to the
+      // previous panel, which has already been retired synchronously below.
+      dialog.addEventListener("close", () => {
+        if (!dialog.open) retire(current);
+      });
     }
+    retire(current);
     dialog.innerHTML = panelHtml(sentList().length === 0);
     const $ = (sel) => dialog.querySelector(sel);
     const initial = Feedback.defaultSession(opts.card, new Date());
@@ -177,8 +196,10 @@
       loadSeq: 0,
       sending: false,
       done: false,
+      closed: false,
       closeTimer: null,
     };
+    current = state;
 
     function setStatus(text, tone) {
       const el = $(".fb-status");
@@ -289,9 +310,13 @@
       try {
         blob = await resizePhoto(file);
       } catch (e) {
+        // the panel was closed (maybe reopened for another card) while resizing: leave the screen alone
+        if (state.closed) return;
         setStatus(MESSAGES.photoFailed, "error");
         return;
       }
+      // the panel was closed (maybe reopened for another card) while resizing: leave the screen alone
+      if (state.closed) return;
       if (!blob) {
         setStatus(MESSAGES.photoTooBig, "error");
         return;
@@ -350,14 +375,20 @@
         state.done = true;
         markSent(record.spot, record.date, record.slot);
         if (nameEl) save(STORAGE.name, record.name);
+        if (opts.onSent) opts.onSent();
+        // the panel was closed (maybe reopened for another card) while sending: keep the
+        // record's bookkeeping, leave the screen alone
+        if (state.closed) return;
         setStatus(photoSkipped ? MESSAGES.sentWithoutPhoto : MESSAGES.sent, "ok");
         syncChoices();
-        if (opts.onSent) opts.onSent();
         // Leave that note up until the user closes the panel.
         if (!photoSkipped) state.closeTimer = setTimeout(() => dialog.close(), CLOSE_AFTER_MS);
         return;
       }
-      setStatus(await failureMessage(res), "error");
+      const message = await failureMessage(res);
+      // the panel was closed (maybe reopened for another card) while sending: leave the screen alone
+      if (state.closed) return;
+      setStatus(message, "error");
       syncChoices();
     }
 
@@ -383,12 +414,6 @@
         onPhoto(e.target.files[0]);
       }
     };
-    dialog.onclose = () => {
-      clearTimeout(state.closeTimer);
-      state.loadSeq += 1;
-      if (state.photo) URL.revokeObjectURL(state.photo.url);
-    };
-
     syncPhoto();
     loadForecast();
     dialog.showModal();
