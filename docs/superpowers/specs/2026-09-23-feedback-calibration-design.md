@@ -25,6 +25,8 @@
 - 補正の計算（ポイントごとの波サイズ倍率・風速のずれ、全体のランキング配点）
 - 補正をランキング・週間予報・共有テキストと共有画像にかけること、カードの「実況補正」表示
 - 補正の効果を測る検証値（leave-one-out）
+- 写真（R2）のコスト対策：送信の回数・写真の大きさ・写真の量の上限、写真の非常停止（`R2_KILL_SWITCH`）、個人情報を含まない構造化ログ
+- `docs/r2-security.md`（お金がかかるところ、上限の変え方、管理画面での設定、緊急時の手順、被害の範囲）
 - README の更新と公開の手順
 
 **含まない**
@@ -40,6 +42,11 @@
 - ボット判定（Cloudflare Turnstile）
 - 撮影位置を使った `spots.json` の座標の検証（データだけ貯める）
 - 電波が無いときに端末へ保留しておき、後で自動で送り直すこと
+- 署名付きURL（presigned URL）での直接アップロード、写真の公開配信とそのキャッシュ（写真は Worker だけが書き、誰にも配らない）
+- ログイン（端末IDと回線で数える）
+- Worker の中での R2・D1 の再試行（失敗したらその送信は失敗にし、ブラウザの人が送り直す）
+- staging 環境（ローカルの `wrangler dev` と本番の2つだけ）
+- `GET /calibration` の計算結果の保存（`Cache-Control` だけにする）
 
 ## 全体の制約
 
@@ -54,6 +61,7 @@
 - スマホ幅 375px で、ページも入力パネルも横スクロールしない。
 - `index.html` のアセット参照の `?v=` の日付を上げる。
 - 秘密情報（`IP_SALT`、Cloudflare の認証情報）は、リポジトリにも markdown にも書かない。
+- R2 に書くのは Worker の `POST /feedback` だけ。書く前に必ず、上限の判定と数え上げを D1 の1つのトランザクションで済ませる。この判定を通らずに R2 へ届く道を作らない。設定が読めないときは、何も保存しないか写真を置かない側に倒す。
 - コミットメッセージの末尾に `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` を付ける。
 
 ## 全体の構成
@@ -65,8 +73,9 @@ GitHub Pages（今のサイト）
  └─ カードの「行ってきた」 → 入力パネル → POST /feedback
 
 Cloudflare Worker（worker/）
- ├─ D1: feedback（記録）, submissions（送信の回数制限用）
- ├─ R2: 写真（非公開）
+ ├─ D1: feedback（記録）, submissions（送信の数え方）, storage_usage（R2 に置いた写真の合計）
+ ├─ R2: 写真（非公開。書くのは Worker だけ。一覧は取らない）
+ ├─ 上限と写真の非常停止（worker/quota.mjs）
  └─ GET /calibration は D1 の記録からその都度計算する
 ```
 
@@ -191,6 +200,7 @@ CREATE TABLE IF NOT EXISTS feedback (
   wind_side TEXT NOT NULL,       -- off | side | on
   wind_strength TEXT NOT NULL,   -- calm | light | strong
   photo_key TEXT,
+  photo_bytes INTEGER,           -- photo_key の写真の大きさ
   photo_lat REAL,
   photo_lon REAL,
   photo_taken_at TEXT,           -- YYYY-MM-DDTHH:MM（日本時間）
@@ -200,19 +210,33 @@ CREATE TABLE IF NOT EXISTS feedback (
   UNIQUE (device_id, spot, date, slot)
 );
 
+-- 受け付けた送信（上限の数え方の元）。3日より前の行は送信のたびに消す。
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,    -- 送信ごとの乱数（同じ batch の次の文がこの行を指すため）
   device_id TEXT NOT NULL,
   ip_hash TEXT NOT NULL,
-  day TEXT NOT NULL              -- YYYY-MM-DD（日本時間）
+  day TEXT NOT NULL,             -- YYYY-MM-DD（日本時間）
+  at INTEGER NOT NULL,           -- 受け付けた時刻（Unix ミリ秒）
+  photo_bytes INTEGER NOT NULL DEFAULT 0,  -- R2 に置いてよいとした写真の大きさ（置かないなら 0）
+  photo_skipped TEXT             -- 写真を置かなかった理由（kill_switch / device_bytes / ...）
 );
 CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
+
+-- R2 にいま置いてある写真の合計。scope は 'global' と 'device:<device_id>'。
+CREATE TABLE IF NOT EXISTS storage_usage (
+  scope TEXT PRIMARY KEY,
+  used_bytes INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 - **1件の記録**：1件が1回分のセッションになる。同じ端末・ポイント・日付・時間帯で送り直すと上書きされる。
   - `created_at` は最初に送った時刻のまま残し、`updated_at` だけを更新する。
   - 写真を付けずに送り直したときは、前の `photo_key` と写真の位置・時刻を残す。
-- **`submissions`**：送信が成功するたびに1行足す。上書きも1回と数える。回数の上限の判定にだけ使う。3日より古い行は、送信のたびに消す。
+- **`submissions`**：受け付けた送信ごとに1行足す。`429` で断った送信は足さない。上書きも1回と数える。上限の判定にだけ使う。3日より古い行は、送信のたびに消す。
+- **`storage_usage`**：R2 にいま置いてある写真のバイト数と枚数。全体（`global`）と端末ごと（`device:<端末ID>`）に持つ。写真を置く前に足し、R2 から消せたときだけ引く。R2 の一覧を取らずに容量の上限を判定するためのもの。ずれたときは `docs/r2-security.md` の手順で作り直す。
+- **`photo_bytes`**：`feedback` の写真の大きさ。写真を差し替えたり消したりしたときに、`storage_usage` から引く量になる。
 - **ポイントの持ち方**：名前で持つ。名前を変えたときは、記録側もSQLで書き換える（README に手順を書く）。書き換えなければ、そのポイントに補正がかからなくなるだけで、エラーにはならない。
 - **端末ID**：`crypto.randomUUID()` で作り、`localStorage` に保存する。本人確認には使わない。記録を区別するためだけのラベル。
 
@@ -265,28 +289,45 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 
 **写真の受け付け**
 - 先頭のバイトが `FF D8 FF`（JPEG）のものだけ受け付ける。違えば `415` を返す。
-- 1,572,864バイト（1.5MB）までにする。超えたら `413` を返す。
-- リクエスト全体は2MBまでにする。超えたら `413` を返す。
-- R2 には `photos/<UUID>.jpg` という推測できない名前で保存する。
+- `MAX_UPLOAD_SIZE`（既定 1,572,864バイト＝1.5MB）までにする。超えたら `413` を返す。
+- リクエスト全体は `MAX_UPLOAD_SIZE` に 512KB を足した大きさまで（既定で約2MB）。`Content-Length` が超えていれば読まずに `413` を返す。`Content-Length` が無いときも、読みながら超えた時点で読むのをやめて `413` を返す。
+- R2 には `photos/<UUID>.jpg` という推測できない名前で保存する。名前は Worker が作り、送り手の書いた値やファイル名は使わない。
 
-**回数の上限**
-- 日本時間の1日ごとに、`submissions` の行数で判定する。超えたら `429` を返し、`{"error": "...", "limit": "device" | "ip" | "total"}` の形でどの上限かを知らせる。
+**上限（`worker/quota.mjs`）**
+- 上限の判定と、受け付けた送信の数え上げは、D1 の1つのトランザクション（`batch`）で行う。同時に届いた送信が、そろって上限をすり抜けることはない。
+- 1日は日本時間で区切る。`429` で断った送信は数えない。
+- どの上限も、同じ名前の Worker 変数（`wrangler.toml` の `[vars]`）で変えられる。空なら既定値を使う。整数でない値や、10MB を超える `MAX_UPLOAD_SIZE` のときは、何も保存せずに `500` を返す。
 
-| 単位 | 上限 |
-|---|---|
-| 1端末 | 1日20件 |
-| 同じ回線（`ip_hash`） | 1日30件 |
-| 全体 | 1日100件 |
+| 変数 | 既定値 | 数えるもの | 超えたとき |
+|---|---|---|---|
+| `MAX_UPLOAD_SIZE` | 1572864（1.5MB） | 写真1枚の大きさ | `413` |
+| `MINUTE_COUNT_LIMIT` | 5 | 1端末の、また1回線の、直近60秒の送信 | `429`（`device_minute` / `ip_minute`） |
+| `DAILY_UPLOAD_COUNT_LIMIT` | 20 | 1端末の1日の送信 | `429`（`device`） |
+| `IP_DAILY_COUNT_LIMIT` | 30 | 1回線の1日の送信 | `429`（`ip`） |
+| `GLOBAL_DAILY_COUNT_LIMIT` | 100 | 全員の1日の送信。`0` にすると受け付けを止める | `429`（`total`） |
+| `DAILY_UPLOAD_LIMIT` | 10485760（10MB） | 1端末の1日の写真の合計 | 記録だけ保存（`device_bytes`） |
+| `GLOBAL_DAILY_UPLOAD_LIMIT` | 104857600（100MB） | 全員の1日の写真の合計 | 記録だけ保存（`global_bytes`） |
+| `USER_STORAGE_LIMIT` | 209715200（200MB） | 1端末が R2 に置いている写真の合計 | 記録だけ保存（`device_storage`） |
+| `GLOBAL_STORAGE_LIMIT` | 5368709120（5GB） | R2 に置いている写真の合計（無料枠10GBの半分） | 記録だけ保存（`global_storage`） |
 
+- `429` の本文は `{"error": "...", "limit": "..."}`。`limit` は `device_minute`、`ip_minute`、`device`、`ip`、`total` の順で判定し、最初に当たったものを返す。
+- 写真の量の上限に当たったときは、送信を断らずに記録だけ保存する。写真のためにフィードバックそのものを失わないため。
+- **写真の非常停止**：`R2_KILL_SWITCH` が `"false"` か `"0"`（大文字・小文字と前後の空白は問わない）のときだけ、写真を R2 に置く。それ以外（`"true"`、空、書き忘れ）のときは、記録だけ保存して写真は置かない（`kill_switch`）。
 - `ip_hash` は、`CF-Connecting-IP` に Worker の秘密の値 `IP_SALT` を混ぜた SHA-256（16進）。IP アドレスそのものは保存しない。
 
 **保存の順序**
-1. 写真があれば、先に R2 へ保存する。
-2. 記録を保存する（同じ組があれば上書き）。
-3. 記録の保存に失敗したら、1で保存した写真を消して `500` を返す。
-4. 上書きで写真を差し替えたときは、記録を保存できてから古い写真を消す。
+1. 設定（`IP_SALT`、上限の変数）を確かめる。足りない・読めないときは `500`。
+2. 大きさ（`413`）、入力（`400`）、写真の形式（`415`）を確かめる。
+3. D1 の1つのトランザクションで、上限を判定し、送信を数え、置く写真の大きさを `storage_usage` に足す。上限に当たれば `429`。
+4. 写真を置いてよいときだけ、R2 へ保存する。失敗したら、途中まで書かれていても消し、足した大きさを戻して `500` を返す。
+5. 記録を保存する（同じ組があれば上書き）。失敗したら、4で保存した写真を消し、足した大きさを戻して `500` を返す。
+6. 3日より古い `submissions` を消す。上書きで写真を差し替えたときは、古い写真を消してその大きさを戻す。ここでの失敗は記録の保存を取り消さず、ログにだけ残す。
+- 写真を消せなかったときは、その大きさを戻さない（R2 に残っているかもしれないため）。ログ（`photo_orphan`）に名前を残し、手で片付ける。
+- Worker の中では再試行しない。R2 や D1 の失敗は、その送信の失敗として返す。
 
-**成功時の応答**：`200 {"ok": true, "id": 123, "updated": true | false}`。`id` は記録の番号、`updated` は上書きだったかどうか。
+**成功時の応答**：`200 {"ok": true, "id": 123, "updated": true | false}`。`id` は記録の番号、`updated` は上書きだったかどうか。写真を置かなかったときは `"photo_skipped": "kill_switch"` のように理由を足す。
+
+**ログ**：1回の `POST` ごとに、`wrangler tail` で読める JSON を1行出す（`event`、`status`、`limit`、`updated`、`photo_skipped`、`photo_bytes`）。失敗のときは `config_error`、`r2_error`、`d1_error`、`photo_orphan`、`error` の行も出す。端末ID・名前・IP・`ip_hash` は出さない。
 
 ### `GET /calibration`
 
@@ -441,14 +482,17 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 | `forecast.js` | `weeklyForecast` に、補正と採点を行う関数を任意で受け取る引数を足す |
 | `index.html` | 新しい3つのスクリプトを読み込む。`?v=` を上げる |
 | `style.css` | パネル、チップ、「行ってきた」ボタン、「実況補正」表示の見た目 |
-| `worker/index.mjs`（新規） | Worker 本体。`POST /feedback`、`GET /calibration`、CORS、回数の上限 |
+| `worker/index.mjs`（新規） | Worker の入口。`handle(request, env, new Date())` を呼ぶだけ |
+| `worker/handler.mjs`（新規） | `POST /feedback` と `GET /calibration`、CORS、写真の保存と片付け、ログ。時計を引数で受け取る |
+| `worker/quota.mjs`（新規） | 上限の既定値と読み込み、写真の非常停止、D1 での判定と数え上げ（`reserve` / `release`） |
 | `worker/schema.sql`（新規） | D1 のテーブル定義 |
-| `worker/wrangler.toml`（新規） | Worker 名、D1・R2 の紐づけ、`ALLOWED_ORIGINS` |
+| `worker/wrangler.toml`（新規） | Worker 名、D1・R2 の紐づけ、`ALLOWED_ORIGINS`、`R2_KILL_SWITCH` |
 | `.gitignore`（新規） | `worker/.dev.vars` と `worker/.wrangler/` を除外する |
 | `worker/d1-sqlite.mjs`（新規・テスト専用） | Node 内蔵の `node:sqlite` を D1 と同じ呼び方（`prepare().bind().first()/all()/run()`）で使うための薄い変換 |
 | `worker/worker.test.mjs`（新規） | Worker のテスト |
 | `calibration.test.js`、`feedback.test.js`（新規） | テスト |
 | `README.md` | 構成、フィードバック機能、公開の手順、記録の消し方と名前の書き換え方 |
+| `docs/r2-security.md`（新規） | 写真（R2）のコスト対策、上限の一覧と変え方、管理画面での設定、見張り方、数のずれの直し方、緊急時の手順、被害の範囲、残るリスク |
 
 `scoring.js` は変更しない。
 
@@ -462,9 +506,14 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 | 撮影位置・撮影時刻が読めない | 何も出さない |
 | 送信で `400` | サーバーが返したメッセージを出す。入力と写真は残す |
 | 送信で `413` / `415` | 「写真を送れませんでした（大きさ・形式）」と出す。写真を外せば送れる |
-| 送信で `429` | 「今日はこれ以上送れません」と出す |
+| 送信で `429`（`device_minute` / `ip_minute`） | 「短い間に送りすぎです。1分ほど待ってから送ってください」と出す。入力と写真は残す |
+| 送信で `429`（それ以外） | 「今日はこれ以上送れません」と出す。入力と写真は残す |
+| `200` に `photo_skipped` がある | 「送りました。写真は今は受け付けていないため、記録だけ保存しました」と出し、読めるようにパネルを開いたままにする |
 | 送信で通信失敗・`5xx` | 「送れませんでした。もう一度送ってください」と出す。入力と写真は残す |
-| Worker で記録の保存に失敗 | 先に保存した写真を消し、`500` を返す |
+| Worker で `IP_SALT` が無い・上限の変数が読めない | 何も保存せず `500` を返し、`config_error` をログに出す |
+| Worker で R2 への保存に失敗 | 途中まで書かれた写真を消し、足した大きさを戻して `500` を返す |
+| Worker で記録の保存に失敗 | 先に保存した写真を消し、足した大きさを戻して `500` を返す |
+| Worker で古い写真を消せない | 送信は成功のまま。大きさは戻さず、`photo_orphan` をログに出す |
 
 ## テスト
 
@@ -511,16 +560,28 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 - `suggestSpot`：1.0km の境目、一番近いのが選択中のポイントのとき、撮影位置が無いとき
 
 **`worker/worker.test.mjs`**
-- テーブル定義は `worker/schema.sql` を `node:sqlite` にそのまま流す。
-- 送信の成功：記録が1行でき、写真が R2 に入る
+- テーブル定義は `worker/schema.sql` を `node:sqlite` にそのまま流す。D1 は `worker/d1-sqlite.mjs` で `node:sqlite` に置き換える。
+- 送信の成功：記録が1行でき、写真が R2 に入り、`submissions` と `storage_usage` が数えられる
 - 同じ組での送り直し：上書きになり、`created_at` は変わらない
   - 写真なしで送り直すと、前の写真が残る
-  - 写真ありで送り直すと、古い写真が消える
-- 入力チェックの違反：`400` と、項目名を含むメッセージ
-- JPEG でない写真は `415`、大きすぎる写真は `413`
-- 回数の上限：端末20件、回線30件、全体100件のそれぞれで、21 / 31 / 101 件目が `429` になる。日付が変われば数え直す
-- CORS：許可したオリジンの `OPTIONS` と `POST` は通る。許可していないオリジンの `POST` は `403` になる
-- 記録の保存が失敗したとき（D1 の代わりに、失敗するものを渡す）、R2 に写真が残らない
+  - 写真ありで送り直すと、古い写真が消え、新しい写真の大きさだけが数えられる
+- 写真の名前は、記録やファイル名に何が書いてあっても Worker が作る
+- 入力チェックの違反：`400` と、項目名を含むメッセージ。形の崩れた本文も `400`（`500` にしない）
+- JPEG でない写真は `415`。写真は `MAX_UPLOAD_SIZE` ちょうどまで通り、1バイト超えで `413`。本文全体の上限、`Content-Length` の無い長い本文
+- 上限の変数：`MAX_UPLOAD_SIZE` の変更と10MBの天井、整数でない値で `500`、空なら既定値
+- 写真の非常停止：`false` / `0`（大文字・空白を含む）のときだけ写真が入り、それ以外は記録だけ保存される
+- 回数の上限：端末20件、回線30件、全体100件のそれぞれで、21 / 31 / 101 件目が `429` になる。`GLOBAL_DAILY_COUNT_LIMIT` が `0` なら全部断る。日本時間の0時で数え直す。1分の上限（端末・回線）と、60秒たてば通ること。3日より古い `submissions` が消えること
+- 同時の送信：1端末から25件を同時に送っても、保存は20件。10台が同時に写真を送っても `GLOBAL_STORAGE_LIMIT` を超えない
+- 写真の量の上限：`DAILY_UPLOAD_LIMIT`、`GLOBAL_DAILY_UPLOAD_LIMIT`、`USER_STORAGE_LIMIT`（翌日以降も効く）で、記録だけ保存される
+- CORS：許可したオリジンの `OPTIONS` と `POST` は通る。許可していない・無いオリジンの `POST` は `403` で、何も保存されない
+- `IP_SALT` が無いと `500` で、何も保存されない
+- 失敗のとき（D1 や R2 の代わりに、失敗するものを渡す）：
+  - 記録の保存の失敗：R2 に写真が残らず、大きさが戻る
+  - D1 が送信を受けられない：写真を R2 に送らない
+  - R2 への保存の失敗・書いた後の時間切れ：何も保存されず、R2 に残らず、大きさが戻る
+  - 古い写真を消せない：送信は成功し、`photo_orphan` がログに出る
+- ログ：JSON の行で、端末ID・名前・IP・`ip_hash` を含まない
+- 知らないパスは `404`、`GET /feedback` は `405`
 - `GET /calibration`：
   - 0件のときの形
   - 記録があるときに、補正の数値が `calibration.js` の `compute` と一致する
@@ -532,10 +593,12 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 **ユーザーが行う**
 1. Cloudflare のアカウントを作る。R2 を有効にするとき、支払い方法の登録を求められる場合がある（無料枠の中なら請求はない）。
 2. `npx wrangler@4 login` を実行する（ブラウザでのログイン）。
+3. Cloudflare の管理画面で予算のアラート（Budget Alert）を作る（`docs/r2-security.md` の「管理画面での設定」）。アラートは知らせるだけで、止めはしない。
+4. R2 の API トークンを作らない（Worker は紐づけで R2 を使うので不要）。
 
 **Claude が行う（初めて `npx wrangler` を使う前に承認を得る）**
 1. `npx wrangler@4 d1 create surf-check-feedback` を実行し、出力された ID を `wrangler.toml` に書く。
-2. `npx wrangler@4 r2 bucket create surf-check-photos` を実行する。
+2. `npx wrangler@4 r2 bucket create surf-check-photos` を実行する。続けて、公開 URL（r2.dev）と独自ドメインが無いこと、ライフサイクルが既定のままであることを確かめる（`r2 bucket dev-url get`、`r2 bucket domain list`、`r2 bucket lifecycle list`）。
 3. `npx wrangler@4 d1 execute surf-check-feedback --remote --file worker/schema.sql` でテーブルを作る。
 4. `npx wrangler@4 secret put IP_SALT` を実行する。値はその場でランダムに作り、どこにも書き残さない。
 5. `npx wrangler@4 deploy` で公開する。
@@ -543,6 +606,7 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
 7. README に次の手順を書く。
    - 記録の消し方：`DELETE FROM feedback WHERE device_id = ?` や、日付の範囲で消す例
    - ポイント名の書き換え方：`UPDATE feedback SET spot = ? WHERE spot = ?`
+8. 公開後、`storage_usage` の値と、R2 の管理画面のオブジェクト数・容量が合うことを確かめる。緊急時の手順（`docs/r2-security.md`）をユーザーに渡す。
 
 ## 確認方法
 
@@ -553,6 +617,7 @@ CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
    - パソコンのブラウザから写真付きで送る。
    - D1 の行と R2 の写真を確かめる。
    - `/calibration?metrics=1` の値が変わることを確かめる。
+   - `R2_KILL_SWITCH` を `true` にして立て直し、写真付きの送信が記録だけ保存されることを確かめる。1分の上限を1にして、2件目が `429` になることを確かめる。
 4. 375px の幅で、パネルが横スクロールせず、最短2タップで送れることを確かめる。
 5. 公開後、ユーザーのスマホで写真付きの送信を1回してもらい、次を確かめる。
    - D1 の `photo_lat` / `photo_lon` / `photo_taken_at` が入ったかどうか（入らなければ README に「端末が位置情報を消すため使えない」と書く）

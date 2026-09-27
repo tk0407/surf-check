@@ -8,7 +8,7 @@
 - サイトは今のまま GitHub Pages の静的ファイルで、ビルドはしない。
 - 補正の計算（`calibration.js`）と、記録の組み立て・入力チェック（`feedback.js`）は UMD で書く。サイト、Cloudflare Worker、`node --test` の3か所で同じファイルを使う。
 - Worker（`worker/`）は次の2つを受け持つ。
-  - `POST /feedback`：記録を D1 に、写真を R2 に保存する。
+  - `POST /feedback`：記録を D1 に、写真を R2 に保存する。R2 に書く前に、上限の判定と数え上げを D1 の1つのトランザクションで済ませる（`worker/quota.mjs`）。上限に当たった写真や非常停止中の写真は置かず、記録だけ保存する。
   - `GET /calibration`：記録からその都度、補正を計算して返す。
 - サイトは起動時に補正を読み、`scoring.js` の上に重ねてかける。`scoring.js` は変えない。
 
@@ -33,6 +33,7 @@
 - スマホ幅 375px で、ページも入力パネルも横スクロールしない。
 - `index.html` のアセット参照の `?v=` の日付を上げる。
 - 秘密情報（`IP_SALT`、Cloudflare の認証情報）は、リポジトリにも markdown にも書かない。
+- R2 に書くのは Worker の `POST /feedback` だけ。書く前に必ず、上限の判定と数え上げを D1 の1つのトランザクションで済ませる。この判定を通らずに R2 へ届く道を作らない。設定が読めないときは、何も保存しないか写真を置かない側に倒す。
 - コミットメッセージの末尾に `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` を付ける。
 
 ## Review Focus
@@ -81,6 +82,80 @@
 - (l) **確認用の静的サーバー**：Node で書いた `static.mjs` を使う。
   - 理由：`python3 -m http.server`（3.10）は listen の待ち行列が5しかない。Chrome がスクリプトを並列に取りに行くと、接続が切られる（ERR_CONNECTION_RESET）。
 - (m) **「今の main と同じ」の比較の基準**：`git merge-base HEAD origin/main` を使う。ローカルの `main` は古いことがあるため。
+- (n) **テスト用 D1 の `?N`**：`worker/quota.mjs` の SQL は `?1`〜`?15` で同じ値を何度も使う。D1 はこの書き方を受け付けるが、`node:sqlite` は番号どおりに結び付けない。そこで `worker/d1-sqlite.mjs` が `?N` を `?` に書き換え、値を出てくる順に並べ直す。本番の SQL は `?N` のまま。
+- (o) **ローカルで設定を変えて Worker を立てる方法**：`npx wrangler@4 dev --var 名前:値` を使う。`--var` が `[vars]` より優先されることは Cloudflare の文書で確かめた。`.dev.vars` が `[vars]` より優先されるかは文書で確かめられなかったので、`.dev.vars` は `[vars]` に無い `IP_SALT` と、`ALLOWED_ORIGINS` の上書きにだけ使い、効いたかは Task 8 の Step 4 で確かめる。
+
+## R2 のコスト対策（追加の要件との対応）
+
+写真の置き場（R2）の料金が膨らまないようにする要件を、この構成に合わせて取り込んだ。細かい数と手順は `docs/r2-security.md`（Task 7）に書く。この節は、要件のどれをどう満たすか、どれを変えたかの対応表。
+
+**リスクの分類**（「何もしないと」は、上限を何も置かずに写真を受け付けた場合）
+
+| リスク | 何もしないと | 対策後 | 主な対策（タスク） |
+|---|---|---|---|
+| API に大量に送られる | 高 | 低 | 1分・1日の件数の上限、全体の件数・容量の上限（4） |
+| 大きな写真・本文 | 中 | 低 | `MAX_UPLOAD_SIZE`、本文を上限 + 512KB で読み切らずに打ち切る（4） |
+| 同時に送って上限をすり抜ける | 中 | 低 | 判定と数え上げを D1 の1つのトランザクションで行う（4） |
+| バグの暴走・やり直しの繰り返し | 中 | 低 | Worker はやり直さない。上限は Worker 側で数える（4、6） |
+| LIST の呼び出し | 低 | 低 | Worker は list しない。数は `storage_usage` で持つ（4） |
+| 公開 URL から読まれる | 中 | 低 | 非公開のバケット、r2.dev 無効、ドメインなしを確かめる（9） |
+| 認証情報が漏れる | 高 | 高（Worker では防げない） | R2 の API トークンを作らない。漏れたときの手順 D（7、9） |
+| 置き去りの写真 | 低 | 低 | `photo_orphan` のログ、`storage_usage` と R2 の Metrics の比べ合わせ（4、7、9） |
+
+**要件との対応**（**変更** は、要件と違う形にしたもの）
+
+| 要件 | この計画での形 |
+|---|---|
+| ユーザーごとの容量上限 | `USER_STORAGE_LIMIT`（200MB）。**変更**：ログインが無いので、ユーザーは端末 ID で数える |
+| `MAX_UPLOAD_SIZE` | 1.5MB。変数で上げても 10MB まで。本文はさらに 512KB を超えたところで打ち切る |
+| MIME の判定 | ファイルの先頭のバイト（JPEG の `FF D8 FF`）で判定し、違えば `415`。送る側の `Content-Type` は信じない |
+| レート制限（1分10件・1日100件・IP ごと） | **変更**：1分5件（端末ごと・回線ごと）。1日は端末20件・回線30件・全体100件。この用途では1分10件は多すぎるため |
+| `DAILY_UPLOAD_LIMIT` / `DAILY_UPLOAD_COUNT_LIMIT` | 端末ごとに1日 10MB / 20件 |
+| `GLOBAL_DAILY_UPLOAD_LIMIT` / `GLOBAL_STORAGE_LIMIT` | 全体で1日 100MB / 合計 5GB。R2 の無料枠（10GB）の半分 |
+| `R2_KILL_SWITCH` で `503` | **変更**：写真だけ置かず、記録は保存して `200 {"photo_skipped":"kill_switch"}`。送ってくれた評価を捨てないため。受け付けごと止めるときは `GLOBAL_DAILY_COUNT_LIMIT = "0"`（`429`）か、Worker を止める |
+| 署名付き URL の安全性 | **変更**：署名付き URL は使わない。写真は Worker が受け取って、上限を通してから put する |
+| 最小権限のトークン | R2 の API トークンは作らない。`wrangler login` はユーザーの端末だけで行う（9） |
+| 非公開のバケット | 作った直後に r2.dev 無効・ドメインなしを確かめる（9） |
+| キャッシュ | 写真を返す口が無いので、配信のキャッシュは無い。`GET /calibration` は `max-age=300` |
+| ライフサイクル | **変更**：既定の「途中で止まったマルチパートを7日で消す」だけ。写真を自動で消すルールは足さない（消すと記録と `storage_usage` がずれるため）。古い写真を手で減らす手順を文書に書く（7） |
+| LIST を使わない孤立ファイルの検出 | 消せなかった写真は `photo_orphan` のログに出す。`storage_usage` と R2 の Metrics を比べる（7、9） |
+| リトライは3回まで・4xx はやり直さない | **変更**：やり直さない（0回）。失敗したら片付けて `500` を返し、送り直すかは使う人が決める |
+| 冪等性 | 同じ端末・場所・日付・時間帯は1件で、送り直しは上書き。写真の差し替えは古い写真を消してから数を戻す |
+| キーはサーバーが作る | 写真のキーは Worker が作る。記録やファイル名の値は使わない |
+| dev / staging / prod の分離 | **変更**：staging は作らない。ローカルの `wrangler dev`（ローカルの D1・R2）とテストで確かめ、本番は1つ |
+| 見張りとログ（個人情報なし） | 1件ごとに JSON のログ。端末 ID・IP・名前は出さない。消せなかった写真だけは、手で片付けるためにキー（`photos/<ランダムな ID>.jpg`）を出す |
+| 失敗は安全側に倒す | 上限の変数が読めなければ `500` で何も保存しない。D1 が失敗したら写真を上げない |
+| 新しい依存なし・大きな作り直しなし・秘密を書かない | 守る。`IP_SALT` は `wrangler secret` で入れ、どこにも書かない |
+
+**要件のテストと、Task 4 のテストの対応**
+
+| 要件のテスト | Task 4 のテスト |
+|---|---|
+| ふつうの送信 | `POST stores one record, the photo and a submission` |
+| 大きすぎる写真・本文 | `photos are accepted up to 1,572,864 bytes and rejected with 413 above`、`a request body over 2 MB gets 413`、`a streamed body without Content-Length stops being read soon after the limit` |
+| ユーザーごとの容量を超える | `USER_STORAGE_LIMIT skips photos once a device's stored photos reach it, on later days too` |
+| 1日の容量を超える | `DAILY_UPLOAD_LIMIT skips photos past one device's bytes for the day` |
+| 1日の件数を超える | `the 21st submission from one device in a day gets 429 device`、`the 31st submission from one connection in a day gets 429 ip` |
+| レート制限を超える | `the 6th send from one device within a minute gets 429 device_minute until 60 s have passed`、`the 6th send from one connection within a minute gets 429 ip_minute` |
+| MIME が違う | `a photo that is not a JPEG gets 415` |
+| 認証が無い | **変更**：ログインは無い（誰でも送れる仕様）。代わりに `other or missing origins get 403 and nothing is stored` |
+| ほかの人の場所に書く | `the photo key is made by the server, whatever the record or the file name says` |
+| 同じ送信を繰り返す | `resending the same session overwrites it and keeps created_at`、`resending with a new photo replaces the file, deletes the old one and counts only the new one` |
+| R2 のタイムアウト | `an upload that times out after writing leaves no object behind` |
+| R2 の 500 | `when the photo upload fails, nothing is saved and its bytes are given back` |
+| DB のエラー | `when the database cannot take the send, no photo is uploaded`、`when saving the record fails, the uploaded photo is removed, its bytes given back and 500 returned` |
+| 非常停止 | `photos are not stored unless R2_KILL_SWITCH is false or 0, but the record is`、`R2_KILL_SWITCH false or 0, in any case and with spaces, lets photos through` |
+| 全体の容量 | `GLOBAL_STORAGE_LIMIT holds when 10 devices send photos at once` |
+| 全体の1日の量 | `GLOBAL_DAILY_UPLOAD_LIMIT skips photos past the day's total bytes`、`the 101st submission in a day overall gets 429 total` |
+| 消したあとの使用量 | `resending with a new photo replaces the file, deletes the old one and counts only the new one`、`when the old photo cannot be deleted, the send still succeeds and the orphan is logged` |
+| 同時に送る | `25 sends at once from one device store exactly the daily 20`、`GLOBAL_STORAGE_LIMIT holds when 10 devices send photos at once` |
+
+**被害はどこまで広がるか**（既定の上限のまま。詳しくは `docs/r2-security.md`）
+- **API が攻撃されたとき**：R2 は1日 put 100回・100MB、合計 5GB で止まり、無料枠の中なので R2 の請求は $0。無料プランの Workers と D1 は、上限でエラーになるだけで請求は来ない。ただし、その日はほかの人が送れなくなる。有料プランに移すと、リクエストと `GET /calibration` の読み取りが攻撃の量に比例して請求される。
+- **バグで暴走したとき**：パネルが送り続けるバグなら、端末ごと・全体の上限で止まる。Worker が上限を通らずに R2 に書くバグには上限が効かない。これはテストで put の回数と数え上げを確かめて防ぐ。起きたら手順 A、止まらなければ C。
+- **トークンが漏れたとき**：Worker の外なので、上限も非常停止も効かず、被害に上限が無い。R2 の API トークンを作らないことで漏れる物を減らし、漏れたら手順 D でトークンを消す。
+
+予算アラートは守りではない。知らせるだけで何も止めず、届くのは1日ほど遅れる。
 
 ## 実行の前提
 
@@ -110,17 +185,19 @@
 | `feedback.test.js`（新規） | 上のテスト | 2 |
 | `forecast.js` / `forecast.test.js` | `weeklyForecast` に任意の `scorer` 引数を足す | 3 |
 | `worker/schema.sql`（新規） | D1 のテーブル定義 | 4 |
-| `worker/handler.mjs`（新規） | `POST /feedback`、`GET /calibration`、CORS、回数の上限 | 4 |
+| `worker/handler.mjs`（新規） | `POST /feedback` と `GET /calibration`、CORS、写真の保存と片付け、ログ | 4 |
+| `worker/quota.mjs`（新規） | 上限の既定値と読み込み、写真の非常停止、D1 での判定と数え上げ（`reserve` / `release`） | 4 |
 | `worker/index.mjs`（新規） | Worker の入口 | 4 |
 | `worker/d1-sqlite.mjs`（新規） | テスト専用。`node:sqlite` を D1 と同じ呼び方で使う | 4 |
 | `worker/worker.test.mjs`（新規） | Worker のテスト | 4 |
-| `worker/wrangler.toml`（新規） | Worker 名、D1・R2 の紐づけ、`ALLOWED_ORIGINS` | 4 |
+| `worker/wrangler.toml`（新規） | Worker 名、D1・R2 の紐づけ、`ALLOWED_ORIGINS`、`R2_KILL_SWITCH` | 4 |
 | `.gitignore`（新規） | `worker/.dev.vars` と `worker/.wrangler/` | 4 |
 | `app.js` | 補正の読み込みとかけ方、「実況補正」の表示（Task 5）。「行ってきた」ボタンとパネルの呼び出し（Task 6） | 5, 6 |
 | `index.html` | スクリプトの追加と `?v=` の更新 | 5, 6 |
 | `style.css` | `.chip.calib`（Task 5）。ボタンとパネル（Task 6） | 5, 6 |
 | `feedback-panel.js`（新規） | ブラウザ専用。入力パネルの描画と操作、写真の縮小、送信 | 6 |
 | `README.md` | 構成、フィードバック機能、ローカル開発、公開の手順、記録の消し方、名前の書き換え方 | 7 |
+| `docs/r2-security.md`（新規） | 写真（R2）のコスト対策、上限の一覧と変え方、管理画面での設定、見張り方、数のずれの直し方、緊急時の手順、被害の範囲、残るリスク | 7 |
 
 `scoring.js` は変更しない。
 
@@ -1812,10 +1889,10 @@ EOF
 
 ---
 
-### Task 4: Worker（`POST /feedback`、`GET /calibration`）
+### Task 4: Worker（受け付け・保存・R2 のコスト対策）
 
 **Files:**
-- Create: `worker/schema.sql`、`worker/d1-sqlite.mjs`（テスト専用）、`worker/handler.mjs`、`worker/index.mjs`、`worker/wrangler.toml`、`.gitignore`
+- Create: `worker/schema.sql`、`worker/d1-sqlite.mjs`（テスト専用）、`worker/quota.mjs`、`worker/handler.mjs`、`worker/index.mjs`、`worker/wrangler.toml`、`.gitignore`
 - Test: `worker/worker.test.mjs`（新規）
 
 **Interfaces:**
@@ -1825,14 +1902,19 @@ EOF
   - `.mjs` から UMD の `.js` を default import で読む（`import Calibration from "../calibration.js"`）。
 - Produces:
   - `worker/handler.mjs` の `export async function handle(request, env, now)`
-    - `env` は `{DB, PHOTOS, ALLOWED_ORIGINS, IP_SALT}`。
+    - `env` は `{DB, PHOTOS, ALLOWED_ORIGINS, IP_SALT, R2_KILL_SWITCH}` と、上限の変数（`MAX_UPLOAD_SIZE` など9つ。無ければ `DEFAULT_LIMITS`）。
     - `POST /feedback`（multipart。`record` は JSON の文字列、`photo` は JPEG で任意）
-      - 成功：`200 {"ok": true, "id", "updated"}`
-      - 失敗：`400 {"error", "errors"}` / `403` / `413` / `415` / `429 {"error": "今日はこれ以上送れません", "limit": "device" | "ip" | "total"}` / `500`
+      - 成功：`200 {"ok": true, "id", "updated"}`。写真を置かなかったときは `"photo_skipped": "kill_switch" | "device_bytes" | "global_bytes" | "device_storage" | "global_storage"` が付く。
+      - 失敗：`400 {"error", "errors"}` / `403` / `413` / `415` / `429 {"error", "limit"}` / `500 {"error"}`
+        - `limit` は `device_minute` / `ip_minute` / `device` / `ip` / `total`。
+        - `error` は、`_minute` のとき「短い間に送りすぎです。1分ほど待ってから送ってください」、それ以外は「今日はこれ以上送れません」。
+        - 設定が足りない・読めないときも `500`。
     - `OPTIONS /feedback`：CORS の事前確認
     - `GET /calibration`：補正を返す。`?metrics=1` のときだけ `metrics` を足す。`Cache-Control: public, max-age=300` と `Access-Control-Allow-Origin: *` を付ける。
   - `worker/d1-sqlite.mjs` の `export function createD1(db)`：`node:sqlite` の `DatabaseSync` を D1 の `prepare().bind().first()/all()/run()` で使えるようにする。Task 5・6 の確認用 Worker もこれを使う。
-  - `worker/schema.sql`：`feedback` と `submissions` のテーブル。Task 8・9 の wrangler でもそのまま流す。
+  - `worker/quota.mjs` の `DEFAULT_LIMITS`（上限の既定値。Task 7 の文書の表と一致させる）、`readLimits(env)`、`photosAllowed(env)`、`reserve(db, limits, {...})`、`release(db, device, bytes)`。
+  - `worker/schema.sql`：`feedback`、`submissions`、`storage_usage` のテーブル。Task 8・9 の wrangler でもそのまま流す。
+  - ログ：1回の `POST` ごとに JSON の1行（`event: "feedback"`）。失敗のときは `config_error` / `r2_error` / `d1_error` / `photo_orphan` / `error`。Task 7 の文書の「見張る」の表と一致させる。
 
 - [ ] **Step 1: テーブル定義とテスト用の D1 を置く**
 
@@ -1857,6 +1939,7 @@ CREATE TABLE IF NOT EXISTS feedback (
   wind_side TEXT NOT NULL,       -- off | side | on
   wind_strength TEXT NOT NULL,   -- calm | light | strong
   photo_key TEXT,
+  photo_bytes INTEGER,           -- photo_key の写真の大きさ
   photo_lat REAL,
   photo_lon REAL,
   photo_taken_at TEXT,           -- YYYY-MM-DDTHH:MM（日本時間）
@@ -1866,40 +1949,83 @@ CREATE TABLE IF NOT EXISTS feedback (
   UNIQUE (device_id, spot, date, slot)
 );
 
+-- 受け付けた送信（上限の数え方の元）。3日より前の行は送信のたびに消す。
 CREATE TABLE IF NOT EXISTS submissions (
   id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL UNIQUE,    -- 送信ごとの乱数（同じ batch の次の文がこの行を指すため）
   device_id TEXT NOT NULL,
   ip_hash TEXT NOT NULL,
-  day TEXT NOT NULL              -- YYYY-MM-DD（日本時間）
+  day TEXT NOT NULL,             -- YYYY-MM-DD（日本時間）
+  at INTEGER NOT NULL,           -- 受け付けた時刻（Unix ミリ秒）
+  photo_bytes INTEGER NOT NULL DEFAULT 0,  -- R2 に置いてよいとした写真の大きさ（置かないなら 0）
+  photo_skipped TEXT             -- 写真を置かなかった理由（kill_switch / device_bytes / ...）
 );
 CREATE INDEX IF NOT EXISTS submissions_day ON submissions (day);
+
+-- R2 にいま置いてある写真の合計。scope は 'global' と 'device:<device_id>'。
+CREATE TABLE IF NOT EXISTS storage_usage (
+  scope TEXT PRIMARY KEY,
+  used_bytes INTEGER NOT NULL DEFAULT 0,
+  file_count INTEGER NOT NULL DEFAULT 0
+);
 ```
 
 `worker/d1-sqlite.mjs` を次の内容で作る。
 
 ```js
 // Test-only: wraps node:sqlite in the subset of the D1 API the Worker uses
-// (prepare().bind().first()/all()/run()). Rows are copied into plain objects
-// because node:sqlite returns null-prototype rows.
+// (prepare().bind().first()/all()/run() and batch()). Every call first waits
+// one turn of the event loop, like the network round trip to D1, so requests
+// sent at once interleave between queries as they do in production. batch()
+// runs its statements in one transaction: all of them or none. Rows are
+// copied into plain objects because node:sqlite returns null-prototype rows.
+// node:sqlite does not bind numbered parameters (?1, ?2) by position as D1
+// does, so each ?N becomes a plain ? and the values are reordered to match.
+const roundTrip = () => new Promise((resolve) => setImmediate(resolve));
+
 export function createD1(db) {
   return {
     prepare(sql) {
-      const stmt = db.prepare(sql);
-      const bound = (params) => ({
-        bind: (...args) => bound(args),
-        async first() {
-          const row = stmt.get(...params);
-          return row ? { ...row } : null;
-        },
-        async all() {
-          return { results: stmt.all(...params).map((row) => ({ ...row })), success: true };
-        },
-        async run() {
-          const info = stmt.run(...params);
-          return { success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
-        },
-      });
+      const order = [];
+      const stmt = db.prepare(sql.replace(/\?(\d+)/g, (_, n) => {
+        order.push(Number(n) - 1);
+        return "?";
+      }));
+      const bound = (bindings) => {
+        const params = order.length ? order.map((i) => bindings[i]) : bindings;
+        const rows = () => stmt.all(...params).map((row) => ({ ...row }));
+        return {
+          bind: (...args) => bound(args),
+          rows,
+          async first() {
+            await roundTrip();
+            const row = stmt.get(...params);
+            return row ? { ...row } : null;
+          },
+          async all() {
+            await roundTrip();
+            return { results: rows(), success: true };
+          },
+          async run() {
+            await roundTrip();
+            const info = stmt.run(...params);
+            return { success: true, meta: { changes: Number(info.changes), last_row_id: Number(info.lastInsertRowid) } };
+          },
+        };
+      };
       return bound([]);
+    },
+    async batch(statements) {
+      await roundTrip();
+      db.exec("BEGIN");
+      try {
+        const results = statements.map((statement) => ({ results: statement.rows(), success: true }));
+        db.exec("COMMIT");
+        return results;
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
     },
   };
 }
@@ -1910,7 +2036,7 @@ export function createD1(db) {
 `worker/worker.test.mjs` を次の内容で作る。R2 は `Map` に入れる作りもので置き換え、D1 は `schema.sql` をそのまま流した `node:sqlite` を使う。
 
 ```js
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -1933,7 +2059,8 @@ function memoryR2(map) {
   };
 }
 
-function setup() {
+// vars override the Worker variables. Photos are allowed (switch off) unless a test says otherwise.
+function setup(vars = {}) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(SCHEMA);
   const photos = new Map();
@@ -1942,10 +2069,45 @@ function setup() {
     PHOTOS: memoryR2(photos),
     ALLOWED_ORIGINS: `${ORIGIN}, http://localhost:8000`,
     IP_SALT: "test-salt",
+    R2_KILL_SWITCH: "false",
+    ...vars,
   };
   const rows = (sql, ...args) => sqlite.prepare(sql).all(...args).map((r) => ({ ...r }));
-  return { sqlite, photos, env, rows };
+  const usage = () => rows("SELECT scope, used_bytes, file_count FROM storage_usage ORDER BY scope");
+  return { sqlite, photos, env, rows, usage };
 }
+
+// A D1 whose statements containing `failsOn` throw, alone or inside a batch.
+function failingDb(realDb, failsOn) {
+  return {
+    prepare(sql) {
+      if (!sql.includes(failsOn)) return realDb.prepare(sql);
+      const fail = async () => { throw new Error("D1 unavailable"); };
+      const broken = { broken: true, bind: () => broken, first: fail, all: fail, run: fail };
+      return broken;
+    },
+    async batch(statements) {
+      if (statements.some((s) => s.broken)) throw new Error("D1 unavailable");
+      return realDb.batch(statements);
+    },
+  };
+}
+
+// Counts R2 writes without storing anything.
+function countPuts(env) {
+  const calls = { n: 0 };
+  env.PHOTOS.put = async () => { calls.n += 1; };
+  return calls;
+}
+
+// The Worker logs one JSON line per event with console.log. Keep them out of
+// the test output; logging tests call resetCalls() and read them back.
+const consoleLog = mock.method(console, "log", () => {});
+const loggedLines = () => consoleLog.mock.calls.map((call) => {
+  assert.equal(call.arguments.length, 1);
+  return call.arguments[0];
+});
+const logged = () => loggedLines().map((line) => JSON.parse(line));
 
 const deviceId = (i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
 
@@ -1970,14 +2132,14 @@ function jpeg(size = 64, fill = 1) {
   return bytes;
 }
 
-function feedbackRequest({ rec = record(), photo = null, ip = "203.0.113.7", origin = ORIGIN, body, contentType } = {}) {
+function feedbackRequest({ rec = record(), photo = null, filename = "photo.jpg", ip = "203.0.113.7", origin = ORIGIN, body, contentType } = {}) {
   const headers = { "CF-Connecting-IP": ip };
   if (origin) headers.Origin = origin;
   if (contentType) headers["Content-Type"] = contentType;
   if (body === undefined) {
     body = new FormData();
     body.append("record", typeof rec === "string" ? rec : JSON.stringify(rec));
-    if (photo) body.append("photo", new Blob([photo], { type: "image/jpeg" }), "photo.jpg");
+    if (photo) body.append("photo", new Blob([photo], { type: "image/jpeg" }), filename);
   }
   return new Request("https://api.example/feedback", { method: "POST", headers, body });
 }
@@ -1990,7 +2152,7 @@ async function send(env, options = {}, now = NOW) {
 // --- POST /feedback ---
 
 test("POST stores one record, the photo and a submission", async () => {
-  const { env, photos, rows } = setup();
+  const { env, photos, rows, usage } = setup();
   const res = await send(env, { photo: jpeg() });
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, { ok: true, id: 1, updated: false });
@@ -2009,7 +2171,14 @@ test("POST stores one record, the photo and a submission", async () => {
   assert.equal(row.created_at, NOW.toISOString());
   assert.deepEqual([...photos.keys()], [row.photo_key]);
   assert.deepEqual(photos.get(row.photo_key), jpeg());
-  assert.deepEqual(rows("SELECT day FROM submissions"), [{ day: "2026-09-23" }]);
+  assert.equal(row.photo_bytes, 64);
+  assert.deepEqual(rows("SELECT day, at, photo_bytes, photo_skipped FROM submissions"), [
+    { day: "2026-09-23", at: NOW.getTime(), photo_bytes: 64, photo_skipped: null },
+  ]);
+  assert.deepEqual(usage(), [
+    { scope: `device:${deviceId(1)}`, used_bytes: 64, file_count: 1 },
+    { scope: "global", used_bytes: 64, file_count: 1 },
+  ]);
 });
 
 test("POST without a photo stores null photo fields even when photo_meta is sent", async () => {
@@ -2049,17 +2218,31 @@ test("resending without a photo keeps the earlier photo and its location", async
   assert.deepEqual([...photos.keys()], [before.photo_key]);
 });
 
-test("resending with a new photo replaces the file and deletes the old one", async () => {
-  const { env, photos, rows } = setup();
-  await send(env, { photo: jpeg(64, 1) });
+test("resending with a new photo replaces the file, deletes the old one and counts only the new one", async () => {
+  const { env, photos, rows, usage } = setup();
+  await send(env, { photo: jpeg(1000, 1) });
   const [{ photo_key: oldKey }] = rows("SELECT photo_key FROM feedback");
-  await send(env, { photo: jpeg(64, 2), rec: record({ photo_meta: { lat: 35.1, lon: 140.2, taken_at: null } }) });
-  const [row] = rows("SELECT photo_key, photo_lat, photo_taken_at FROM feedback");
+  await send(env, { photo: jpeg(600, 2), rec: record({ photo_meta: { lat: 35.1, lon: 140.2, taken_at: null } }) });
+  const [row] = rows("SELECT photo_key, photo_lat, photo_taken_at, photo_bytes FROM feedback");
   assert.notEqual(row.photo_key, oldKey);
   assert.equal(row.photo_lat, 35.1);
   assert.equal(row.photo_taken_at, null);
+  assert.equal(row.photo_bytes, 600);
   assert.deepEqual([...photos.keys()], [row.photo_key]);
-  assert.deepEqual(photos.get(row.photo_key), jpeg(64, 2));
+  assert.deepEqual(photos.get(row.photo_key), jpeg(600, 2));
+  assert.deepEqual(usage(), [
+    { scope: `device:${deviceId(1)}`, used_bytes: 600, file_count: 1 },
+    { scope: "global", used_bytes: 600, file_count: 1 },
+  ]);
+});
+
+test("the photo key is made by the server, whatever the record or the file name says", async () => {
+  const { env, photos, rows } = setup();
+  const res = await send(env, { photo: jpeg(), rec: record({ photo_key: "../other/x.jpg" }), filename: "../../evil.jpg" });
+  assert.equal(res.status, 200);
+  const [{ photo_key }] = rows("SELECT photo_key FROM feedback");
+  assert.match(photo_key, /^photos\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.jpg$/);
+  assert.deepEqual([...photos.keys()], [photo_key]);
 });
 
 test("an invalid record gets 400 naming the field, and nothing is stored", async () => {
@@ -2114,10 +2297,98 @@ test("a request body over 2 MB gets 413", async () => {
   assert.equal(rows("SELECT * FROM feedback").length, 0);
 });
 
+test("a streamed body without Content-Length stops being read soon after the limit", async () => {
+  const { env, rows } = setup();
+  const chunk = new Uint8Array(64 * 1024);
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      if (pulled >= 50 * 1024 * 1024) return controller.close();
+      pulled += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+  });
+  const request = new Request("https://api.example/feedback", {
+    method: "POST",
+    body: stream,
+    duplex: "half",
+    headers: { Origin: ORIGIN, "CF-Connecting-IP": "203.0.113.7", "Content-Type": "multipart/form-data; boundary=x" },
+  });
+  const res = await handle(request, env, NOW);
+  assert.equal(res.status, 413);
+  assert.ok(pulled < 3 * 1024 * 1024, `read ${pulled} bytes`);
+  assert.equal(rows("SELECT * FROM submissions").length, 0);
+});
+
+test("MAX_UPLOAD_SIZE sets the photo limit, up to a ceiling of 10 MB", async () => {
+  const small = setup({ MAX_UPLOAD_SIZE: "1000" });
+  assert.equal((await send(small.env, { photo: jpeg(1000) })).status, 200);
+  assert.equal((await send(small.env, { photo: jpeg(1001), rec: record({ slot: "afternoon" }) })).status, 413);
+  assert.equal(small.photos.size, 1);
+
+  const ceiling = setup({ MAX_UPLOAD_SIZE: String(10 * 1024 * 1024) });
+  assert.equal((await send(ceiling.env, { photo: jpeg(2 * 1024 * 1024) })).status, 200);
+});
+
+test("limit variables that are not whole numbers make POST fail closed with 500", async () => {
+  const cases = [
+    ["DAILY_UPLOAD_COUNT_LIMIT", "10MB"],
+    ["GLOBAL_STORAGE_LIMIT", "-1"],
+    ["MINUTE_COUNT_LIMIT", "1.5"],
+    ["USER_STORAGE_LIMIT", "1e6"],
+    ["MAX_UPLOAD_SIZE", String(10 * 1024 * 1024 + 1)],
+  ];
+  for (const [name, value] of cases) {
+    const { env, rows } = setup({ [name]: value });
+    const puts = countPuts(env);
+    consoleLog.mock.resetCalls();
+    const res = await send(env, { photo: jpeg() });
+    assert.equal(res.status, 500, name);
+    assert.equal(rows("SELECT * FROM feedback").length, 0, name);
+    assert.equal(rows("SELECT * FROM submissions").length, 0, name);
+    assert.equal(puts.n, 0, name);
+    assert.deepEqual(logged()[0], { event: "config_error", variable: name });
+  }
+});
+
+test("an empty or blank limit variable falls back to the default", async () => {
+  const { env } = setup({ MAX_UPLOAD_SIZE: "", DAILY_UPLOAD_COUNT_LIMIT: "  " });
+  assert.equal((await send(env, { photo: jpeg(1572864) })).status, 200);
+  assert.equal((await send(env, { photo: jpeg(1572865), rec: record({ slot: "afternoon" }) })).status, 413);
+});
+
+// --- photo kill switch ---
+
+test("photos are not stored unless R2_KILL_SWITCH is false or 0, but the record is", async () => {
+  for (const value of [undefined, "", "true", "yes", "on"]) {
+    const { env, rows, usage } = setup({ R2_KILL_SWITCH: value });
+    const puts = countPuts(env);
+    const res = await send(env, { photo: jpeg() });
+    assert.deepEqual(res.body, { ok: true, id: 1, updated: false, photo_skipped: "kill_switch" }, String(value));
+    assert.equal(puts.n, 0);
+    assert.deepEqual(rows("SELECT rating, photo_key, photo_lat, photo_bytes FROM feedback"), [
+      { rating: 4, photo_key: null, photo_lat: null, photo_bytes: null },
+    ]);
+    assert.deepEqual(rows("SELECT photo_bytes, photo_skipped FROM submissions"), [{ photo_bytes: 0, photo_skipped: "kill_switch" }]);
+    assert.deepEqual(usage(), []);
+    const noPhoto = await send(env, { rec: record({ slot: "afternoon" }) });
+    assert.deepEqual(noPhoto.body, { ok: true, id: 2, updated: false });
+  }
+});
+
+test("R2_KILL_SWITCH false or 0, in any case and with spaces, lets photos through", async () => {
+  for (const value of ["false", "FALSE", " 0 "]) {
+    const { env, photos } = setup({ R2_KILL_SWITCH: value });
+    const res = await send(env, { photo: jpeg() });
+    assert.deepEqual(res.body, { ok: true, id: 1, updated: false }, value);
+    assert.equal(photos.size, 1);
+  }
+});
+
 // --- daily limits ---
 
 test("the 21st submission from one device in a day gets 429 device", async () => {
-  const { env } = setup();
+  const { env } = setup({ MINUTE_COUNT_LIMIT: "100" });
   for (let i = 0; i < 20; i++) assert.equal((await send(env, { ip: `198.51.100.${i}` })).status, 200);
   const res = await send(env, { ip: "198.51.100.99" });
   assert.equal(res.status, 429);
@@ -2125,7 +2396,7 @@ test("the 21st submission from one device in a day gets 429 device", async () =>
 });
 
 test("the 31st submission from one connection in a day gets 429 ip", async () => {
-  const { env } = setup();
+  const { env } = setup({ MINUTE_COUNT_LIMIT: "100" });
   for (let i = 0; i < 30; i++) assert.equal((await send(env, { rec: record({ device_id: deviceId(i) }) })).status, 200);
   const res = await send(env, { rec: record({ device_id: deviceId(99) }) });
   assert.equal(res.status, 429);
@@ -2142,8 +2413,19 @@ test("the 101st submission in a day overall gets 429 total", async () => {
   assert.equal(res.body.limit, "total");
 });
 
+test("GLOBAL_DAILY_COUNT_LIMIT 0 refuses every send, so it stops intake in an emergency", async () => {
+  const { env, rows } = setup({ GLOBAL_DAILY_COUNT_LIMIT: "0" });
+  const puts = countPuts(env);
+  const res = await send(env, { photo: jpeg() });
+  assert.equal(res.status, 429);
+  assert.equal(res.body.limit, "total");
+  assert.equal(puts.n, 0);
+  assert.deepEqual(rows("SELECT id FROM feedback"), []);
+  assert.deepEqual(rows("SELECT id FROM submissions"), []);
+});
+
 test("limits restart at midnight Japan time even though the clock is UTC", async () => {
-  const { env, rows } = setup();
+  const { env, rows } = setup({ MINUTE_COUNT_LIMIT: "100" });
   const lastMinute = new Date("2026-09-23T14:59:00Z"); // 23:59 on the 23rd in Japan
   const midnight = new Date("2026-09-23T15:00:00Z"); // 00:00 on the 24th in Japan
   for (let i = 0; i < 20; i++) assert.equal((await send(env, {}, lastMinute)).status, 200);
@@ -2157,10 +2439,81 @@ test("limits restart at midnight Japan time even though the clock is UTC", async
 
 test("each submission purges submission rows older than 3 days", async () => {
   const { env, sqlite, rows } = setup();
-  const insert = sqlite.prepare("INSERT INTO submissions (device_id, ip_hash, day) VALUES ('d', 'h', ?)");
-  for (const day of ["2026-09-19", "2026-09-20", "2026-09-22"]) insert.run(day);
+  const insert = sqlite.prepare("INSERT INTO submissions (token, device_id, ip_hash, day, at) VALUES (?, 'd', 'h', ?, 0)");
+  for (const day of ["2026-09-19", "2026-09-20", "2026-09-22"]) insert.run(day, day);
   await send(env);
   assert.deepEqual(rows("SELECT day FROM submissions ORDER BY day").map((r) => r.day), ["2026-09-20", "2026-09-22", "2026-09-23"]);
+});
+
+test("the 6th send from one device within a minute gets 429 device_minute until 60 s have passed", async () => {
+  const { env } = setup();
+  for (let i = 0; i < 5; i++) assert.equal((await send(env, { ip: `198.51.100.${i}` })).status, 200);
+  const sixth = await send(env, { ip: "198.51.100.9" });
+  assert.equal(sixth.status, 429);
+  assert.equal(sixth.body.limit, "device_minute");
+  assert.equal((await send(env, { ip: "198.51.100.9" }, new Date(NOW.getTime() + 59999))).body.limit, "device_minute");
+  assert.equal((await send(env, { ip: "198.51.100.9" }, new Date(NOW.getTime() + 60000))).status, 200);
+});
+
+test("the 6th send from one connection within a minute gets 429 ip_minute", async () => {
+  const { env } = setup();
+  for (let i = 0; i < 5; i++) assert.equal((await send(env, { rec: record({ device_id: deviceId(i) }) })).status, 200);
+  const sixth = await send(env, { rec: record({ device_id: deviceId(9) }) });
+  assert.equal(sixth.status, 429);
+  assert.equal(sixth.body.limit, "ip_minute");
+});
+
+test("25 sends at once from one device store exactly the daily 20", async () => {
+  const { env, rows } = setup({ MINUTE_COUNT_LIMIT: "100" });
+  const results = await Promise.all(Array.from({ length: 25 }, () => send(env)));
+  assert.equal(results.filter((r) => r.status === 200).length, 20);
+  assert.deepEqual(results.filter((r) => r.status !== 200).map((r) => [r.status, r.body.limit]), Array(5).fill([429, "device"]));
+  assert.equal(rows("SELECT * FROM submissions").length, 20);
+});
+
+// --- photo storage limits: the record is kept, only the photo is skipped ---
+
+test("DAILY_UPLOAD_LIMIT skips photos past one device's bytes for the day", async () => {
+  const { env, photos, rows } = setup({ DAILY_UPLOAD_LIMIT: "2000" });
+  assert.deepEqual((await send(env, { photo: jpeg(1000) })).body, { ok: true, id: 1, updated: false });
+  assert.deepEqual((await send(env, { photo: jpeg(1000), rec: record({ slot: "afternoon" }) })).body, { ok: true, id: 2, updated: false });
+  const third = await send(env, { photo: jpeg(1000), rec: record({ slot: "evening", date: "2026-09-22" }) });
+  assert.deepEqual(third.body, { ok: true, id: 3, updated: false, photo_skipped: "device_bytes" });
+  assert.deepEqual(rows("SELECT photo_key FROM feedback WHERE id = 3"), [{ photo_key: null }]);
+  assert.equal(photos.size, 2);
+  const other = await send(env, { photo: jpeg(1000), rec: record({ device_id: deviceId(2) }) });
+  assert.equal("photo_skipped" in other.body, false);
+  assert.equal(photos.size, 3);
+});
+
+test("GLOBAL_DAILY_UPLOAD_LIMIT skips photos past the day's total bytes", async () => {
+  const { env, photos } = setup({ GLOBAL_DAILY_UPLOAD_LIMIT: "2000" });
+  for (const i of [1, 2]) assert.equal("photo_skipped" in (await send(env, { photo: jpeg(1000), rec: record({ device_id: deviceId(i) }) })).body, false);
+  const third = await send(env, { photo: jpeg(1000), rec: record({ device_id: deviceId(3) }) });
+  assert.equal(third.status, 200);
+  assert.equal(third.body.photo_skipped, "global_bytes");
+  assert.equal(photos.size, 2);
+});
+
+test("USER_STORAGE_LIMIT skips photos once a device's stored photos reach it, on later days too", async () => {
+  const { env, photos } = setup({ USER_STORAGE_LIMIT: "2000" });
+  await send(env, { photo: jpeg(1000) });
+  await send(env, { photo: jpeg(1000), rec: record({ slot: "afternoon" }) });
+  assert.equal((await send(env, { photo: jpeg(1000), rec: record({ date: "2026-09-22" }) })).body.photo_skipped, "device_storage");
+  const nextDay = new Date(NOW.getTime() + 24 * 3600 * 1000);
+  assert.equal((await send(env, { photo: jpeg(1000), rec: record({ date: "2026-09-24" }) }, nextDay)).body.photo_skipped, "device_storage");
+  assert.equal("photo_skipped" in (await send(env, { photo: jpeg(1000), rec: record({ device_id: deviceId(2) }) })).body, false);
+  assert.equal(photos.size, 3);
+});
+
+test("GLOBAL_STORAGE_LIMIT holds when 10 devices send photos at once", async () => {
+  const { env, photos, usage } = setup({ GLOBAL_STORAGE_LIMIT: "3000" });
+  const results = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+    send(env, { photo: jpeg(1000), rec: record({ device_id: deviceId(i) }), ip: `198.51.100.${i}` })));
+  assert.ok(results.every((r) => r.status === 200));
+  assert.deepEqual(results.map((r) => r.body.photo_skipped).filter(Boolean), Array(7).fill("global_storage"));
+  assert.equal(photos.size, 3);
+  assert.deepEqual(usage().find((u) => u.scope === "global"), { scope: "global", used_bytes: 3000, file_count: 3 });
 });
 
 // --- CORS and configuration ---
@@ -2194,22 +2547,86 @@ test("a missing IP_SALT gets 500 and nothing is stored", async () => {
   assert.equal(rows("SELECT * FROM feedback").length, 0);
 });
 
-test("when saving the record fails, the uploaded photo is removed and 500 is returned", async () => {
-  const { env, photos, rows } = setup();
-  const realDb = env.DB;
-  env.DB = {
-    prepare(sql) {
-      if (sql.startsWith("INSERT INTO feedback")) {
-        const failing = { bind: () => failing, first: async () => { throw new Error("D1 unavailable"); } };
-        return failing;
-      }
-      return realDb.prepare(sql);
-    },
-  };
+// --- failures of R2 and D1 ---
+
+test("when saving the record fails, the uploaded photo is removed, its bytes given back and 500 returned", async () => {
+  const { env, photos, rows, usage } = setup();
+  env.DB = failingDb(env.DB, "INSERT INTO feedback");
+  consoleLog.mock.resetCalls();
   const res = await send(env, { photo: jpeg() });
   assert.equal(res.status, 500);
+  assert.equal(res.body.error, "保存できませんでした");
   assert.equal(photos.size, 0);
-  assert.equal(rows("SELECT * FROM submissions").length, 0);
+  assert.deepEqual(usage().map((u) => [u.used_bytes, u.file_count]), [[0, 0], [0, 0]]);
+  assert.equal(rows("SELECT * FROM submissions").length, 1); // the attempt still counts toward the limits
+  assert.ok(logged().some((e) => e.event === "d1_error"));
+});
+
+test("when the database cannot take the send, no photo is uploaded", async () => {
+  const { env, rows } = setup();
+  env.DB = failingDb(env.DB, "INSERT INTO submissions");
+  const puts = countPuts(env);
+  const res = await send(env, { photo: jpeg() });
+  assert.equal(res.status, 500);
+  assert.equal(puts.n, 0);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+});
+
+test("when the photo upload fails, nothing is saved and its bytes are given back", async () => {
+  const { env, photos, rows, usage } = setup();
+  env.PHOTOS.put = async () => { throw new Error("R2 returned 500"); };
+  consoleLog.mock.resetCalls();
+  const res = await send(env, { photo: jpeg(1000) });
+  assert.equal(res.status, 500);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+  assert.equal(photos.size, 0);
+  assert.deepEqual(usage().map((u) => [u.used_bytes, u.file_count]), [[0, 0], [0, 0]]);
+  assert.deepEqual(logged().map((e) => e.event), ["r2_error", "feedback"]);
+});
+
+test("an upload that times out after writing leaves no object behind", async () => {
+  const { env, photos, usage } = setup();
+  const realPut = env.PHOTOS.put;
+  env.PHOTOS.put = async (...args) => {
+    await realPut(...args);
+    throw new Error("timed out");
+  };
+  assert.equal((await send(env, { photo: jpeg(1000) })).status, 500);
+  assert.equal(photos.size, 0);
+  assert.deepEqual(usage().map((u) => u.used_bytes), [0, 0]);
+});
+
+test("when the old photo cannot be deleted, the send still succeeds and the orphan is logged", async () => {
+  const { env, photos, rows, usage } = setup();
+  await send(env, { photo: jpeg(1000) });
+  const [{ photo_key: oldKey }] = rows("SELECT photo_key FROM feedback");
+  env.PHOTOS.delete = async () => { throw new Error("R2 returned 500"); };
+  consoleLog.mock.resetCalls();
+  const res = await send(env, { photo: jpeg(600) });
+  assert.deepEqual(res.body, { ok: true, id: 1, updated: true });
+  assert.equal(photos.size, 2);
+  assert.deepEqual(usage().find((u) => u.scope === "global"), { scope: "global", used_bytes: 1600, file_count: 2 });
+  assert.ok(logged().some((e) => e.event === "photo_orphan" && e.key === oldKey));
+});
+
+// --- logs ---
+
+test("each POST logs JSON lines that hold no personal data", async () => {
+  const { env, rows } = setup({ DAILY_UPLOAD_COUNT_LIMIT: "1" });
+  consoleLog.mock.resetCalls();
+  await send(env, { photo: jpeg() });
+  await send(env, { rec: record({ observed: { rating: 9, wave_band: 3, wind_side: "off", wind_strength: "light" } }) });
+  await send(env, { rec: record({ slot: "afternoon" }) });
+  assert.deepEqual(logged(), [
+    { event: "feedback", status: 200, photo_bytes: 64, updated: false },
+    { event: "feedback", status: 400 },
+    { event: "feedback", status: 429, limit: "device" },
+  ]);
+  const text = loggedLines().join("\n");
+  const [{ ip_hash }] = rows("SELECT ip_hash FROM feedback");
+  for (const secret of [deviceId(1), "たろう", "203.0.113.7", ip_hash, "test-salt"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
 });
 
 test("unknown paths get 404 and GET /feedback gets 405", async () => {
@@ -2275,6 +2692,124 @@ Expected: FAIL。`Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../worker/h
 
 - [ ] **Step 4: 実装を書く**
 
+`worker/quota.mjs` を次の内容で作る。
+
+```js
+// Limits on POST /feedback and the D1 bookkeeping that enforces them. A send
+// is checked and recorded in one D1 transaction, so sends arriving at the
+// same moment cannot all slip under a limit. docs/r2-security.md explains
+// each limit and how to change it.
+
+// Each can be overridden by a Worker variable of the same name.
+export const DEFAULT_LIMITS = {
+  MAX_UPLOAD_SIZE: 1572864, // bytes in one photo (1.5 MB)
+  MINUTE_COUNT_LIMIT: 5, // sends per device, and per connection, in any 60 s
+  DAILY_UPLOAD_COUNT_LIMIT: 20, // sends per device per day (Japan time)
+  IP_DAILY_COUNT_LIMIT: 30, // sends per connection per day
+  GLOBAL_DAILY_COUNT_LIMIT: 100, // sends per day from everyone
+  DAILY_UPLOAD_LIMIT: 10485760, // photo bytes per device per day (10 MB)
+  GLOBAL_DAILY_UPLOAD_LIMIT: 104857600, // photo bytes per day from everyone (100 MB)
+  USER_STORAGE_LIMIT: 209715200, // photo bytes kept in R2 per device (200 MB)
+  GLOBAL_STORAGE_LIMIT: 5368709120, // photo bytes kept in R2 in all (5 GB, half the free 10 GB)
+};
+export const MAX_UPLOAD_SIZE_CEILING = 10485760;
+
+export class ConfigError extends Error {
+  constructor(variable) {
+    super(`${variable} is not a valid limit`);
+    this.name = "ConfigError";
+    this.variable = variable;
+  }
+}
+
+// Unset or blank variables take the default. Anything else must be a whole
+// number, or the Worker refuses to store anything rather than guess.
+export function readLimits(env) {
+  const limits = {};
+  for (const [name, fallback] of Object.entries(DEFAULT_LIMITS)) {
+    const text = String(env[name] ?? "").trim();
+    if (text === "") limits[name] = fallback;
+    else if (/^\d+$/.test(text) && Number.isSafeInteger(Number(text))) limits[name] = Number(text);
+    else throw new ConfigError(name);
+  }
+  if (limits.MAX_UPLOAD_SIZE > MAX_UPLOAD_SIZE_CEILING) throw new ConfigError("MAX_UPLOAD_SIZE");
+  return limits;
+}
+
+// Photos go to R2 only while R2_KILL_SWITCH is "false" or "0". A missing or
+// mistyped value leaves the switch on, so a bad deploy cannot start writing.
+export function photosAllowed(env) {
+  return ["false", "0"].includes(String(env.R2_KILL_SWITCH ?? "").trim().toLowerCase());
+}
+
+// Bound as ?6..?13 after ?1 device, ?2 ip_hash, ?3 day, ?4 now (ms) and
+// ?5 the photo bytes wanted (0 for none).
+const LIMIT_ORDER = [
+  "MINUTE_COUNT_LIMIT", "DAILY_UPLOAD_COUNT_LIMIT", "IP_DAILY_COUNT_LIMIT", "GLOBAL_DAILY_COUNT_LIMIT",
+  "DAILY_UPLOAD_LIMIT", "GLOBAL_DAILY_UPLOAD_LIMIT", "USER_STORAGE_LIMIT", "GLOBAL_STORAGE_LIMIT",
+];
+
+// reason: why the send is refused (429), checked in this order.
+// photo_reason: why the photo is skipped though the record is kept.
+// TOTAL() is 0 when no row matches.
+const VERDICT = `SELECT
+    CASE
+      WHEN TOTAL(device_id = ?1 AND at > ?4 - 60000) >= ?6 THEN 'device_minute'
+      WHEN TOTAL(ip_hash = ?2 AND at > ?4 - 60000) >= ?6 THEN 'ip_minute'
+      WHEN TOTAL(device_id = ?1 AND day = ?3) >= ?7 THEN 'device'
+      WHEN TOTAL(ip_hash = ?2 AND day = ?3) >= ?8 THEN 'ip'
+      WHEN TOTAL(day = ?3) >= ?9 THEN 'total'
+    END AS reason,
+    CASE
+      WHEN ?5 = 0 THEN NULL
+      WHEN ?5 + TOTAL(CASE WHEN device_id = ?1 AND day = ?3 THEN photo_bytes END) > ?10 THEN 'device_bytes'
+      WHEN ?5 + TOTAL(CASE WHEN day = ?3 THEN photo_bytes END) > ?11 THEN 'global_bytes'
+      WHEN ?5 + (SELECT TOTAL(used_bytes) FROM storage_usage WHERE scope = 'device:' || ?1) > ?12 THEN 'device_storage'
+      WHEN ?5 + (SELECT TOTAL(used_bytes) FROM storage_usage WHERE scope = 'global') > ?13 THEN 'global_storage'
+    END AS photo_reason
+  FROM submissions`;
+
+// Records the send only when no count limit is reached. ?14 is a fresh
+// token, ?15 a reason the caller already has to skip the photo (or null).
+const RESERVE = `INSERT INTO submissions (token, device_id, ip_hash, day, at, photo_bytes, photo_skipped)
+  SELECT ?14, ?1, ?2, ?3, ?4, CASE WHEN photo_reason IS NULL THEN ?5 ELSE 0 END, COALESCE(?15, photo_reason)
+  FROM (${VERDICT}) WHERE reason IS NULL
+  RETURNING photo_bytes, photo_skipped`;
+
+// Adds the photo reserved under token ?1 to the device's and the global totals.
+const COUNT_STORAGE = `INSERT INTO storage_usage (scope, used_bytes, file_count)
+  SELECT scope, photo_bytes, 1 FROM (
+    SELECT 'global' AS scope, photo_bytes FROM submissions WHERE token = ?1 AND photo_bytes > 0
+    UNION ALL
+    SELECT 'device:' || device_id, photo_bytes FROM submissions WHERE token = ?1 AND photo_bytes > 0
+  ) WHERE true
+  ON CONFLICT (scope) DO UPDATE SET used_bytes = used_bytes + excluded.used_bytes, file_count = file_count + 1`;
+
+const RELEASE = `UPDATE storage_usage SET used_bytes = MAX(0, used_bytes - ?1), file_count = MAX(0, file_count - 1)
+  WHERE scope IN ('global', 'device:' || ?2)`;
+
+// Returns { limit } when a count limit refuses the send. Otherwise the send is
+// recorded and it returns { photoBytes, photoSkipped }: the bytes the caller
+// may now put in R2 (0 when the photo must be skipped) and why it is skipped.
+export async function reserve(db, limits, { device, ipHash, day, at, bytes, skipped = null }) {
+  const verdict = [device, ipHash, day, at, bytes, ...LIMIT_ORDER.map((name) => limits[name])];
+  const token = crypto.randomUUID();
+  const [reserved] = await db.batch([
+    db.prepare(RESERVE).bind(...verdict, token, skipped),
+    db.prepare(COUNT_STORAGE).bind(token),
+  ]);
+  const row = reserved.results[0];
+  if (row) return { photoBytes: row.photo_bytes, photoSkipped: row.photo_skipped };
+  const { reason } = await db.prepare(VERDICT).bind(...verdict).first();
+  return { limit: reason };
+}
+
+// Gives the bytes of a photo that is gone from R2 back to both totals.
+export async function release(db, device, bytes) {
+  await db.prepare(RELEASE).bind(bytes, device).run();
+}
+```
+
 `worker/handler.mjs` を次の内容で作る。
 
 ```js
@@ -2282,11 +2817,12 @@ Expected: FAIL。`Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../worker/h
 // GET /calibration returns the corrections computed from all records.
 import Calibration from "../calibration.js";
 import Feedback from "../feedback.js";
+import { ConfigError, photosAllowed, readLimits, release, reserve } from "./quota.mjs";
 
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
-const MAX_PHOTO_BYTES = 1572864; // 1.5 MB
-const DAILY_LIMITS = [["device", 20], ["ip", 30], ["total", 100]];
+// Room for the record and the multipart framing on top of the photo.
+const FORM_OVERHEAD_BYTES = 524288;
 const KEEP_SUBMISSION_DAYS = 3;
+const MAX_LOGGED_ERROR = 200;
 
 const CALIBRATION_COLUMNS =
   "device_id, spot, bearing, fc_wave_height, fc_wind_dir, fc_wind_speed, fc_swell_dir, fc_swell_period, rating, wave_band, wind_side, wind_strength";
@@ -2294,8 +2830,8 @@ const CALIBRATION_COLUMNS =
 const UPSERT = `INSERT INTO feedback (device_id, name, spot, date, slot, bearing,
     fc_wave_height, fc_wind_dir, fc_wind_speed, fc_swell_dir, fc_swell_period,
     rating, wave_band, wind_side, wind_strength,
-    photo_key, photo_lat, photo_lon, photo_taken_at, ip_hash, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    photo_key, photo_bytes, photo_lat, photo_lon, photo_taken_at, ip_hash, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT (device_id, spot, date, slot) DO UPDATE SET
     name = excluded.name, bearing = excluded.bearing,
     fc_wave_height = excluded.fc_wave_height, fc_wind_dir = excluded.fc_wind_dir,
@@ -2304,11 +2840,19 @@ const UPSERT = `INSERT INTO feedback (device_id, name, spot, date, slot, bearing
     rating = excluded.rating, wave_band = excluded.wave_band,
     wind_side = excluded.wind_side, wind_strength = excluded.wind_strength,
     photo_key = COALESCE(excluded.photo_key, feedback.photo_key),
+    photo_bytes = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_bytes ELSE excluded.photo_bytes END,
     photo_lat = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_lat ELSE excluded.photo_lat END,
     photo_lon = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_lon ELSE excluded.photo_lon END,
     photo_taken_at = CASE WHEN excluded.photo_key IS NULL THEN feedback.photo_taken_at ELSE excluded.photo_taken_at END,
     ip_hash = excluded.ip_hash, updated_at = excluded.updated_at
   RETURNING id`;
+
+const SELECT_SESSION = "SELECT id, photo_key, photo_bytes FROM feedback WHERE device_id = ? AND spot = ? AND date = ? AND slot = ?";
+
+// One JSON line per event, read with `wrangler tail`. Never log device ids,
+// names, IPs or their hashes.
+const log = (entry) => console.log(JSON.stringify(entry));
+const errorText = (e) => `${e && e.name}: ${e && e.message}`.slice(0, MAX_LOGGED_ERROR);
 
 function json(body, status, headers = {}) {
   return new Response(JSON.stringify(body), {
@@ -2331,6 +2875,32 @@ async function sha256Hex(text) {
 
 const isJpeg = (bytes) => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
 
+// Reads the body but stops, and returns null, as soon as it passes max bytes,
+// so a huge or endless upload is never read to the end.
+async function readBody(request, max) {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
 export async function handle(request, env, now) {
   const url = new URL(request.url);
   const origin = request.headers.get("Origin");
@@ -2344,86 +2914,150 @@ export async function handle(request, env, now) {
     }
     if (request.method !== "POST") return json({ error: "POST で送ってください" }, 405);
     if (!allowedOrigin(origin, env)) return json({ error: "このサイトからは送れません" }, 403);
-    const cors = corsFor(origin);
+    let res;
     try {
-      return await postFeedback(request, env, now, cors);
+      res = await postFeedback(request, env, now);
     } catch (e) {
-      return json({ error: "サーバーでエラーが起きました" }, 500, cors);
+      log({ event: "error", error: errorText(e) });
+      res = { status: 500, body: { error: "サーバーでエラーが起きました" } };
     }
+    const { limit, updated, photo_skipped } = res.body;
+    log({ event: "feedback", status: res.status, limit, updated, photo_skipped, photo_bytes: res.photoBytes || undefined });
+    return json(res.body, res.status, corsFor(origin));
   }
   if (url.pathname === "/calibration" && request.method === "GET") return getCalibration(url, env, now);
   return json({ error: "見つかりません" }, 404);
 }
 
-async function postFeedback(request, env, now, cors) {
-  const reply = (body, status) => json(body, status, cors);
-  if (!env.IP_SALT) return reply({ error: "サーバーの設定が足りません" }, 500);
+// Returns { status, body, photoBytes }; handle() turns it into the response
+// and the log line.
+async function postFeedback(request, env, now) {
+  const reply = (status, body, photoBytes = 0) => ({ status, body, photoBytes });
+  if (!env.IP_SALT) {
+    log({ event: "config_error", variable: "IP_SALT" });
+    return reply(500, { error: "サーバーの設定が足りません" });
+  }
+  let limits;
+  try {
+    limits = readLimits(env);
+  } catch (e) {
+    if (!(e instanceof ConfigError)) throw e;
+    log({ event: "config_error", variable: e.variable });
+    return reply(500, { error: "サーバーの設定が正しくありません" });
+  }
 
-  if (Number(request.headers.get("Content-Length")) > MAX_BODY_BYTES) return reply({ error: "送信が大きすぎます" }, 413);
-  const body = await request.arrayBuffer();
-  if (body.byteLength > MAX_BODY_BYTES) return reply({ error: "送信が大きすぎます" }, 413);
+  const maxBody = limits.MAX_UPLOAD_SIZE + FORM_OVERHEAD_BYTES;
+  if (Number(request.headers.get("Content-Length")) > maxBody) return reply(413, { error: "送信が大きすぎます" });
+  const body = await readBody(request, maxBody);
+  if (!body) return reply(413, { error: "送信が大きすぎます" });
 
   let form;
   try {
     form = await new Response(body, { headers: { "Content-Type": request.headers.get("Content-Type") || "" } }).formData();
   } catch (e) {
-    return reply({ error: "送信の形が正しくありません" }, 400);
+    return reply(400, { error: "送信の形が正しくありません" });
   }
   let rec;
   try {
     rec = JSON.parse(form.get("record"));
   } catch (e) {
-    return reply({ error: "record: JSON ではありません" }, 400);
+    return reply(400, { error: "record: JSON ではありません" });
   }
   const errors = Feedback.validateRecord(rec, now);
-  if (errors.length) return reply({ error: errors.join(" / "), errors }, 400);
+  if (errors.length) return reply(400, { error: errors.join(" / "), errors });
 
   const photo = form.get("photo");
   let photoBytes = null;
   if (photo !== null) {
-    if (typeof photo === "string") return reply({ error: "写真は JPEG にしてください" }, 415);
+    if (typeof photo === "string") return reply(415, { error: "写真は JPEG にしてください" });
     photoBytes = new Uint8Array(await photo.arrayBuffer());
-    if (photoBytes.byteLength > MAX_PHOTO_BYTES) return reply({ error: "写真が大きすぎます" }, 413);
-    if (!isJpeg(photoBytes)) return reply({ error: "写真は JPEG にしてください" }, 415);
+    if (photoBytes.byteLength > limits.MAX_UPLOAD_SIZE) return reply(413, { error: "写真が大きすぎます" });
+    if (!isJpeg(photoBytes)) return reply(415, { error: "写真は JPEG にしてください" });
   }
 
   const day = Feedback.jstNow(now).date;
   const ipHash = await sha256Hex((request.headers.get("CF-Connecting-IP") || "") + env.IP_SALT);
-  const counts = await env.DB.prepare(
-    "SELECT COALESCE(SUM(device_id = ?), 0) AS device, COALESCE(SUM(ip_hash = ?), 0) AS ip, COUNT(*) AS total FROM submissions WHERE day = ?",
-  ).bind(rec.device_id, ipHash, day).first();
-  for (const [limit, max] of DAILY_LIMITS) {
-    if (counts[limit] >= max) return reply({ error: "今日はこれ以上送れません", limit }, 429);
+  const killed = photoBytes !== null && !photosAllowed(env);
+  const reservation = await reserve(env.DB, limits, {
+    device: rec.device_id,
+    ipHash,
+    day,
+    at: now.getTime(),
+    bytes: photoBytes && !killed ? photoBytes.byteLength : 0,
+    skipped: killed ? "kill_switch" : null,
+  });
+  if (reservation.limit) {
+    const error = reservation.limit.endsWith("_minute") ? "短い間に送りすぎです。1分ほど待ってから送ってください" : "今日はこれ以上送れません";
+    return reply(429, { error, limit: reservation.limit });
   }
 
-  const existing = await env.DB.prepare(
-    "SELECT id, photo_key FROM feedback WHERE device_id = ? AND spot = ? AND date = ? AND slot = ?",
-  ).bind(rec.device_id, rec.spot, rec.date, rec.slot).first();
-
-  let photoKey = null;
-  if (photoBytes) {
-    photoKey = `photos/${crypto.randomUUID()}.jpg`;
-    await env.PHOTOS.put(photoKey, photoBytes, { httpMetadata: { contentType: "image/jpeg" } });
+  // The key is always made here: nothing the sender writes reaches it.
+  const photoKey = reservation.photoBytes > 0 ? `photos/${crypto.randomUUID()}.jpg` : null;
+  if (photoKey) {
+    try {
+      await env.PHOTOS.put(photoKey, photoBytes, { httpMetadata: { contentType: "image/jpeg" } });
+    } catch (e) {
+      log({ event: "r2_error", error: errorText(e) });
+      await discardPhoto(env, photoKey, reservation.photoBytes, rec.device_id);
+      return reply(500, { error: "保存できませんでした" });
+    }
   }
+
   const meta = (photoKey && rec.photo_meta) || {};
   const stamp = now.toISOString();
-  let row;
+  let before, saved;
   try {
-    row = await env.DB.prepare(UPSERT).bind(
-      rec.device_id, rec.name.trim(), rec.spot, rec.date, rec.slot, rec.bearing,
-      rec.forecast.wave_height, rec.forecast.wind_dir, rec.forecast.wind_speed, rec.forecast.swell_dir, rec.forecast.swell_period,
-      rec.observed.rating, rec.observed.wave_band, rec.observed.wind_side, rec.observed.wind_strength,
-      photoKey, meta.lat ?? null, meta.lon ?? null, meta.taken_at ?? null, ipHash, stamp, stamp,
-    ).first();
+    // Reading the old row in the same transaction tells exactly which photo
+    // this save replaced, even when two sends of the same session race.
+    [before, saved] = await env.DB.batch([
+      env.DB.prepare(SELECT_SESSION).bind(rec.device_id, rec.spot, rec.date, rec.slot),
+      env.DB.prepare(UPSERT).bind(
+        rec.device_id, rec.name.trim(), rec.spot, rec.date, rec.slot, rec.bearing,
+        rec.forecast.wave_height, rec.forecast.wind_dir, rec.forecast.wind_speed, rec.forecast.swell_dir, rec.forecast.swell_period,
+        rec.observed.rating, rec.observed.wave_band, rec.observed.wind_side, rec.observed.wind_strength,
+        photoKey, photoKey ? reservation.photoBytes : null, meta.lat ?? null, meta.lon ?? null, meta.taken_at ?? null,
+        ipHash, stamp, stamp,
+      ),
+    ]);
   } catch (e) {
-    if (photoKey) await env.PHOTOS.delete(photoKey);
-    return reply({ error: "保存できませんでした" }, 500);
+    log({ event: "d1_error", error: errorText(e) });
+    if (photoKey) await discardPhoto(env, photoKey, reservation.photoBytes, rec.device_id);
+    return reply(500, { error: "保存できませんでした" });
   }
+  const old = before.results[0] || null;
+  await afterSave(env, day, photoKey && old && old.photo_key ? old : null, rec.device_id);
 
-  await env.DB.prepare("INSERT INTO submissions (device_id, ip_hash, day) VALUES (?, ?, ?)").bind(rec.device_id, ipHash, day).run();
-  await env.DB.prepare("DELETE FROM submissions WHERE day < ?").bind(Feedback.shiftDay(day, -KEEP_SUBMISSION_DAYS)).run();
-  if (photoKey && existing && existing.photo_key) await env.PHOTOS.delete(existing.photo_key);
-  return reply({ ok: true, id: row.id, updated: Boolean(existing) }, 200);
+  const result = { ok: true, id: saved.results[0].id, updated: Boolean(old) };
+  if (reservation.photoSkipped) result.photo_skipped = reservation.photoSkipped;
+  return reply(200, result, reservation.photoBytes);
+}
+
+// The record is saved by now, so failures here are logged, not returned.
+async function afterSave(env, day, replaced, device) {
+  try {
+    await env.DB.prepare("DELETE FROM submissions WHERE day < ?").bind(Feedback.shiftDay(day, -KEEP_SUBMISSION_DAYS)).run();
+  } catch (e) {
+    log({ event: "d1_error", error: errorText(e) });
+  }
+  if (!replaced) return;
+  try {
+    await discardPhoto(env, replaced.photo_key, replaced.photo_bytes, device);
+  } catch (e) {
+    log({ event: "d1_error", error: errorText(e) });
+  }
+}
+
+// Deletes a photo, then gives its bytes back. If the delete fails the object
+// may still be in R2, so its bytes stay counted and the key is logged for
+// clean-up by hand (docs/r2-security.md).
+async function discardPhoto(env, key, bytes, device) {
+  try {
+    await env.PHOTOS.delete(key);
+  } catch (e) {
+    log({ event: "photo_orphan", key, error: errorText(e) });
+    return;
+  }
+  await release(env.DB, device, bytes);
 }
 
 async function getCalibration(url, env, now) {
@@ -2451,7 +3085,7 @@ export default {
 - [ ] **Step 5: テストが通ることを確かめる**
 
 Run: `node --test worker/worker.test.mjs`
-Expected: `ℹ tests 24`、`ℹ pass 24`、`ℹ fail 0`
+Expected: `ℹ tests 44`、`ℹ pass 44`、`ℹ fail 0`
 - `node:sqlite` の ExperimentalWarning が出ることがあるが、問題ない。
 
 - [ ] **Step 6: wrangler の設定と .gitignore を置く**
@@ -2466,6 +3100,12 @@ compatibility_date = "2026-09-01"
 [vars]
 # 本番はサイトのオリジンだけ。ローカル開発は worker/.dev.vars で上書きする（README 参照）。
 ALLOWED_ORIGINS = "https://tk0407.github.io"
+# 写真を R2 に置くのは "false"（か "0"）のときだけ。"true" にして deploy すると、
+# 記録は受け付けたまま写真だけ置かなくなる。値が無い・読めないときも置かない。
+R2_KILL_SWITCH = "false"
+# 送信と写真の上限は worker/quota.mjs の DEFAULT_LIMITS の値を使う。変えるときだけ
+# 同じ名前でここに書く（例：GLOBAL_STORAGE_LIMIT = "5368709120"）。
+# 一覧と緊急時の使い方は docs/r2-security.md。
 
 [[d1_databases]]
 binding = "DB"
@@ -2490,19 +3130,25 @@ Expected: 2行とも表示される（どちらも無視される）。
 - [ ] **Step 7: 全体のテストを流す**
 
 Run: `node --test`
-Expected: `ℹ tests 220`、`ℹ fail 0`
+Expected: `ℹ tests 240`、`ℹ fail 0`
 
 - [ ] **Step 8: コミットする**
 
 ```bash
-git add worker/schema.sql worker/d1-sqlite.mjs worker/handler.mjs worker/index.mjs worker/worker.test.mjs worker/wrangler.toml .gitignore
+git add worker/schema.sql worker/d1-sqlite.mjs worker/quota.mjs worker/handler.mjs worker/index.mjs worker/worker.test.mjs worker/wrangler.toml .gitignore
 git commit -F - <<'EOF'
-feat: add feedback worker with D1 and R2
+feat: add feedback worker with D1, R2 and cost limits
 
 実況フィードバックを受ける Cloudflare Worker を追加した。POST /feedback は
-入力チェック・写真の確認（JPEG、1.5MB まで）・日本時間の1日ごとの回数上限・
-同じ組の上書きを行い、D1 に記録、R2 に写真を保存する。GET /calibration は
-記録からその都度補正を計算して返す。テストは node:sqlite を D1 の代わりに使う。
+入力チェック・写真の確認（JPEG、既定 1.5MB まで）・同じ組の上書きを行い、
+D1 に記録、R2 に写真を保存する。GET /calibration は記録からその都度補正を
+計算して返す。
+
+R2 の料金が膨らまないよう、送信の回数（1分・1日、端末・回線・全体）と
+写真の量（1日・保存中、端末・全体）の上限を quota.mjs にまとめ、R2 に書く前に
+D1 の1つのトランザクションで判定して数える。写真の上限に当たったときと
+R2_KILL_SWITCH が "false" 以外のときは、記録だけ保存する。ログは個人情報を
+含まない JSON の1行。テストは node:sqlite を D1 の代わりに使う。
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -2553,6 +3199,7 @@ mkdir -p "$VERIFY"
 - 8000 には触らない。
 - 確認用の Worker の DB と写真は、起動のたびに作り直す。
 - `IP_SALT` は起動のたびにランダムに作り、どこにも書かない。
+- `R2_KILL_SWITCH` は `"false"`、上限は `DEFAULT_LIMITS` のまま。`R2_KILL_SWITCH` と上限の変数（`MAX_UPLOAD_SIZE`、`*_LIMIT`）は、`serve.sh worker-start` の前にシェルの変数として付けると上書きできる（Task 6 の `scenario-limits.mjs` が使う）。
 
 `scenario-equiv.mjs` は、3つの場合それぞれで、8003 と次の4つが一致するかを比べる。
 
@@ -2693,7 +3340,7 @@ export function checkLogs(page) {
   const exceptions = page.logs.filter((l) => l.startsWith("EXCEPTION"));
   check("no page exceptions", exceptions.length === 0, exceptions);
   for (const l of page.logs) if (!l.startsWith("EXCEPTION")) console.log("  (log)", l);
-  if (page.logs.some((l) => l.includes("status of 429"))) {
+  if (page.logs.some((l) => l.includes("status of 429") && l.includes("open-meteo.com"))) {
     console.log("NOTE Open-Meteo answered 429 (rate limit): FAILs in this run may come from it; wait a minute and rerun");
   }
 }
@@ -2757,6 +3404,10 @@ const env = {
   },
   ALLOWED_ORIGINS: "http://localhost:8001",
   IP_SALT: randomBytes(16).toString("hex"),
+  R2_KILL_SWITCH: "false",
+  // R2_KILL_SWITCH and the limits (MAX_UPLOAD_SIZE, *_LIMIT) can be set from
+  // the shell, e.g. R2_KILL_SWITCH=true MINUTE_COUNT_LIMIT=1 serve.sh worker-start
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(R2_KILL_SWITCH|MAX_UPLOAD_SIZE|\w+_LIMIT)$/.test(k))),
 };
 
 http.createServer(async (req, res) => {
@@ -3097,7 +3748,7 @@ Expected: `8`。
 - [ ] **Step 6: テストを流す**
 
 Run: `node --test`
-Expected: `ℹ tests 220`、`ℹ fail 0`
+Expected: `ℹ tests 240`、`ℹ fail 0`
 
 - [ ] **Step 7: 補正を取りに行かない場合・記録0件の場合に、今と同じであることを確かめる**
 
@@ -3157,17 +3808,17 @@ EOF
 **Files:**
 - Create: `feedback-panel.js`
 - Modify: `app.js`、`index.html`、`style.css`
-- 確認用（コミットしない）：`$VERIFY/make-photo.mjs`、`$VERIFY/scenario-send.mjs`、`$VERIFY/scenario-offline.mjs`
+- 確認用（コミットしない）：`$VERIFY/make-photo.mjs`、`$VERIFY/scenario-send.mjs`、`$VERIFY/scenario-offline.mjs`、`$VERIFY/scenario-limits.mjs`
 
 **Interfaces:**
 - Consumes:
   - Task 1 の `Calibration.WAVE_BANDS` / `WIND_SIDES` / `WIND_STRENGTHS` / `adjust`
   - Task 2 の `Feedback.defaultSession`、`dateRange`、`slotStarted`、`initialObserved`、`sessionFromPhoto`、`readExif`、`suggestSpot`、`buildRecord`、`validateRecord`
   - Task 4 の `POST /feedback` の応答
-    - `200 {"ok", "id", "updated"}`
+    - `200 {"ok", "id", "updated"}`。写真を置かなかったときは `photo_skipped` が付く。
     - `400 {"error", "errors"}`
     - `413`、`415`
-    - `429 {"error", "limit"}`
+    - `429 {"error", "limit"}`。`limit` が `_minute` で終わるときは1分の上限、それ以外は1日の上限。
   - Task 5 の `FEEDBACK_API`、`CALIBRATION`、`calibrationChip`、`loadCalibration`、`rankSpot` の `rawData`
   - Task 5 で作った `$VERIFY` の道具（`cdp.mjs`、`common.mjs`、`serve.sh`、`fake-worker.mjs`、`scenario-equiv.mjs`）
 - Produces: `window.FeedbackPanel = {open(opts), hasSent(spotName, date, slot)}`
@@ -3181,7 +3832,7 @@ export REPO=/Users/tkasai/Projects/surf-check-deploy
 export VERIFY=<スクラッチパッド>/verify   # Task 5 で cdp.mjs などを置いたディレクトリ
 ```
 
-**429 のとき**（Step 8〜10 のどれでも）：`NOTE Open-Meteo answered 429` が出て `FAIL` があったら、Open-Meteo の回数制限による失敗。次の手順でやり直す。Worker の DB と Chrome のプロファイルは起動のたびに作り直すので、送信のシナリオも最初からやり直せる。
+**429 のとき**（Step 8〜11 のどれでも）：`NOTE Open-Meteo answered 429` が出て `FAIL` があったら、Open-Meteo の回数制限による失敗。次の手順でやり直す。Worker の DB と Chrome のプロファイルは起動のたびに作り直すので、送信のシナリオも最初からやり直せる。
 
 ```bash
 sh "$VERIFY/serve.sh" stop
@@ -3396,6 +4047,102 @@ try {
 }
 ```
 
+`$VERIFY/scenario-limits.mjs`：Worker の上限と写真の非常停止が、パネルにどう出るかを確かめる。Worker を自分の設定で2回立て直し（立て直すたびに DB は空になる）、最後に既定の設定で立て直す。
+1. `R2_KILL_SWITCH=true`、`MINUTE_COUNT_LIMIT=1`：写真付きで送ると、記録だけ保存され、そのことが出てパネルが開いたままになる。1分以内の2件目は「1分ほど待って」と出る。
+2. `DAILY_UPLOAD_COUNT_LIMIT=1`：その日の2件目は「今日はこれ以上送れません」と出る。
+
+```js
+// Worker limits as the panel shows them. Restarts the worker twice with its
+// own settings (each start empties the database), and once more at the end
+// with the defaults. Needs REPO and VERIFY, like serve.sh.
+//   1. R2_KILL_SWITCH=true, MINUTE_COUNT_LIMIT=1: a photo send keeps the
+//      record without the photo and the panel stays open; the next send
+//      within the minute gets the "wait a minute" message.
+//   2. DAILY_UPLOAD_COUNT_LIMIT=1: the second send of the day gets the
+//      "no more today" message.
+import { launch } from "./cdp.mjs";
+import { jstDate, panelState, defaultsLoaded, check, checkLogs } from "./common.mjs";
+import { DatabaseSync } from "node:sqlite";
+import { execFileSync } from "node:child_process";
+import { readdirSync } from "node:fs";
+
+const dir = new URL("./", import.meta.url).pathname;
+execFileSync("sips", ["-s", "format", "jpeg", "-z", "1200", "900", `${process.env.REPO}/apple-touch-icon.png`, "--out", `${dir}base.jpg`], { stdio: "ignore" });
+const MESSAGES = {
+  sent: "送りました",
+  sentWithoutPhoto: "送りました。写真は今は受け付けていないため、記録だけ保存しました",
+  tooFast: "短い間に送りすぎです。1分ほど待ってから送ってください",
+  limited: "今日はこれ以上送れません",
+};
+const restartWorker = (vars) => {
+  execFileSync("sh", [`${dir}serve.sh`, "worker-stop"], { stdio: "ignore" });
+  execFileSync("sh", [`${dir}serve.sh`, "worker-start"], { stdio: "ignore", env: { ...process.env, ...vars } });
+};
+const rows = () => new DatabaseSync(`${dir}feedback.sqlite`, { readOnly: true })
+  .prepare("SELECT spot, rating, photo_key FROM feedback ORDER BY id").all();
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const page = await launch(9403);
+try {
+  restartWorker({ R2_KILL_SWITCH: "true", MINUTE_COUNT_LIMIT: "1" });
+  await page.goto(`http://localhost:8001/index.html?region=千葉北&date=${jstDate(0)}&slot=morning`);
+  await page.waitFor(`document.querySelectorAll(".feedback-open").length > 0`, 60000);
+  const cardIndex = (name) => page.eval(`LAST_RESULTS.findIndex((r) => r.spot.name === ${JSON.stringify(name)})`);
+  const openAndRate = async (name, rating) => {
+    await page.click(`.feedback-open[data-index="${await cardIndex(name)}"]`);
+    await page.waitFor(defaultsLoaded);
+    await page.click(`[data-field="rating"][data-value="${rating}"]`);
+  };
+  const sendAndSettle = async () => {
+    await page.click(".fb-send");
+    await page.waitFor(`["ok", "error"].includes(document.querySelector(".fb-status").dataset.tone)`, 20000);
+    return page.eval(panelState);
+  };
+
+  // 1a. kill switch: the record is kept, the photo is not, the panel stays open
+  await openAndRate("一宮", 4);
+  await page.setFile(".fb-file", `${dir}base.jpg`);
+  await page.waitFor(`!document.querySelector(".fb-preview").hidden`);
+  let s = await sendAndSettle();
+  check("photo send under the kill switch says the photo was not kept", s.tone === "ok" && s.status === MESSAGES.sentWithoutPhoto, s);
+  await wait(2500);
+  check("the panel stays open so the note can be read", (await page.eval(panelState)).open === true);
+  let r = rows();
+  check("the record is saved without a photo", r.length === 1 && r[0].spot === "一宮" && r[0].rating === 4 && r[0].photo_key === null, r);
+  check("nothing is written to the photo store", readdirSync(`${dir}photos`).length === 0, readdirSync(`${dir}photos`));
+  await page.screenshot(`${dir}6-no-photo.png`);
+  await page.click(".fb-close");
+
+  // 1b. a second send within the minute
+  await openAndRate("太東", 3);
+  s = await sendAndSettle();
+  check("a second send within the minute asks to wait", s.tone === "error" && s.status === MESSAGES.tooFast && s.open, s);
+  check("the refused send keeps the rating", s.pressed.rating === "3 ふつう" && s.sendDisabled === false, s);
+  check("the refused send saves nothing", rows().length === 1, rows());
+  await page.click(".fb-close");
+
+  // 2. the daily count
+  restartWorker({ DAILY_UPLOAD_COUNT_LIMIT: "1" });
+  await openAndRate("東浪見", 2);
+  s = await sendAndSettle();
+  check("the first send of the day goes through", s.tone === "ok" && s.status === MESSAGES.sent, s);
+  await page.waitFor(`!document.querySelector("dialog.fb-panel").open`, 5000);
+  await openAndRate("東浪見", 5);
+  s = await sendAndSettle();
+  check("the second send of the day says no more today", s.tone === "error" && s.status === MESSAGES.limited && s.open, s);
+  check("only the first send is saved", rows().length === 1 && rows()[0].rating === 2, rows());
+  await page.screenshot(`${dir}7-limited.png`);
+  checkLogs(page);
+} catch (e) {
+  check("scenario ran to the end", false, e.message);
+  console.log(page.logs);
+  await page.screenshot(`${dir}fail.png`);
+} finally {
+  page.close();
+  restartWorker({});
+}
+```
+
 - [ ] **Step 2: 変える前の状態で送信のシナリオを流し、失敗することを確かめる**
 
 ```bash
@@ -3431,9 +4178,11 @@ Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(
     photoTooBig: "写真が大きすぎます",
     rejectedPhoto: "写真を送れませんでした（大きさ・形式）",
     limited: "今日はこれ以上送れません",
+    tooFast: "短い間に送りすぎです。1分ほど待ってから送ってください",
     failed: "送れませんでした。もう一度送ってください",
     sending: "送っています…",
     sent: "送りました",
+    sentWithoutPhoto: "送りました。写真は今は受け付けていないため、記録だけ保存しました",
   };
   const FIELDS = {
     rating: RATINGS.map((label, i) => [String(i + 1), `${i + 1} ${label}`]),
@@ -3510,16 +4259,19 @@ Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(
     return null;
   }
 
+  async function readJson(res) {
+    try { return await res.json(); } catch (e) { return null; }
+  }
+
   async function failureMessage(res) {
     if (!res || res.status >= 500) return MESSAGES.failed;
     if (res.status === 413 || res.status === 415) return MESSAGES.rejectedPhoto;
-    if (res.status === 429) return MESSAGES.limited;
-    if (res.status === 400) {
-      try {
-        const body = await res.json();
-        if (body && typeof body.error === "string") return body.error;
-      } catch (e) { /* fall through */ }
+    const body = await readJson(res);
+    if (res.status === 429) {
+      const perMinute = body && typeof body.limit === "string" && body.limit.endsWith("_minute");
+      return perMinute ? MESSAGES.tooFast : MESSAGES.limited;
     }
+    if (res.status === 400 && body && typeof body.error === "string") return body.error;
     return MESSAGES.failed;
   }
 
@@ -3753,13 +4505,16 @@ Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(
       }
       state.sending = false;
       if (res && res.ok) {
+        // The Worker keeps the record but may skip the photo (limits, kill switch).
+        const photoSkipped = Boolean((await readJson(res) || {}).photo_skipped);
         state.done = true;
         markSent(record.spot, record.date, record.slot);
         if (nameEl) save(STORAGE.name, record.name);
-        setStatus(MESSAGES.sent, "ok");
+        setStatus(photoSkipped ? MESSAGES.sentWithoutPhoto : MESSAGES.sent, "ok");
         syncChoices();
         if (opts.onSent) opts.onSent();
-        state.closeTimer = setTimeout(() => dialog.close(), CLOSE_AFTER_MS);
+        // Leave that note up until the user closes the panel.
+        if (!photoSkipped) state.closeTimer = setTimeout(() => dialog.close(), CLOSE_AFTER_MS);
         return;
       }
       setStatus(await failureMessage(res), "error");
@@ -4224,7 +4979,7 @@ Task 5 で足した `.chip.calib` の後ろに、空行を1行あけて足す。
 - [ ] **Step 7: テストを流す**
 
 Run: `node --test`
-Expected: `ℹ tests 220`、`ℹ fail 0`
+Expected: `ℹ tests 240`、`ℹ fail 0`
 
 - [ ] **Step 8: 送信のシナリオを流す**
 
@@ -4277,7 +5032,24 @@ Expected: すべて `PASS`。
 
 `$VERIFY/5-error.png` を目で確かめる。
 
-- [ ] **Step 10: ボタンを足したあとも、今と同じであることを確かめる**
+- [ ] **Step 10: 上限と写真の非常停止のシナリオを流す**
+
+Step 8 で立てた 8001〜8003 は動いたまま。Worker はシナリオが自分で立て直す。
+
+```bash
+sleep 120
+node "$VERIFY/scenario-limits.mjs"
+```
+
+Expected: 11 件すべて `PASS`、終了コード 0。
+- 写真付きで送ると「送りました。写真は今は受け付けていないため、記録だけ保存しました」が ok の色で出る。2.5秒たってもパネルは開いたまま。
+- 記録は1行で、`photo_key` は空。写真の置き場に何も無い。
+- 1分以内の2件目は「短い間に送りすぎです。1分ほど待ってから送ってください」が error の色で出る。総合は残り、「送る」をもう一度押せる。何も保存されない。
+- 1日1件にした Worker では、1件目は通り、2件目は「今日はこれ以上送れません」と出て、保存されない。
+
+`$VERIFY/6-no-photo.png` と `$VERIFY/7-limited.png` を目で確かめる。
+
+- [ ] **Step 11: ボタンを足したあとも、今と同じであることを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" stop
@@ -4294,7 +5066,7 @@ Expected: すべて `PASS`。
 
 `NOTE Open-Meteo answered 429` が出て `FAIL` があったときは、このタスクの最初にある「429 のとき」の手順でやり直す。
 
-- [ ] **Step 11: コミットする**
+- [ ] **Step 12: コミットする**
 
 ```bash
 git add feedback-panel.js app.js index.html style.css
@@ -4306,6 +5078,8 @@ feat: add the session feedback panel to ranking cards
 カードの予報なので、最短2タップで送れる。写真の撮影時刻で日付・時間帯を
 合わせ、撮影位置が離れていれば近いポイントを提案する。送った組は端末に
 覚えて「送り直す」と表示する。FEEDBACK_API が空のあいだはボタンを出さない。
+Worker が写真を置かなかったときはそのことを出してパネルを開いたままにし、
+送りすぎで断られたときは、1分の上限と1日の上限で違う文を出す。
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -4313,14 +5087,17 @@ EOF
 
 ---
 
-### Task 7: README
+### Task 7: README と R2 の文書
 
 **Files:**
 - Modify: `README.md`
+- Create: `docs/r2-security.md`
 
 **Interfaces:**
-- Consumes: Task 1〜6 のファイル名と振る舞い、Task 4 の `wrangler.toml` の名前（`surf-check-feedback`、`surf-check-photos`）
-- Produces: 記録の消し方・ポイント名の書き換え方の手順。Task 9 の公開で使う。
+- Consumes: Task 1〜6 のファイル名と振る舞い、Task 4 の `wrangler.toml` の名前（`surf-check-feedback`、`surf-check-photos`）、`worker/quota.mjs` の `DEFAULT_LIMITS`、`worker/handler.mjs` のログの `event`
+- Produces:
+  - 記録の消し方・ポイント名の書き換え方の手順。Task 9 の公開で使う。
+  - `docs/r2-security.md`：管理画面での設定（Task 9 の Step 1・2 で使う）、見張り方と数のずれの直し方（Task 9 の Step 7）、緊急時の手順（公開後にユーザーへ渡す）。読む人はサイトの持ち主（運用する人）。
 
 - [ ] **Step 1: README を書き換える**
 
@@ -4366,11 +5143,15 @@ feedback.test.js  テスト（初期値・入力チェック・EXIF・近いポ�
 
 worker/
   index.mjs       Worker の入口（handler.mjs に今の時刻を渡すだけ）
-  handler.mjs     POST /feedback と GET /calibration、CORS、回数の上限
+  handler.mjs     POST /feedback と GET /calibration、CORS、写真の保存と片付け
+  quota.mjs       送信の回数・写真の大きさと容量の上限、写真の非常停止（D1 で数える）
   schema.sql      D1 のテーブル定義
-  wrangler.toml   Worker 名、D1・R2 の紐づけ、ALLOWED_ORIGINS
+  wrangler.toml   Worker 名、D1・R2 の紐づけ、ALLOWED_ORIGINS、R2_KILL_SWITCH
   d1-sqlite.mjs   テスト専用。Node 内蔵の node:sqlite を D1 と同じ呼び方で使う
   worker.test.mjs テスト（Worker）
+
+docs/
+  r2-security.md  写真（R2）のコスト対策、上限の変え方、管理画面での設定、緊急時の手順
 ```
 
 ## 共有機能
@@ -4395,7 +5176,7 @@ worker/
 
 - 同じ端末・ポイント・日付・時間帯で送り直すと上書きになる（ボタンのラベルが「送り直す」に変わる）。
 - 写真は長辺1600pxの JPEG に縮めてから送り、EXIF は残さない。元の写真から撮影時刻が読めれば日付と時間帯を合わせ、撮影位置が選んだポイントから1.0kmを超えて離れていて、ほかのポイントの方が近ければ、そちらに切り替える提案を出す。iPhone の Safari などは位置情報を消してから渡すことが多いので、読めたら使う扱い。
-- 送信は1日に1端末20件・1回線30件・全体100件まで。
+- 送信は1端末・1回線ごとに1分5件まで、1日は1端末20件・1回線30件・全体100件まで。写真は1枚1.5MBまで。写真の容量の上限（1日・合計）に当たったときと、写真の非常停止中は、記録だけ保存して写真は置かない。数と変え方は [docs/r2-security.md](docs/r2-security.md)。
 
 貯まった記録（予報と実況の組）から、Worker の `GET /calibration` がその都度次の補正を計算する。
 
@@ -4454,6 +5235,8 @@ Cloudflare のアカウントと `npx wrangler@4 login` が済んでいる前提
 
 `ALLOWED_ORIGINS`（`wrangler.toml`）はサイトのオリジンだけにしてある。サイトのドメインを変えたら、ここも直して `deploy` し直す。
 
+公開したら、[docs/r2-security.md](docs/r2-security.md) の「管理画面での設定」にそって、R2 のバケットが非公開のままか（r2.dev が無効で、ドメインが付いていない）を確かめ、予算アラートを作る。写真を止める・受け付けを止めるときの手順も同じ文書にある。
+
 ### 記録の消し方
 
 頼まれて消すときは、先に写真の名前を控えてから消す。`<端末ID>` は `SELECT id, device_id, name, spot, date, slot FROM feedback ORDER BY updated_at DESC LIMIT 20` などで探す。
@@ -4467,6 +5250,8 @@ npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM fe
 # 日付の範囲で消す（写真は同じ条件の SELECT photo_key で控えてから消す）
 npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM feedback WHERE date BETWEEN '2026-10-01' AND '2026-10-07'"
 ```
+
+消したあとは、[docs/r2-security.md](docs/r2-security.md) の「数のずれを直す」の2で写真の容量の合計を作り直す。やらないと、消した写真のぶんが上限の計算に残る。
 
 ### ポイント名を変えたとき
 
@@ -4489,12 +5274,256 @@ npx wrangler@4 d1 execute surf-check-feedback --remote --command "UPDATE feedbac
 Open-Meteo の GFS-Wave 系の数値予報モデル。実測値ではない点に注意。
 ````
 
+`docs/r2-security.md` を次の内容で作る。写真（R2）の料金が膨らまないための守りと、持ち主が手で行うことをまとめた文書。
+
+````markdown
+# 写真（R2）のコスト対策と緊急時の手順
+
+実況フィードバックの写真を置く Cloudflare R2 について、どこでお金がかかるか、どう抑えているか、何かあったときに何をするかをまとめる。コマンドはすべて `worker/` で実行する。料金と無料枠は 2026年9月に Cloudflare のドキュメントで確かめた値。
+
+## 構成
+
+```
+ブラウザ（GitHub Pages のサイト）
+  │ POST /feedback（記録 + 写真1枚まで）      GET /calibration（補正）
+  ▼                                           ▼
+Cloudflare Worker（surf-check-feedback）
+  ├─ D1（surf-check-feedback）：記録、送信の数、写真の容量の合計
+  └─ R2（surf-check-photos）：写真。Worker が put と delete をするだけ
+```
+
+- R2 に書くのは Worker だけ。写真の名前（`photos/<ランダムな UUID>.jpg`）は Worker が作る。送る側が書いた名前やファイル名は使わない。
+- 写真を外に出す口は無い。公開 URL（r2.dev）、自分のドメイン、署名付き URL、写真を返す API のどれも作っていない。写真を見るのは Cloudflare の管理画面だけ。
+- Worker は R2 の一覧（List）を呼ばない。容量は D1 の `storage_usage` で数える。
+- 送る人のログインは無い（誰でも送れる、という仕様）。そのぶん、回数・大きさ・容量の上限で抑える。
+
+## お金がかかるところ
+
+| 何に | 無料枠（1か月） | 超えた分 | この Worker が使う量 |
+|---|---|---|---|
+| R2 の保存容量 | 10GB | $0.015/GB | 写真の合計。`GLOBAL_STORAGE_LIMIT`（既定 5GB）で止める |
+| R2 の Class A（put・list） | 100万回 | $4.50/100万回 | 写真を置くたびに1回。1日 `GLOBAL_DAILY_COUNT_LIMIT`（既定 100）回まで |
+| R2 の Class B（get） | 1000万回 | $0.36/100万回 | Worker は読まない。管理画面で見たときだけ |
+| R2 の delete・転送量 | 無料 | 無料 | 写真の差し替え・片付け |
+| Workers のリクエスト | 無料プランは1日10万件 | 無料プランは超えるとエラー（請求なし）。有料プランは1000万件/月を超えた分が $0.30/100万件 | POST・GET とも1件ずつ |
+| D1 の読み取り | 無料プランは1日500万行 | 無料プランは超えるとエラー。有料プランは250億行/月を超えた分が $0.001/100万行 | POST は1回数百行。GET /calibration は記録の全件 |
+| D1 の書き込み | 無料プランは1日10万行 | 無料プランは超えるとエラー。有料プランは5000万行/月を超えた分が $1.00/100万行 | 受け付けた送信1件で数行 |
+
+既定の上限のままなら、R2 は無料枠を超えない。put は多くても1日100回（1か月3,100回）で、容量は 5GB で止まる。Workers と D1 は、無料プランなら上限でエラーになるだけで請求は来ない。
+
+## 守り
+
+POST /feedback は次の順に確かめる。先の段で断れば、後の段（とくに R2）には進まない。
+
+1. 設定：`IP_SALT` が無い、上限の変数が整数として読めないときは 500 を返し、何も保存しない。
+2. 大きさ：`Content-Length` が `MAX_UPLOAD_SIZE` + 512KB を超えていれば読まずに 413。宣言が無くても、読みながら数えて超えた時点で読むのをやめて 413。
+3. 中身：記録を検証する（400）。写真は `MAX_UPLOAD_SIZE` を超えれば 413、先頭が JPEG（`FF D8 FF`）でなければ 415。
+4. 回数と容量：D1 の1回のトランザクションで、上限を確かめて、送信を記録し、写真の容量を足す。同時に何件来ても、上限を超えて通ることはない。回数の上限に当たれば 429。容量の上限に当たったとき、非常停止中のときは、写真を置かずに記録だけ受け付ける（下の「写真だけ置かない場合」）。
+5. R2 に put する。失敗したら、置きかけた写真を消し、足した容量を戻して 500。
+6. D1 に記録を保存する。失敗したら、置いた写真を消し、容量を戻して 500。
+7. 後片付け：3日より前の送信の記録を消す。同じ組の送り直しで写真が差し替わったら、古い写真を消して容量を戻す。ここでの失敗はログに残すだけで、送信は成功のまま返す。
+
+Worker は D1 と R2 への呼び出しをやり直さない（リトライ0回）。送り直すかどうかは送った人が決める。同じ端末・ポイント・日付・時間帯の記録は1件だけで、送り直すと上書きになる（写真も差し替え）。
+
+写真を消せなかったときは、その写真の容量を数えたままにする（多めに数える側に倒す）。消せなかった写真の名前はログ（`photo_orphan`）に出るので、「数のずれを直す」の手順で片付ける。
+
+### 上限と環境変数
+
+上限は `worker/quota.mjs` の `DEFAULT_LIMITS` が既定値。変えるときは、同じ名前の変数を `wrangler.toml` の `[vars]` に文字列で書いて deploy する。空文字は既定値に戻る。整数として読めない値（`"10MB"`、`"1.5"`、`"-1"`、`"1e6"`）を入れると、Worker は 500 を返して何も保存しない。
+
+| 変数 | 既定値 | 数えるもの | 超えたとき |
+|---|---|---|---|
+| `MAX_UPLOAD_SIZE` | 1572864（1.5MB） | 写真1枚の大きさ。10485760（10MB）より大きくはできない | 413 |
+| `MINUTE_COUNT_LIMIT` | 5 | 1端末の、また1回線の、直近60秒の送信 | 429（`device_minute` / `ip_minute`） |
+| `DAILY_UPLOAD_COUNT_LIMIT` | 20 | 1端末の1日（日本時間）の送信 | 429（`device`） |
+| `IP_DAILY_COUNT_LIMIT` | 30 | 1回線の1日の送信 | 429（`ip`） |
+| `GLOBAL_DAILY_COUNT_LIMIT` | 100 | 全員の1日の送信 | 429（`total`） |
+| `DAILY_UPLOAD_LIMIT` | 10485760（10MB） | 1端末の1日の写真の合計 | 写真だけ置かない（`device_bytes`） |
+| `GLOBAL_DAILY_UPLOAD_LIMIT` | 104857600（100MB） | 全員の1日の写真の合計 | 写真だけ置かない（`global_bytes`） |
+| `USER_STORAGE_LIMIT` | 209715200（200MB） | 1端末が R2 に置いている写真の合計 | 写真だけ置かない（`device_storage`） |
+| `GLOBAL_STORAGE_LIMIT` | 5368709120（5GB） | R2 に置いている写真の合計 | 写真だけ置かない（`global_storage`） |
+
+ほかの変数：
+
+| 変数 | 置き場所 | 中身 |
+|---|---|---|
+| `ALLOWED_ORIGINS` | `wrangler.toml` | POST を受け付けるサイトのオリジン（カンマ区切り）。ブラウザ以外からの送信は止められないので、守りは上の上限が受け持つ |
+| `IP_SALT` | secret（`wrangler secret put`） | 回線ごとの数え方に使う IP のハッシュの塩。D1 には IP そのものは入らない |
+| `R2_KILL_SWITCH` | `wrangler.toml` | `"false"` か `"0"` のときだけ写真を置く。それ以外（`"true"`、空、書き忘れ）は写真を置かない |
+
+回数の上限は、429 を返した送信は数えない。1日の区切りは日本時間の0時。
+
+### 写真だけ置かない場合
+
+容量の上限か非常停止に当たったとき、Worker は記録を保存し、写真は置かずに 200 を返す。返事には理由が付く。
+
+```json
+{ "ok": true, "id": 12, "updated": false, "photo_skipped": "kill_switch" }
+```
+
+入力パネルは「送りました。写真は今は受け付けていないため、記録だけ保存しました」と出し、自動では閉じない。記録（予報と実況の組）は補正に使えるので、写真が無くても受け付ける方を選んだ。
+
+## 管理画面での設定
+
+コードでは決められないので、公開の前に手で確かめる。
+
+1. **予算アラート（通知だけ）**：Manage Account → Billing → Billable Usage → Create budget alert で、$1・$5・$10 のように金額で作る。従量課金のアカウントだけで使える。届くのは1日ほど遅れることがあり、**超えても止まらない**。守りは上の上限と非常停止で、アラートは気づくためのもの。
+2. **R2 のバケットを公開しない**：作ったばかりのバケットは非公開で、r2.dev の公開 URL も切れている。そのままにする。確かめるには次を実行し、r2.dev が無効で、ドメインが1つも無いことを見る。
+   ```bash
+   npx wrangler@4 r2 bucket dev-url get surf-check-photos
+   npx wrangler@4 r2 bucket domain list surf-check-photos
+   ```
+3. **ライフサイクル**：作ったばかりのバケットには、途中で止まったマルチパートのアップロードを7日で消すルールが入っている。それだけにする。日数で写真を消すルールは足さない。R2 だけで消えると、D1 の記録と容量の合計がずれるため。写真を減らしたいときは「古い写真を減らす」の手順で消す。
+   ```bash
+   npx wrangler@4 r2 bucket lifecycle list surf-check-photos
+   ```
+4. **API トークン**：この構成では作らない。公開は `npx wrangler@4 login` のブラウザでのログインで行う。R2 の API トークン（R2 → Account Details → API Tokens → Manage）が1つも無いことを確かめる。あとで自動 deploy などにトークンが要るときは、このアカウントとこの Worker・D1 だけに絞り、期限を付ける。
+5. **自分のドメイン**：付けない。Worker は `workers.dev` のまま、R2 には付けない。
+6. **キャッシュ**：設定は要らない。写真を返す口が無いので、写真の配信のキャッシュは無い。`GET /calibration` はブラウザ向けに5分のキャッシュの指示を返す。Worker の中のキャッシュ（Cache API）は `workers.dev` では働かないので使っていない。
+7. **WAF**：`workers.dev` のままでは使えない（WAF は自分のドメインに付けるもの）。有料プランに移すときに、Worker を自分のドメインにつなぎ、`/feedback` と `/calibration` にレート制限を付けることを考える（そのときの Cloudflare のドキュメントで確かめる）。
+
+## 見張る
+
+- **ログ**：`npx wrangler@4 tail` で今の送信をその場で見られる（無料）。Worker は1回の送信ごとに JSON を1行出す。端末 ID・名前・IP・IP のハッシュ・記録の中身は出さない。
+
+  | event | 出るとき | 中身 |
+  |---|---|---|
+  | `feedback` | 送信ごと | `status`、`limit`（429 のとき）、`photo_skipped`、`photo_bytes`、`updated` |
+  | `config_error` | 変数が無い・読めない | `variable`（変数の名前） |
+  | `r2_error` | 写真を置けなかった | `error`（例外の名前と文、200文字まで） |
+  | `d1_error` | 記録の保存か後片付けに失敗した | `error` |
+  | `photo_orphan` | 写真を消せなかった | `key`（写真の名前）、`error` |
+  | `error` | 想定外の例外 | `error` |
+
+- **R2 の量**：管理画面の R2 → surf-check-photos → Metrics で、写真の数と合計の大きさが見られる（List を呼ばないので Class A を使わない）。D1 の数と比べる。
+  ```bash
+  npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT used_bytes, file_count FROM storage_usage WHERE scope = 'global'"
+  ```
+  R2 の方が多ければ、消せなかった写真（`photo_orphan`）があるか、Worker 以外が書いている（「トークンが漏れたとき」を見る）。
+- **送信の様子**：直近4日の、日ごとの送信の数・写真の合計・写真を置かなかった数。
+  ```bash
+  npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT day, COUNT(*) AS sends, SUM(photo_bytes) AS photo_bytes, COUNT(photo_skipped) AS skipped FROM submissions GROUP BY day ORDER BY day"
+  ```
+- **Workers と D1**：管理画面の Workers & Pages → surf-check-feedback → Metrics でリクエストとエラーの数、D1 → surf-check-feedback → Metrics で読み書きの行数が見られる。
+
+## 数のずれを直す
+
+`storage_usage` がずれるのは、写真を消せなかったとき（多めに数える）と、記録や写真を手で消したとき。順番に直す。
+
+1. ログの `photo_orphan` に出た写真の名前ごとに、記録から使われていないことを確かめてから消す。
+   ```bash
+   npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT id FROM feedback WHERE photo_key = '<key>'"
+   # 何も返らなければ消す
+   npx wrangler@4 r2 object delete surf-check-photos/<key> --remote
+   ```
+2. 記録から合計を作り直す。1の前にやると、消せていない写真のぶんが数から抜けるので、必ず1の後に行う。
+   ```bash
+   npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM storage_usage; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'global', COALESCE(SUM(photo_bytes), 0), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'device:' || device_id, SUM(photo_bytes), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL GROUP BY device_id"
+   ```
+3. 「見張る」の R2 の Metrics と、`storage_usage` の `global` が合っていることを見る。
+
+### 古い写真を減らす
+
+日付を決めて、写真の名前を控え、R2 から消し、記録から外し、合計を作り直す。記録（予報と実況）は残るので補正には影響しない。
+
+```bash
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT photo_key FROM feedback WHERE photo_key IS NOT NULL AND date < '2027-01-01'"
+npx wrangler@4 r2 object delete surf-check-photos/<photo_key> --remote   # 控えた写真ごとに
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "UPDATE feedback SET photo_key = NULL, photo_bytes = NULL, photo_lat = NULL, photo_lon = NULL, photo_taken_at = NULL WHERE photo_key IS NOT NULL AND date < '2027-01-01'"
+```
+
+そのあと「数のずれを直す」の2と3を行う。
+
+## 緊急時の手順
+
+### A. 写真だけ止める（非常停止）
+
+記録は受け付けたまま、R2 への put を止める。
+
+```bash
+# wrangler.toml の R2_KILL_SWITCH = "false" を "true" に書き換えてから
+npx wrangler@4 deploy
+```
+
+- 急ぐときは管理画面の Workers & Pages → surf-check-feedback → Settings → Variables and Secrets で `R2_KILL_SWITCH` を `true` にしてもよい（保存するとすぐ新しい版になる）。ただし、次に `wrangler deploy` すると `wrangler.toml` の値に戻るので、あとで `wrangler.toml` も同じにする。
+- 止まったかは、`npx wrangler@4 tail` を開いたまま写真付きで1件送り、`"photo_skipped":"kill_switch"` が出ることで確かめる。
+- 戻すときは `"false"` にして deploy する。
+
+### B. 受け付けごと止める
+
+`wrangler.toml` の `[vars]` に `GLOBAL_DAILY_COUNT_LIMIT = "0"` を書いて deploy する。すべての POST が 429（「今日はこれ以上送れません」）になり、R2 にも D1 の記録にも何も書かない。`GET /calibration` は動いたままなので、サイトの補正はそのまま出る。戻すときはその行を消して deploy する。
+
+### C. Worker ごと止める
+
+Worker そのものへのリクエストが多すぎるとき（有料プランで請求が増えている、D1 の読み取りの上限に当たっている）。`wrangler.toml` に `workers_dev = false` を書いて deploy すると、`workers.dev` の URL が答えなくなる。管理画面だけで止めると次の `wrangler deploy` で元に戻るので、`wrangler.toml` で止める。サイトは補正なし（Worker が無いときと同じ表示）で動き続け、「行ってきた」からの送信は「送れませんでした」になる。
+
+### D. トークンが漏れたとき
+
+Cloudflare のトークンやログインが漏れると、Worker を通らずに R2 に直接書ける。上の上限は効かない。
+
+1. My Profile → API Tokens（自分のトークン）、Manage Account → API Tokens（アカウントのトークン）、R2 → Account Details → API Tokens → Manage（R2 のトークン）で、知らないトークン・使っていないトークンを消す（ロールする）。
+2. `npx wrangler@4 logout` のあと `npx wrangler@4 login` でログインし直す。
+3. R2 の Metrics で写真の数と大きさを見て、D1 の `storage_usage` より多ければ、管理画面のバケットの中身を見て知らない物を消す。
+4. Workers & Pages → surf-check-feedback → Deployments で、自分の知らない deploy が無いか見る。あれば手元から `npx wrangler@4 deploy` し直す。
+5. D1 の中身を持ち出されたおそれがあれば、`IP_SALT` を取り替える（`openssl rand -hex 32 | npx wrangler@4 secret put IP_SALT`）。取り替えたその日は、回線ごとの数え方が0からになる。
+
+### 原因を調べる
+
+- `npx wrangler@4 tail` で `feedback` の `status` と `limit`、`photo_skipped` を見る。429 の `total` が続くなら誰かが全体の上限を埋めている。`device_minute` が1台から続くならその端末の暴走。
+- 「見張る」の送信の様子の SQL で、日ごとの数と写真の合計を見る。
+
+## 被害はどこまで広がるか
+
+既定の上限のままの場合。
+
+**Worker の API が攻撃されたとき**
+- R2：put は1日100回、写真の追加は1日100MB、合計は5GBで止まる。無料枠（100万回、10GB）の中なので R2 の請求は $0。
+- 無料プランの Workers と D1：請求は来ない。全体の1日100件を埋められると、その日（日本時間0時まで）はほかの人が送れない。Workers の1日10万件か D1 の1日の読み取りを使い切られると、リセットまで補正も送信も止まる（Workers は UTC の0時、日本時間の9時にリセット）。サイトそのもの（GitHub Pages と Open-Meteo）は動き続け、補正なしの表示になる。
+- 有料プランにした場合：リクエストと D1 の読み取りが、攻撃の量に比例して請求される。とくに `GET /calibration` は1回で記録の全件を読む（記録が1000件なら、100万回で10億行、約 $1）。有料プランに移すなら、先に「残るリスク」の1を片付けるか、C の手順をすぐ使えるようにしておく。
+
+**バグで暴走したとき**
+- 入力パネルが送信を繰り返すようなバグ：1端末は1分5件・1日20件、写真は1日10MBで止まる。全体でも上と同じ量で止まる。
+- Worker のコードが上限を通らずに R2 に書くようなバグ：上限は効かない。テスト（`worker/worker.test.mjs`）で put の回数と容量の数を確かめて防いでいる。起きたら A で写真を止め、それでも止まらなければ C。
+
+**トークンが漏れたとき**
+- Worker の外なので、上限も非常停止も効かない。R2 の容量と操作の回数は、漏れたトークンの使われ方しだいで、上限が無い。
+- 気づく手段は、予算アラート（1日ほど遅れる。止めはしない）と、R2 の Metrics と D1 の `storage_usage` の比べ合わせ。
+- D の手順でトークンを消す。R2 の API トークンを作らないこと、トークンに期限と対象の絞り込みを付けることで、漏れる物を減らしておく。
+
+予算アラートは守りではない。届いたときにはもう請求が発生していて、止まりもしない。
+
+## 残るリスク
+
+1. **`GET /calibration` が毎回全件を読む（中）**：無料プランでは上限に当たって止まるだけだが、有料プランでは読み取りが請求される。計算結果を D1 に保存して数分ごとにだけ計算し直す、という直し方がある。今は記録が少なく無料プランなので、手を付けていない。
+2. **端末 ID は送る側が決める**：ID を変えれば、端末ごとの上限は避けられる。回線ごと・全体の上限で抑えている。
+3. **回線を共有する人**：携帯の回線や同じ Wi-Fi の人は、回線ごとの上限（1分5件・1日30件）を一緒に使う。
+4. **無料プランでの妨害**：上の「攻撃されたとき」のとおり、請求は来ないが、その日は送れなくなる。
+5. **写真の中身**：確かめているのは JPEG の先頭と大きさだけ。EXIF はブラウザが消してから送るが、ブラウザを通さずに送られた写真には残っていることがある。写真は公開していない。
+6. **手で消したときの数のずれ**：「数のずれを直す」で直す。
+
+## この構成で使っていないもの
+
+- 署名付き URL（presigned URL）：写真は Worker が受け取って put する。R2 に直接上げさせない。
+- 写真の公開と配信のキャッシュ：写真を返す口が無い。
+- 送る人のログイン：誰でも送れる仕様。上限で抑える。
+- リトライ：Worker は D1 と R2 の呼び出しをやり直さない。
+- 検証用の環境（staging）：ローカルの `wrangler dev`（ローカルの D1 と R2）とテストで確かめ、本番は1つだけ。
+````
+
 - [ ] **Step 2: 書いたことと実物が合っているかを確かめる**
 
 ```bash
-for f in calibration.js feedback.js feedback-panel.js calibration.test.js feedback.test.js worker/index.mjs worker/handler.mjs worker/schema.sql worker/wrangler.toml worker/d1-sqlite.mjs worker/worker.test.mjs; do test -f "$f" || echo "missing $f"; done
+for f in calibration.js feedback.js feedback-panel.js calibration.test.js feedback.test.js worker/index.mjs worker/handler.mjs worker/quota.mjs worker/schema.sql worker/wrangler.toml worker/d1-sqlite.mjs worker/worker.test.mjs docs/r2-security.md; do test -f "$f" || echo "missing $f"; done
 grep -n 'surf-check-feedback\|surf-check-photos' worker/wrangler.toml
 grep -c 'IP_SALT=' README.md
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+import { DEFAULT_LIMITS } from "./worker/quota.mjs";
+const doc = readFileSync("docs/r2-security.md", "utf8");
+const limits = Object.entries(DEFAULT_LIMITS).filter(([name, value]) => !doc.includes(`| \`${name}\` | ${value}`)).map(([name]) => name);
+const events = [...readFileSync("worker/handler.mjs", "utf8").matchAll(/event: "(\w+)"/g)].map((m) => m[1]).filter((e) => !doc.includes(`\`${e}\``));
+console.log(limits.length || events.length ? `not in docs: ${[...limits, ...events].join(", ")}` : "docs match the code");
+'
 node --test 2>&1 | grep -E '^ℹ (tests|fail)'
 ```
 
@@ -4502,18 +5531,23 @@ Expected:
 - `missing` は1行も出ない。
 - `wrangler.toml` に2つの名前が出る。
 - `IP_SALT=` は README の中で1回だけ出てくる（`openssl rand` で作る例の行）。値そのものは書いていない。
-- `ℹ tests 220`、`ℹ fail 0`
+- `docs match the code` が出る。
+  - 文書の上限の表に `DEFAULT_LIMITS` の名前と既定値がすべてあり、`handler.mjs` のログの `event` がすべて文書に出てくる、という意味。
+  - `not in docs: ...` が出たら、そこに並んだ名前の行を文書で直す。
+- `ℹ tests 240`、`ℹ fail 0`
 
 - [ ] **Step 3: コミットする**
 
 ```bash
-git add README.md
+git add README.md docs/r2-security.md
 git commit -F - <<'EOF'
-docs: describe session feedback, the worker and its upkeep
+docs: describe session feedback, the worker and R2 cost upkeep
 
 README に、実況フィードバックと補正の説明、構成の新しいファイル、Worker を
 ローカルで動かす方法、公開の手順、記録の消し方とポイント名の書き換え方を
-足した。
+足した。docs/r2-security.md に、写真（R2）でお金がかかるところ、上限と
+変え方、管理画面で手で設定すること、見張り方、数のずれの直し方、緊急時の
+手順、被害の範囲と残るリスクをまとめた。
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF
@@ -4531,7 +5565,7 @@ EOF
   - Task 4 の Worker 一式と `schema.sql`
   - Task 6 の `$VERIFY/photo.jpg`（`scenario-send.mjs` が作った、EXIF 付きの JPEG）
   - Task 5 の `$VERIFY/static.mjs`
-- Produces: 本物の実行環境（workerd + ローカルの D1 / R2）で、Task 5・6 の確認用 Worker と同じ振る舞いになることの確認。コードの変更は無い。
+- Produces: 本物の実行環境（workerd + ローカルの D1 / R2）で、Task 5・6 の確認用 Worker と同じ振る舞いになること、上限と写真の非常停止が効くことの確認。コードの変更は無い。
 
 - [ ] **Step 1: ユーザーの承認を得る**
 
@@ -4597,6 +5631,12 @@ Expected（上から順に）:
 4. `403`（許可していないオリジン）
 5. `415`（PNG は JPEG ではない）
 
+2 が `403` のときは、`.dev.vars` の `ALLOWED_ORIGINS` が `[vars]` より優先されていない（仕様からの変更点 (o)）。次のようにしてやり直す。
+1. `wrangler dev` を止める。
+2. `wrangler.toml` の `ALLOWED_ORIGINS = "https://tk0407.github.io"` を、一時的に `ALLOWED_ORIGINS = "https://tk0407.github.io,http://localhost:8000,http://localhost:8001"` にする。
+3. Step 3 の `npx wrangler@4 dev --port 8787` から流し直す。
+4. この変更はコミットしない。Step 9 の片付けで元に戻っていることを確かめる。
+
 - [ ] **Step 5: D1 の行と R2 の写真を確かめる**
 
 ```bash
@@ -4651,7 +5691,38 @@ node "$VERIFY/static.mjs" "$VERIFY/api" 8001
 
 ユーザーが断ったら、この Step は飛ばす。
 
-- [ ] **Step 8: 片付ける**
+- [ ] **Step 8: 写真の非常停止と1分の上限を確かめる**
+
+Step 3 で立てた `wrangler dev` を止め、設定を変えて立て直す。`--var` は `[vars]` より優先される。
+
+```bash
+cd "$REPO/worker"
+npx wrangler@4 dev --port 8787 --var R2_KILL_SWITCH:true --var MINUTE_COUNT_LIMIT:1
+```
+
+`wrangler dev` はバックグラウンドで動かし続ける。ローカルの D1 と R2 は `worker/.wrangler/` に残っているので、Step 4〜7 の記録はそのまま。
+
+Expected: `Ready on http://localhost:8787` が出る。
+
+同じ回線から1分以内に送った記録があると、回線の1分の上限に当たる。61秒待ってから、新しい端末で送る。
+
+```bash
+sleep 61
+DEV3=$(uuidgen | tr A-Z a-z)
+REC3=$(printf '%s' "$REC1" | sed "s/$DEV1/$DEV3/")
+curl -s -X POST http://localhost:8787/feedback -H 'Origin: http://localhost:8001' -F "record=$REC3" -F "photo=@$VERIFY/photo.jpg;type=image/jpeg"; echo
+curl -s -X POST http://localhost:8787/feedback -H 'Origin: http://localhost:8001' -F "record=$REC3"; echo
+npx wrangler@4 d1 execute surf-check-feedback --local --command "SELECT photo_key FROM feedback ORDER BY id DESC LIMIT 1"
+npx wrangler@4 d1 execute surf-check-feedback --local --command "SELECT (SELECT file_count FROM storage_usage WHERE scope = 'global') AS counted, (SELECT COUNT(*) FROM feedback WHERE photo_key IS NOT NULL) AS stored"
+```
+
+Expected（上から順に）:
+1. `{"ok":true,"id":<数>,"updated":false,"photo_skipped":"kill_switch"}`（`id` は、Step 7 で送らなければ 3。送った分だけ大きくなる）
+2. `{"error":"短い間に送りすぎです。1分ほど待ってから送ってください","limit":"device_minute"}`
+3. `photo_key` が `null`（写真は R2 に置かれていない）
+4. `counted` と `stored` が同じ数（Step 7 で写真付きを送っていなければ 1、送っていれば 2）
+
+- [ ] **Step 9: 片付ける**
 
 `wrangler dev` と 8001 の `static.mjs` を止める（8000 には触らない）。
 
@@ -4660,7 +5731,7 @@ git -C "$REPO" status --short
 git -C "$REPO" diff --stat
 ```
 
-Expected: `?? snapshot.html` 以外に何も出ない。`wrangler.toml` の一時的な変更も残っていない。
+Expected: `?? snapshot.html` 以外に何も出ない。`wrangler.toml` の一時的な変更（`database_id`、`ALLOWED_ORIGINS`）も残っていない。残っていたら `git checkout worker/wrangler.toml` で戻す。
 
 コミットは無い。結果を tasks/todo.md の結果の記録に書く。`IP_SALT` の値は書かない。
 
@@ -4678,12 +5749,14 @@ Expected: `?? snapshot.html` 以外に何も出ない。`wrangler.toml` の一�
 
 - [ ] **Step 1: ユーザーの準備と承認を確かめる**
 
-ユーザーに、次の3つを頼む・尋ねる。
+ユーザーに、次の5つを頼む・尋ねる。
 1. Cloudflare のアカウントを作る。R2 を有効にするとき、支払い方法の登録を求められることがある（無料枠の中なら請求はない）。
 2. `cd worker && npx wrangler@4 login` を、ユーザー自身の端末で実行する（ブラウザでログインする）。
-3. D1・R2 を作り、Worker を公開してよいかの承認。
+3. 予算アラートを $1・$5・$10 で作る。手順は `docs/r2-security.md` の「管理画面での設定」の1。アラートは知らせるだけで、超えても止まらない（従量課金のアカウントでだけ作れる。作れなければ、その旨を結果の記録に書く）。
+4. R2 の API トークンが1つも無いことを確かめる（同じく「管理画面での設定」の4）。
+5. D1・R2 を作り、Worker を公開してよいかの承認。
 
-3つとも済むまで、次の Step には進まない。
+5つとも済むまで、次の Step には進まない。
 
 - [ ] **Step 2: D1 と R2 を作り、テーブルを作る**
 
@@ -4702,10 +5775,19 @@ database_id = "<出力された ID>"
 
 ```bash
 npx wrangler@4 r2 bucket create surf-check-photos
+npx wrangler@4 r2 bucket dev-url get surf-check-photos
+npx wrangler@4 r2 bucket domain list surf-check-photos
+npx wrangler@4 r2 bucket lifecycle list surf-check-photos
 npx wrangler@4 d1 execute surf-check-feedback --remote --file schema.sql
 ```
 
-Expected: どれもエラーなく終わる。
+Expected:
+- どれもエラーなく終わる。
+- `dev-url get`：r2.dev の公開 URL は無効（disabled）。
+- `domain list`：ドメインが1つも無い。
+- `lifecycle list`：途中で止まったマルチパートのアップロードを7日で消す、既定のルールだけ。
+
+公開 URL かドメインがあったら、ここで止めてユーザーに知らせる。バケットの公開設定を変えるのはユーザーの承認が要る。
 
 - [ ] **Step 3: `IP_SALT` を入れる**
 
@@ -4737,6 +5819,8 @@ Expected:
 2. `204`
 3. `403`
 
+`deploy` の出力の変数の一覧に、`R2_KILL_SWITCH: "false"` と `ALLOWED_ORIGINS: "https://tk0407.github.io"` があることも見る。
+
 - [ ] **Step 5: サイトに URL を入れる**
 
 `app.js` の行を置き換える。
@@ -4762,7 +5846,7 @@ node --test 2>&1 | grep -E '^ℹ (tests|fail)'
 Expected:
 - `grep -c` は `11`（アイコン3・CSS 1・スクリプト7。どれも1行に1つ）。
   - 数が違うときは、`grep -n '?v=' index.html` で上げ漏れがないかを見る。
-- `ℹ tests 220`、`ℹ fail 0`
+- `ℹ tests 240`、`ℹ fail 0`
 
 - [ ] **Step 6: コミットする**
 
@@ -4799,6 +5883,16 @@ Expected:
   - 空（`null`）なら、README の「実況フィードバックと補正」の写真の箇条に次の一文を足す。そして別のブランチで PR にする。
     - 「この端末（<機種・ブラウザ>）では、端末が位置情報を消すため撮影位置・撮影時刻は使えない」
 
+3. 写真の容量の数が R2 と合っているかを確かめる。
+
+```bash
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT used_bytes, file_count FROM storage_usage WHERE scope = 'global'"
+```
+
+Expected: `file_count` と `used_bytes` が、管理画面の R2 → `surf-check-photos` → Metrics のオブジェクト数・容量と合う（Metrics は反映が遅れることがある）。合わなければ `docs/r2-security.md` の「数のずれを直す」に従う。
+
+4. ユーザーに、`docs/r2-security.md` の「緊急時の手順」（A 写真だけ止める、B 受け付けごと止める、C Worker ごと止める、D トークンが漏れたとき）と「被害はどこまで広がるか」を読んでおいてもらう。
+
 ---
 
 ## 結果の記録
@@ -4809,5 +5903,17 @@ Expected:
   - ブラウザでの確認の PASS / FAIL
   - wrangler での確認の結果
 - 途中で決めたこと
+- R2 のコスト対策の最終報告。次の見出しで書く。
+  1. 今の構成
+  2. 見つけたリスク
+  3. 実装した変更
+  4. 変えたファイル
+  5. 上限（変数・既定値・超えたとき）
+  6. セキュリティの改善
+  7. コストの守り
+  8. 管理画面で手で設定すること（予算アラートを作れたか、トークンが無いことを確かめたか、を含む）
+  9. 残るリスク
+  10. 緊急時の手順
+- 被害の範囲を、API が攻撃されたとき・バグで暴走したとき・トークンが漏れたときの3つに分けて書く。予算アラートは知らせるだけで、守りではないことも書く。
 
-秘密の値（`IP_SALT`、認証情報）と、ユーザーの端末 ID・名前は書かない。
+秘密の値（`IP_SALT`、認証情報）と、ユーザーの端末 ID・名前・IP は書かない。
