@@ -239,7 +239,7 @@
     - `validate(json)` → `boolean`
     - `summaryLabel(spotName, cal)` → 例：`"実況補正 7件（波×1.2・風+0.6m/s）"`。記録が無ければ `""`。
 
-- [ ] **Step 1: 失敗するテストを書く**
+- [x] **Step 1: 失敗するテストを書く**
 
 `calibration.test.js` を次の内容で作る。
 
@@ -608,12 +608,12 @@ test("summaryLabel is empty for spots without records and without a calibration"
 });
 ```
 
-- [ ] **Step 2: テストが失敗することを確かめる**
+- [x] **Step 2: テストが失敗することを確かめる**
 
 Run: `node --test calibration.test.js`
 Expected: FAIL。`Error: Cannot find module './calibration.js'`
 
-- [ ] **Step 3: 実装を書く**
+- [x] **Step 3: 実装を書く**
 
 `calibration.js` を次の内容で作る。
 
@@ -985,17 +985,17 @@ Expected: FAIL。`Error: Cannot find module './calibration.js'`
 });
 ```
 
-- [ ] **Step 4: テストが通ることを確かめる**
+- [x] **Step 4: テストが通ることを確かめる**
 
 Run: `node --test calibration.test.js`
 Expected: `ℹ tests 35`、`ℹ pass 35`、`ℹ fail 0`
 
-- [ ] **Step 5: 全体のテストを流す**
+- [x] **Step 5: 全体のテストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 154`、`ℹ fail 0`
 
-- [ ] **Step 6: コミットする**
+- [x] **Step 6: コミットする**
 
 ```bash
 git add calibration.js calibration.test.js
