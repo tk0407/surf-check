@@ -3841,7 +3841,7 @@ sh "$VERIFY/serve.sh" start
 # 失敗したシナリオをもう一度流す（scenario-offline なら先に worker-stop して 2 分待つ）
 ```
 
-- [ ] **Step 1: 確認用のシナリオを作る**
+- [x] **Step 1: 確認用のシナリオを作る**
 
 `$VERIFY/make-photo.mjs`：JPEG に、撮影時刻と GPS 入りのリトルエンディアンの EXIF を差し込む。
 
@@ -4143,7 +4143,7 @@ try {
 }
 ```
 
-- [ ] **Step 2: 変える前の状態で送信のシナリオを流し、失敗することを確かめる**
+- [x] **Step 2: 変える前の状態で送信のシナリオを流し、失敗することを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" start
@@ -4155,7 +4155,7 @@ Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(
 
 このあと2分待つ（`sleep 120`）。
 
-- [ ] **Step 3: `feedback-panel.js` を作る**
+- [x] **Step 3: `feedback-panel.js` を作る**
 
 ```js
 // Browser-only feedback panel: the <dialog>, photo resizing and the POST.
@@ -4558,7 +4558,7 @@ Expected: 約60秒後に `Error: timeout waiting for: document.querySelectorAll(
 })(self);
 ```
 
-- [ ] **Step 4: `app.js` を変える**
+- [x] **Step 4: `app.js` を変える**
 
 次の9か所を、上から順に置き換える。
 
@@ -4713,7 +4713,7 @@ function onFeedbackClick(e) {
   resultsEl.addEventListener("click", onFeedbackClick);
 ```
 
-- [ ] **Step 5: `index.html` にスクリプトを2つ足す**
+- [x] **Step 5: `index.html` にスクリプトを2つ足す**
 
 **1. `feedback.js` と `feedback-panel.js` を `calibration.js` の後に読み込む**
 
@@ -4730,7 +4730,7 @@ function onFeedbackClick(e) {
   <script src="app.js?v=20260925"></script>
 ```
 
-- [ ] **Step 6: `style.css` の末尾に足す**
+- [x] **Step 6: `style.css` の末尾に足す**
 
 Task 5 で足した `.chip.calib` の後ろに、空行を1行あけて足す。
 
@@ -4976,12 +4976,12 @@ Task 5 で足した `.chip.calib` の後ろに、空行を1行あけて足す。
 }
 ```
 
-- [ ] **Step 7: テストを流す**
+- [x] **Step 7: テストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 240`、`ℹ fail 0`
 
-- [ ] **Step 8: 送信のシナリオを流す**
+- [x] **Step 8: 送信のシナリオを流す**
 
 ```bash
 sh "$VERIFY/serve.sh" start
@@ -5016,7 +5016,7 @@ Expected: すべて `PASS`、終了コード 0。主な確認項目は次のと�
 
 `$VERIFY/1-card.png`〜`4-chip.png` を開いて、見た目が崩れていないことを目で確かめる。
 
-- [ ] **Step 9: Worker が止まっているときのシナリオを流す**
+- [x] **Step 9: Worker が止まっているときのシナリオを流す**
 
 ```bash
 sh "$VERIFY/serve.sh" worker-stop
@@ -5032,7 +5032,7 @@ Expected: すべて `PASS`。
 
 `$VERIFY/5-error.png` を目で確かめる。
 
-- [ ] **Step 10: 上限と写真の非常停止のシナリオを流す**
+- [x] **Step 10: 上限と写真の非常停止のシナリオを流す**
 
 Step 8 で立てた 8001〜8003 は動いたまま。Worker はシナリオが自分で立て直す。
 
@@ -5049,7 +5049,7 @@ Expected: 11 件すべて `PASS`、終了コード 0。
 
 `$VERIFY/6-no-photo.png` と `$VERIFY/7-limited.png` を目で確かめる。
 
-- [ ] **Step 11: ボタンを足したあとも、今と同じであることを確かめる**
+- [x] **Step 11: ボタンを足したあとも、今と同じであることを確かめる**
 
 ```bash
 sh "$VERIFY/serve.sh" stop
@@ -5066,7 +5066,7 @@ Expected: すべて `PASS`。
 
 `NOTE Open-Meteo answered 429` が出て `FAIL` があったときは、このタスクの最初にある「429 のとき」の手順でやり直す。
 
-- [ ] **Step 12: コミットする**
+- [x] **Step 12: コミットする**
 
 ```bash
 git add feedback-panel.js app.js index.html style.css
