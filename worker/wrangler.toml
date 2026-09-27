@@ -1,0 +1,22 @@
+name = "surf-check-feedback"
+main = "index.mjs"
+compatibility_date = "2026-09-01"
+
+[vars]
+# 本番はサイトのオリジンだけ。ローカル開発は worker/.dev.vars で上書きする（README 参照）。
+ALLOWED_ORIGINS = "https://tk0407.github.io"
+# 写真を R2 に置くのは "false"（か "0"）のときだけ。"true" にして deploy すると、
+# 記録は受け付けたまま写真だけ置かなくなる。値が無い・読めないときも置かない。
+R2_KILL_SWITCH = "false"
+# 送信と写真の上限は worker/quota.mjs の DEFAULT_LIMITS の値を使う。変えるときだけ
+# 同じ名前でここに書く（例：GLOBAL_STORAGE_LIMIT = "5368709120"）。
+# 一覧と緊急時の使い方は docs/r2-security.md。
+
+[[d1_databases]]
+binding = "DB"
+database_name = "surf-check-feedback"
+# database_id: filled in at deploy
+
+[[r2_buckets]]
+binding = "PHOTOS"
+bucket_name = "surf-check-photos"
