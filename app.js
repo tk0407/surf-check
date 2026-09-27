@@ -9,8 +9,14 @@ const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
 const WEEK_DAYS = 7;
+// 実況フィードバックの Worker の URL（末尾の / は付けない）。空のあいだは
+// 補正を取りに行かず、「行ってきた」ボタンも出さない。
+const FEEDBACK_API = "";
+const CALIBRATION_TIMEOUT_MS = 2000;
 
 let SPOTS = [];
+let CALIBRATION = null;
+let calibrationReady = Promise.resolve();
 
 function fmtDate(d) {
   const y = d.getFullYear();
@@ -60,6 +66,18 @@ async function fetchSpotData(lat, lon, startDate, endDate) {
   return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
 }
 
+// 補正は起動時に取りに行き、最初の検索は最大 2 秒だけ待つ。遅れて届いた補正は
+// 次の検索から使う。取れない・形が違うときは補正なし（今と同じ表示）のまま。
+function loadCalibration() {
+  if (!FEEDBACK_API) return Promise.resolve();
+  const load = fetch(`${FEEDBACK_API}/calibration`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => { if (Calibration.validate(json)) CALIBRATION = json; })
+    .catch(() => {});
+  const timeout = new Promise((resolve) => setTimeout(resolve, CALIBRATION_TIMEOUT_MS));
+  return Promise.race([load, timeout]);
+}
+
 function tideTrendLabel(marine, slot, date) {
   const levels = marine.sea_level_height_msl;
   if (!levels) return "";
@@ -99,13 +117,13 @@ function daySeries(marine, date) {
 
 async function rankSpot(spot, date, slot) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
-  const data = Forecast.slotConditions(marine, forecast, slot, date);
-  if (!data) throw new Error("予報データなし");
-  const scores = Scoring.scoreSpot(data, spot.bearing);
+  const rawData = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!rawData) throw new Error("予報データなし");
+  const { data, scores } = Calibration.apply(rawData, spot, CALIBRATION);
   const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
   const tideTrend = tideTrendLabel(marine, slot, date);
   const tideSeries = daySeries(marine, date);
-  return { spot, scores, data, tide, tideTrend, tideSeries };
+  return { spot, scores, data, rawData, tide, tideTrend, tideSeries };
 }
 
 // HTML エスケープは共有カードと同じものを使う。
@@ -230,6 +248,11 @@ function reasonChips(result) {
   return chips.join("");
 }
 
+function calibrationChip(spot) {
+  const label = Calibration.summaryLabel(spot.name, CALIBRATION);
+  return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
+}
+
 // Compass icon: fixed circle with an N reference mark, only the arrow
 // rotates (pointing where the flow is heading).
 // Ring gauge around the compass: arc length = speed (capped at 12 m/s,
@@ -307,7 +330,7 @@ function resultCard(result, index) {
       </div>
     </div>
 
-    <div class="reason-row">${reasonChips(result)}</div>
+    <div class="reason-row">${reasonChips(result)}${calibrationChip(result.spot)}</div>
     ${Share.camRow(result.spot)}
   </article>`;
 }
@@ -470,7 +493,8 @@ async function runRanking() {
 
 async function weeklySpot(spot, dates) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, dates[0], dates[dates.length - 1]);
-  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing);
+  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing,
+    (data) => Calibration.apply(data, spot, CALIBRATION));
   const best = Forecast.bestSlot(days);
   if (!best) throw new Error("予報データなし");
   return { spot, days, best };
@@ -546,7 +570,7 @@ function weeklyDetail(spot, day, slot) {
       <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "high"))}</strong></span>
       <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "low"))}</strong></span>
     </div>
-    <div class="reason-row">${reasonChips({ scores })}</div>
+    <div class="reason-row">${reasonChips({ scores })}${calibrationChip(spot)}</div>
   </div>`;
 }
 
@@ -605,6 +629,7 @@ async function check() {
   const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
+    await calibrationReady;
     if (currentMode() === "weekly") await runWeekly();
     else await runRanking();
   } finally {
@@ -705,6 +730,7 @@ function onTideHover(e) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  calibrationReady = loadCalibration();
   initDate();
   tideTip = document.createElement("div");
   tideTip.className = "tide-tooltip";
