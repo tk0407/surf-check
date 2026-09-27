@@ -1916,7 +1916,7 @@ EOF
   - `worker/schema.sql`：`feedback`、`submissions`、`storage_usage` のテーブル。Task 8・9 の wrangler でもそのまま流す。
   - ログ：1回の `POST` ごとに JSON の1行（`event: "feedback"`）。失敗のときは `config_error` / `r2_error` / `d1_error` / `photo_orphan` / `error`。Task 7 の文書の「見張る」の表と一致させる。
 
-- [ ] **Step 1: テーブル定義とテスト用の D1 を置く**
+- [x] **Step 1: テーブル定義とテスト用の D1 を置く**
 
 `worker/schema.sql` を次の内容で作る。
 
@@ -2031,7 +2031,7 @@ export function createD1(db) {
 }
 ```
 
-- [ ] **Step 2: 失敗するテストを書く**
+- [x] **Step 2: 失敗するテストを書く**
 
 `worker/worker.test.mjs` を次の内容で作る。R2 は `Map` に入れる作りもので置き換え、D1 は `schema.sql` をそのまま流した `node:sqlite` を使う。
 
@@ -2685,12 +2685,12 @@ test("GET /calibration?metrics=1 adds leave-one-out metrics", async () => {
 });
 ```
 
-- [ ] **Step 3: テストが失敗することを確かめる**
+- [x] **Step 3: テストが失敗することを確かめる**
 
 Run: `node --test worker/worker.test.mjs`
 Expected: FAIL。`Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../worker/handler.mjs'`
 
-- [ ] **Step 4: 実装を書く**
+- [x] **Step 4: 実装を書く**
 
 `worker/quota.mjs` を次の内容で作る。
 
@@ -3082,13 +3082,13 @@ export default {
 };
 ```
 
-- [ ] **Step 5: テストが通ることを確かめる**
+- [x] **Step 5: テストが通ることを確かめる**
 
 Run: `node --test worker/worker.test.mjs`
 Expected: `ℹ tests 44`、`ℹ pass 44`、`ℹ fail 0`
 - `node:sqlite` の ExperimentalWarning が出ることがあるが、問題ない。
 
-- [ ] **Step 6: wrangler の設定と .gitignore を置く**
+- [x] **Step 6: wrangler の設定と .gitignore を置く**
 
 `worker/wrangler.toml` を次の内容で作る。`database_id` は Task 9 で入れる。
 
@@ -3127,12 +3127,12 @@ worker/.wrangler/
 Run: `git check-ignore worker/.dev.vars worker/.wrangler/x`
 Expected: 2行とも表示される（どちらも無視される）。
 
-- [ ] **Step 7: 全体のテストを流す**
+- [x] **Step 7: 全体のテストを流す**
 
 Run: `node --test`
 Expected: `ℹ tests 240`、`ℹ fail 0`
 
-- [ ] **Step 8: コミットする**
+- [x] **Step 8: コミットする**
 
 ```bash
 git add worker/schema.sql worker/d1-sqlite.mjs worker/quota.mjs worker/handler.mjs worker/index.mjs worker/worker.test.mjs worker/wrangler.toml .gitignore
