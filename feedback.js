@@ -270,7 +270,9 @@
       if ([1, 2, 3, 4].every((tag) => gps.has(tag))) {
         const la = degrees(gps.get(2)) * (ascii(gps.get(1)) === "S" ? -1 : 1);
         const lo = degrees(gps.get(4)) * (ascii(gps.get(3)) === "W" ? -1 : 1);
-        if (Number.isFinite(la) && Number.isFinite(lo)) {
+        // A position that decodes outside the real range can't be read either;
+        // it becomes null like any other unreadable GPS (both lat and lon).
+        if (Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) {
           lat = la;
           lon = lo;
         }

@@ -302,6 +302,18 @@ test("readExif makes south and west negative", () => {
   assert.ok(Math.abs(meta.lon + 140.39) < 1e-9);
 });
 
+test("readExif returns null lat/lon, as a pair, when the GPS decodes out of range but keeps the capture time", () => {
+  const outOfRangeLat = { latRef: "N", lat: [95, 0, 0], lonRef: "E", lon: [140, 23, 24] }; // 95°, > 90
+  const meta = Feedback.readExif(buildJpeg({ takenAt: "2026:09:23 07:42:10", gps: outOfRangeLat }));
+  assert.deepEqual(meta, { lat: null, lon: null, taken_at: "2026-09-23T07:42" });
+});
+
+test("readExif returns null lat/lon when only the longitude is out of range", () => {
+  const outOfRangeLon = { latRef: "N", lat: [35, 20, 24], lonRef: "E", lon: [185, 0, 0] }; // 185°, > 180
+  const meta = Feedback.readExif(buildJpeg({ takenAt: "2026:09:23 07:42:10", gps: outOfRangeLon }));
+  assert.deepEqual(meta, { lat: null, lon: null, taken_at: "2026-09-23T07:42" });
+});
+
 test("readExif returns null for a JPEG without EXIF", () => {
   assert.equal(Feedback.readExif(buildJpeg()), null);
 });
