@@ -5099,7 +5099,7 @@ EOF
   - 記録の消し方・ポイント名の書き換え方の手順。Task 9 の公開で使う。
   - `docs/r2-security.md`：管理画面での設定（Task 9 の Step 1・2 で使う）、見張り方と数のずれの直し方（Task 9 の Step 7）、緊急時の手順（公開後にユーザーへ渡す）。読む人はサイトの持ち主（運用する人）。
 
-- [ ] **Step 1: README を書き換える**
+- [x] **Step 1: README を書き換える**
 
 `README.md` を次の内容にする。今の README に次を足したもの。
 - 冒頭の説明の「サーバー・APIキー不要」を書き換える。
@@ -5510,7 +5510,7 @@ Cloudflare のトークンやログインが漏れると、Worker を通らず�
 - 検証用の環境（staging）：ローカルの `wrangler dev`（ローカルの D1 と R2）とテストで確かめ、本番は1つだけ。
 ````
 
-- [ ] **Step 2: 書いたことと実物が合っているかを確かめる**
+- [x] **Step 2: 書いたことと実物が合っているかを確かめる**
 
 ```bash
 for f in calibration.js feedback.js feedback-panel.js calibration.test.js feedback.test.js worker/index.mjs worker/handler.mjs worker/quota.mjs worker/schema.sql worker/wrangler.toml worker/d1-sqlite.mjs worker/worker.test.mjs docs/r2-security.md; do test -f "$f" || echo "missing $f"; done
@@ -5536,7 +5536,7 @@ Expected:
   - `not in docs: ...` が出たら、そこに並んだ名前の行を文書で直す。
 - `ℹ tests 240`、`ℹ fail 0`
 
-- [ ] **Step 3: コミットする**
+- [x] **Step 3: コミットする**
 
 ```bash
 git add README.md docs/r2-security.md
