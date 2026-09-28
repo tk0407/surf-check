@@ -5567,7 +5567,7 @@ EOF
   - Task 5 の `$VERIFY/static.mjs`
 - Produces: 本物の実行環境（workerd + ローカルの D1 / R2）で、Task 5・6 の確認用 Worker と同じ振る舞いになること、上限と写真の非常停止が効くことの確認。コードの変更は無い。
 
-- [ ] **Step 1: ユーザーの承認を得る**
+- [x] **Step 1: ユーザーの承認を得る**
 
 `npx wrangler@4` は、npm から wrangler を取ってきて実行する。初めて実行する前に、ユーザーに次のように尋ね、承認を待つ。
 
@@ -5577,7 +5577,7 @@ EOF
 
 「ローカル確認は Task 5・6 の確認用 Worker（node:sqlite）で行った。wrangler での確認は未実施」
 
-- [ ] **Step 2: 開発用の設定を作る**
+- [x] **Step 2: 開発用の設定を作る**
 
 ```bash
 cd "$REPO/worker"
@@ -5592,7 +5592,7 @@ Expected:
 
 `IP_SALT` の値は表示しない（`cat .dev.vars` はしない）。
 
-- [ ] **Step 3: ローカルの D1 にテーブルを作り、Worker を立てる**
+- [x] **Step 3: ローカルの D1 にテーブルを作り、Worker を立てる**
 
 ```bash
 cd "$REPO/worker"
@@ -5609,7 +5609,7 @@ Expected: `Ready on http://localhost:8787` が出る。
 2. この変更はコミットしない。Task 9 で本物の ID に置き換える。
 3. このタスクの終わりに `git diff worker/wrangler.toml` で元に戻っていることを確かめる。
 
-- [ ] **Step 4: API を確かめる**
+- [x] **Step 4: API を確かめる**
 
 ```bash
 YDAY=$(TZ=Asia/Tokyo date -v-1d +%F)
@@ -5637,7 +5637,7 @@ Expected（上から順に）:
 3. Step 3 の `npx wrangler@4 dev --port 8787` から流し直す。
 4. この変更はコミットしない。Step 9 の片付けで元に戻っていることを確かめる。
 
-- [ ] **Step 5: D1 の行と R2 の写真を確かめる**
+- [x] **Step 5: D1 の行と R2 の写真を確かめる**
 
 ```bash
 cd "$REPO/worker"
@@ -5654,7 +5654,7 @@ Expected:
   - Worker は受け取った写真をそのまま保存する。
   - EXIF を消すのはブラウザの縮小の段階で、これは Task 6 で確かめた。
 
-- [ ] **Step 6: 記録が増えると補正が変わることを確かめる**
+- [x] **Step 6: 記録が増えると補正が変わることを確かめる**
 
 ```bash
 DEV2=$(uuidgen | tr A-Z a-z)
@@ -5670,7 +5670,7 @@ Expected:
 - `metrics` の `wave_band_mae`・`wind_strength_hit`・`wind_side_hit` が数値になる。記録2件で leave-one-out が計算できるため。
   - `rating_concordance` は `null` のまま。2件とも総合が 4 で、比べられる組が無いため。
 
-- [ ] **Step 7: 任意：パソコンのブラウザから送ってもらう**
+- [x] **Step 7: 任意：パソコンのブラウザから送ってもらう**
 
 作業ツリーのコピーを、`FEEDBACK_API` を書き換えて 8001 で配る。
 
@@ -5691,7 +5691,7 @@ node "$VERIFY/static.mjs" "$VERIFY/api" 8001
 
 ユーザーが断ったら、この Step は飛ばす。
 
-- [ ] **Step 8: 写真の非常停止と1分の上限を確かめる**
+- [x] **Step 8: 写真の非常停止と1分の上限を確かめる**
 
 Step 3 で立てた `wrangler dev` を止め、設定を変えて立て直す。`--var` は `[vars]` より優先される。
 
@@ -5722,7 +5722,7 @@ Expected（上から順に）:
 3. `photo_key` が `null`（写真は R2 に置かれていない）
 4. `counted` と `stored` が同じ数（Step 7 で写真付きを送っていなければ 1、送っていれば 2）
 
-- [ ] **Step 9: 片付ける**
+- [x] **Step 9: 片付ける**
 
 `wrangler dev` と 8001 の `static.mjs` を止める（8000 には触らない）。
 
