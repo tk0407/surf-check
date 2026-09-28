@@ -155,6 +155,12 @@ npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM fe
 npx wrangler@4 d1 execute surf-check-feedback --remote --command "UPDATE feedback SET spot = '<新しい名前>' WHERE spot = '<古い名前>'"
 ```
 
+同じ端末が同じ日付・時間帯に古い名前と新しい名前の両方で既に送っていると、その組だけ `(device_id, spot, date, slot)` の UNIQUE 制約に引っかかり、UPDATE ごと失敗する。先に次で探し、見つかったら該当行のどちらかを手で消すか日付・時間帯をずらしてから UPDATE を流す。
+
+```bash
+npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT a.id AS old_id, b.id AS new_id, a.device_id, a.date, a.slot FROM feedback a JOIN feedback b ON a.device_id = b.device_id AND a.date = b.date AND a.slot = b.slot WHERE a.spot = '<古い名前>' AND b.spot = '<新しい名前>'"
+```
+
 ## スポット・採点ロジックの大元
 
 このリポジトリは公開用。スポット定義(`spots.yaml`)と採点ロジック(Python版)の出所は

@@ -116,6 +116,8 @@ Worker は D1 と R2 への呼び出しをやり直さない（リトライ0回�
   | `photo_orphan` | 写真を消せなかった | `key`（写真の名前）、`error` |
   | `error` | 想定外の例外 | `error` |
 
+  `error` には D1 そのものの失敗（`reserve` の上限チェック、`release` の容量の書き戻し）も含む。どちらも個別のログにはせず、この汎用の `error` として出る。
+
 - **R2 の量**：管理画面の R2 → surf-check-photos → Metrics で、写真の数と合計の大きさが見られる（List を呼ばないので Class A を使わない）。D1 の数と比べる。
   ```bash
   npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT used_bytes, file_count FROM storage_usage WHERE scope = 'global'"
@@ -137,11 +139,16 @@ Worker は D1 と R2 への呼び出しをやり直さない（リトライ0回�
    # 何も返らなければ消す
    npx wrangler@4 r2 object delete surf-check-photos/<key> --remote
    ```
-2. 記録から合計を作り直す。1の前にやると、消せていない写真のぶんが数から抜けるので、必ず1の後に行う。途中で止まっても、同じコマンドをもう一度流せば作り直せる（最初に全部消してから数え直すため）。
+2. 作り直す前に、`storage_usage` の `global` と、今の記録から計算した合計を比べる。
+   ```bash
+   npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT (SELECT used_bytes FROM storage_usage WHERE scope = 'global') AS storage_bytes, (SELECT file_count FROM storage_usage WHERE scope = 'global') AS storage_count, (SELECT COALESCE(SUM(photo_bytes), 0) FROM feedback WHERE photo_key IS NOT NULL) AS feedback_bytes, (SELECT COUNT(*) FROM feedback WHERE photo_key IS NOT NULL) AS feedback_count"
+   ```
+   差があれば、1で拾えなかった、ログにも出ていない孤児がある（`photo_orphan` に出た写真は1で片付いているので、それでも残る差は未知の孤児）。差が大きければ、作り直す前に管理画面の R2 → surf-check-photos でバケットの中身を見て、`feedback.photo_key` に無いキーを探す。
+3. 記録から合計を作り直す。1の前にやると、消せていない写真のぶんが数から抜けるので、必ず1の後に行う。途中で止まっても、同じコマンドをもう一度流せば作り直せる（最初に全部消してから数え直すため）。
    ```bash
    npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM storage_usage; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'global', COALESCE(SUM(photo_bytes), 0), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL; INSERT INTO storage_usage (scope, used_bytes, file_count) SELECT 'device:' || device_id, SUM(photo_bytes), COUNT(*) FROM feedback WHERE photo_key IS NOT NULL GROUP BY device_id"
    ```
-3. 「見張る」の R2 の Metrics と、`storage_usage` の `global` が合っていることを見る。
+4. 「見張る」の R2 の Metrics と、`storage_usage` の `global` が合っていることを見る。
 
 ### 古い写真を減らす
 
@@ -153,7 +160,7 @@ npx wrangler@4 r2 object delete surf-check-photos/<photo_key> --remote   # 控�
 npx wrangler@4 d1 execute surf-check-feedback --remote --command "UPDATE feedback SET photo_key = NULL, photo_bytes = NULL, photo_lat = NULL, photo_lon = NULL, photo_taken_at = NULL WHERE photo_key IS NOT NULL AND date < '2027-01-01'"
 ```
 
-そのあと「数のずれを直す」の2と3を行う。
+そのあと「数のずれを直す」の3と4を行う。
 
 ## 緊急時の手順
 
@@ -222,6 +229,12 @@ Cloudflare のトークンやログインが漏れると、Worker を通らず�
 5. **写真の中身**：確かめているのは JPEG の先頭と大きさだけ。EXIF はブラウザが消してから送るが、ブラウザを通さずに送られた写真には残っていることがある。写真は公開していない。
 6. **手で消したときの数のずれ**：「数のずれを直す」で直す。
 7. **`GET /calibration?metrics=1` は誰でも呼べる**：認証は無い。leave-one-outで記録ごとに計算し直すため、記録1000件でおよそ0.4秒のCPU時間を使う。無料プランは1リクエスト10msなので、その前に1102エラーになり請求は無い。有料プランでは叩かれた回数ぶん課金されるので、`?metrics=1` を頻繁に呼ぶ外部の仕組みは作らない（オフライン計算は `worker/metrics.mjs`、README を参照）。
+8. **`spot` は形だけ確認している**：Worker が確かめるのは1〜40文字という形だけで、`spots.json` にある名前かどうかは見ていない。無い名前で送られても記録として保存され、`GET /calibration` にも出る。サイトは自分の知っている名前しか探さないので表示には影響しないが、気づいたら次で消す。
+   ```bash
+   npx wrangler@4 d1 execute surf-check-feedback --remote --command "SELECT DISTINCT spot FROM feedback"
+   # spots.json に無い名前があれば
+   npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM feedback WHERE spot = '<無い名前>'"
+   ```
 
 ## この構成で使っていないもの
 
