@@ -104,6 +104,10 @@ export async function reserve(db, limits, { device, ipHash, day, at, bytes, skip
   const row = reserved.results[0];
   if (row) return { photoBytes: row.photo_bytes, photoSkipped: row.photo_skipped };
   const { reason } = await db.prepare(VERDICT).bind(...verdict).first();
+  // RESERVE only skips its RETURNING row when a limit was hit, so a missing
+  // row with no reason means D1 answered strangely. Throwing turns that into
+  // a loud 500 instead of silently letting the send around the count limits.
+  if (!reason) throw new Error("reserve: no row and no reason");
   return { limit: reason };
 }
 

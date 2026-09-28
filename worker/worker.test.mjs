@@ -62,6 +62,26 @@ function countPuts(env) {
   return calls;
 }
 
+// A D1 whose RESERVE+COUNT_STORAGE batch (quota.mjs's reserve()) reports empty
+// results and is never actually run, as if D1's RETURNING gave back no row.
+// Every other prepare()/batch() — including reserve()'s own follow-up VERDICT
+// lookup, and the feedback UPSERT — runs against the real fake unchanged, so
+// "no reason" is genuine: nothing was written, so no limit was hit either.
+function emptyReserveResults(realDb) {
+  const tag = (sql, stmt) => ({ ...stmt, sql, bind: (...args) => tag(sql, stmt.bind(...args)) });
+  return {
+    prepare(sql) {
+      return tag(sql, realDb.prepare(sql));
+    },
+    async batch(statements) {
+      if (statements[0].sql.includes("INSERT INTO submissions")) {
+        return statements.map(() => ({ results: [], success: true }));
+      }
+      return realDb.batch(statements);
+    },
+  };
+}
+
 // The Worker logs one JSON line per event with console.log. Keep them out of
 // the test output; logging tests call resetCalls() and read them back.
 const consoleLog = mock.method(console, "log", () => {});
@@ -569,6 +589,18 @@ test("when the old photo cannot be deleted, the send still succeeds and the orph
   assert.equal(photos.size, 2);
   assert.deepEqual(usage().find((u) => u.scope === "global"), { scope: "global", used_bytes: 1600, file_count: 2 });
   assert.ok(logged().some((e) => e.event === "photo_orphan" && e.key === oldKey));
+});
+
+test("reserve() throws, and the handler stores nothing, when a batch returns no row and no reason", async () => {
+  const { env, photos, rows } = setup();
+  env.DB = emptyReserveResults(env.DB);
+  consoleLog.mock.resetCalls();
+  const res = await send(env, { photo: jpeg() });
+  assert.equal(res.status, 500);
+  assert.equal(rows("SELECT * FROM feedback").length, 0);
+  assert.equal(rows("SELECT * FROM submissions").length, 0);
+  assert.equal(photos.size, 0);
+  assert.ok(logged().some((e) => e.event === "error"));
 });
 
 // --- logs ---
