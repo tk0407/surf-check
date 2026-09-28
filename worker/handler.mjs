@@ -9,7 +9,9 @@ const FORM_OVERHEAD_BYTES = 524288;
 const KEEP_SUBMISSION_DAYS = 3;
 const MAX_LOGGED_ERROR = 200;
 
-const CALIBRATION_COLUMNS =
+// Shared with worker/metrics.mjs, which runs the same SELECT offline against
+// a wrangler d1 execute dump so it stays the single source of truth.
+export const CALIBRATION_COLUMNS =
   "device_id, spot, bearing, fc_wave_height, fc_wind_dir, fc_wind_speed, fc_swell_dir, fc_swell_period, rating, wave_band, wind_side, wind_strength";
 
 const UPSERT = `INSERT INTO feedback (device_id, name, spot, date, slot, bearing,

@@ -74,6 +74,13 @@ docs/
 
 補正の効果は `GET /calibration?metrics=1` で見られる（記録を1件ずつ抜いて残りで予測する leave-one-out）。`wave_band_mae` の `calibrated` が `raw` より小さく、`rating_concordance` の `calibrated` が `default` より大きければ、補正が効いている。
 
+記録が増えて leave-one-out の計算が Workers Free プランの CPU 上限（1リクエスト10ms）に収まらなくなったら（だいたい100〜150件が目安）、`?metrics=1` は 1102 エラーになる。そのときは `worker/metrics.mjs` で同じ計算をローカルで行う（SELECT は `handler.mjs` の `CALIBRATION_COLUMNS` を共用しているので、集計対象は `GET /calibration` と同じ）。
+
+```bash
+cd worker
+npx wrangler@4 d1 execute surf-check-feedback --remote --json --command "$(node metrics.mjs --sql)" | node metrics.mjs
+```
+
 `app.js` の `FEEDBACK_API` が空文字のときは補正を取りに行かず、「行ってきた」ボタンも出さない。記録や写真を見る画面は無い。写真は Cloudflare の管理画面（R2）で見る。
 
 ## ローカルで動かす
