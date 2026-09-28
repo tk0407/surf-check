@@ -194,6 +194,7 @@
       suggestion: null,
       sessionTouched: false,
       loadSeq: 0,
+      photoSeq: 0,
       sending: false,
       done: false,
       closed: false,
@@ -299,6 +300,9 @@
     async function onPhoto(file) {
       clearPhoto();
       if (!file) return;
+      // Guards against picking a second photo before the first finishes
+      // resizing: only the pick that is still current when it finishes wins.
+      const seq = ++state.photoSeq;
       if ($(".fb-status").dataset.tone === "error") setStatus("");
       let meta = null;
       try {
@@ -310,13 +314,13 @@
       try {
         blob = await resizePhoto(file);
       } catch (e) {
-        // the panel was closed (maybe reopened for another card) while resizing: leave the screen alone
-        if (state.closed) return;
+        // the panel was closed, or a later pick already won: leave the screen alone
+        if (state.closed || seq !== state.photoSeq) return;
         setStatus(MESSAGES.photoFailed, "error");
         return;
       }
-      // the panel was closed (maybe reopened for another card) while resizing: leave the screen alone
-      if (state.closed) return;
+      // the panel was closed, or a later pick already won: leave the screen alone
+      if (state.closed || seq !== state.photoSeq) return;
       if (!blob) {
         setStatus(MESSAGES.photoTooBig, "error");
         return;
@@ -364,7 +368,7 @@
       setStatus(MESSAGES.sending);
       let res = null;
       try {
-        res = await fetch(`${opts.api}/feedback`, { method: "POST", body });
+        res = await fetch(`${opts.api}/feedback`, { method: "POST", body, signal: AbortSignal.timeout(60000) });
       } catch (e) {
         res = null;
       }
