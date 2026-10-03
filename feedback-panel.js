@@ -10,6 +10,7 @@
   const MAX_PHOTO_BYTES = 1572864;
   const QUALITIES = [0.8, 0.6];
   const CLOSE_AFTER_MS = 1200;
+  const SEND_TIMEOUT_MS = 60000;
   const RATINGS = ["ダメ", "イマイチ", "ふつう", "良い", "最高"];
   const MESSAGES = {
     loading: "予報を読み込んでいます…",
@@ -39,6 +40,14 @@
   }
   function save(key, value) {
     try { root.localStorage.setItem(key, value); } catch (e) { /* not persisted */ }
+  }
+
+  // Like AbortSignal.timeout(), which needs Safari 16; the panel otherwise
+  // runs from Safari 15.4 (<dialog>, crypto.randomUUID).
+  function timeoutSignal(ms) {
+    const abort = new AbortController();
+    setTimeout(() => abort.abort(), ms);
+    return abort.signal;
   }
 
   let sessionDeviceId = null;
@@ -368,7 +377,7 @@
       setStatus(MESSAGES.sending);
       let res = null;
       try {
-        res = await fetch(`${opts.api}/feedback`, { method: "POST", body, signal: AbortSignal.timeout(60000) });
+        res = await fetch(`${opts.api}/feedback`, { method: "POST", body, signal: timeoutSignal(SEND_TIMEOUT_MS) });
       } catch (e) {
         res = null;
       }
