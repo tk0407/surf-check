@@ -145,7 +145,7 @@ npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM fe
 npx wrangler@4 d1 execute surf-check-feedback --remote --command "DELETE FROM feedback WHERE date BETWEEN '2026-10-01' AND '2026-10-07'"
 ```
 
-消したあとは、[docs/r2-security.md](docs/r2-security.md) の「数のずれを直す」の2で写真の容量の合計を作り直す。やらないと、消した写真のぶんが上限の計算に残る。
+消したあとは、[docs/r2-security.md](docs/r2-security.md) の「数のずれを直す」の3で写真の容量の合計を作り直す。やらないと、消した写真のぶんが上限の計算に残る。
 
 ### ポイント名を変えたとき
 
