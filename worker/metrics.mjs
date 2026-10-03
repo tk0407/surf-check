@@ -10,6 +10,7 @@
 //     --command "$(node metrics.mjs --sql)" | node metrics.mjs
 //
 // node metrics.mjs --sql   prints only the SELECT above and exits.
+import { pathToFileURL } from "node:url";
 import Calibration from "../calibration.js";
 import { CALIBRATION_COLUMNS } from "./handler.mjs";
 
@@ -46,7 +47,7 @@ async function main(argv) {
 
 // Only run as a script; worker/metrics.test.mjs imports SELECT and
 // rowsFromWranglerJson without triggering this.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).catch((e) => {
     console.error(e.message);
     process.exitCode = 1;
