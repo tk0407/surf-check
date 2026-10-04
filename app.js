@@ -487,12 +487,21 @@ function renderResults(el, region, date, slot, results, failed) {
   history.replaceState(null, "", share.url);
 }
 
-function refreshFeedbackButtons() {
-  if (!LAST_RANKING_RENDER || !LAST_FEEDBACK_SESSION) return;
-  LAST_RANKING_RENDER.el.querySelectorAll(".feedback-open").forEach((btn) => {
-    const result = LAST_RESULTS[Number(btn.dataset.index)];
-    if (result) btn.textContent = feedbackLabel(result.spot, LAST_FEEDBACK_SESSION);
+function relabelFeedbackButtons(el, results, session) {
+  el.querySelectorAll(".feedback-open").forEach((btn) => {
+    const result = results[Number(btn.dataset.index)];
+    if (result) btn.textContent = feedbackLabel(result.spot, session);
   });
+}
+
+// After a send from either view: the session sent may be the one the other
+// view's buttons point at.
+function refreshFeedbackButtons() {
+  if (LAST_RANKING_RENDER && LAST_FEEDBACK_SESSION) {
+    relabelFeedbackButtons(LAST_RANKING_RENDER.el, LAST_RESULTS, LAST_FEEDBACK_SESSION);
+  }
+  const weeklySession = weeklyFeedbackSession();
+  if (weeklySession) relabelFeedbackButtons(document.getElementById("weekly"), WEEKLY_RESULTS, weeklySession);
 }
 
 function onFeedbackClick(e) {
@@ -540,10 +549,11 @@ async function runRanking() {
   }
 }
 
+// Each slot keeps rawData too: the feedback panel records the uncalibrated forecast.
 async function weeklySpot(spot, dates) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, dates[0], dates[dates.length - 1]);
   const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing,
-    (data) => Calibration.apply(data, spot, CALIBRATION));
+    (data) => ({ ...Calibration.apply(data, spot, CALIBRATION), rawData: data }));
   const best = Forecast.bestSlot(days);
   if (!best) throw new Error("予報データなし");
   return { spot, days, best };
@@ -557,7 +567,7 @@ function weeklyCell(day, slot, dayIndex) {
   return `<td><button type="button" class="wk-cell ${Forecast.scoreBand(total)}" data-day="${dayIndex}" data-slot="${slot}" aria-pressed="false" aria-label="${escapeHtml(label)}">${total}</button></td>`;
 }
 
-function weeklyCard(result, index) {
+function weeklyCard(result, index, session) {
   const best = result.best;
   const head = result.days.map((day) => `<th scope="col">${escapeHtml(dayColumnLabel(day.date))}</th>`).join("");
   const rows = Forecast.SLOT_ORDER.map((slot) => {
@@ -580,13 +590,21 @@ function weeklyCard(result, index) {
       <tbody>${rows}<tr><th scope="row">波</th>${waves}</tr></tbody>
     </table>
     <div class="wk-detail-slot"></div>
+    ${feedbackButton(result, index, session)}
   </article>`;
 }
 
 let WEEKLY_RESULTS = [];
 
+// The weekly view's buttons point at the latest slot that has begun, not at a
+// cell: almost every cell is still in the future.
+function weeklyFeedbackSession() {
+  return FEEDBACK_API ? Feedback.latestStarted(new Date()) : null;
+}
+
 function renderWeekly(el, region, dates, results, failed) {
   WEEKLY_RESULTS = results;
+  const session = weeklyFeedbackSession();
   if (results.length === 0) {
     el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
@@ -599,7 +617,7 @@ function renderWeekly(el, region, dates, results, failed) {
     </div>
     ${shareRow()}
     <div class="ranking-cards">
-      ${results.map(weeklyCard).join("")}
+      ${results.map((r, i) => weeklyCard(r, i, session)).join("")}
     </div>
     ${failedNote}`;
   const share = Share.weeklyShare(location.origin + location.pathname, region, dates, results);
@@ -640,6 +658,28 @@ function onWeeklyClick(e) {
   const day = result.days[parseInt(btn.dataset.day, 10)];
   btn.setAttribute("aria-pressed", "true");
   detailSlot.innerHTML = weeklyDetail(result.spot, day, btn.dataset.slot);
+}
+
+// Opens on the latest slot that has begun as of the tap, so a page left open
+// since before the session still lands on it. Today's slots reuse the fetched
+// forecast; anything else (yesterday evening) is fetched by the panel.
+function onWeeklyFeedbackClick(e) {
+  const btn = e.target.closest(".feedback-open");
+  if (!btn) return;
+  const result = WEEKLY_RESULTS[Number(btn.dataset.index)];
+  if (!result) return;
+  const session = Feedback.latestStarted(new Date());
+  const day = result.days.find((d) => d.date === session.date);
+  const cell = day ? day.slots[session.slot] : null;
+  FeedbackPanel.open({
+    api: FEEDBACK_API,
+    spot: result.spot,
+    spots: SPOTS,
+    card: { ...session, rawData: cell ? cell.rawData : null },
+    calibration: CALIBRATION,
+    fetchConditions,
+    onSent: refreshFeedbackButtons,
+  });
 }
 
 async function runWeekly() {
@@ -794,7 +834,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });
-  document.getElementById("weekly").addEventListener("click", onWeeklyClick);
+  const weeklyEl = document.getElementById("weekly");
+  weeklyEl.addEventListener("click", onWeeklyClick);
+  weeklyEl.addEventListener("click", onWeeklyFeedbackClick);
   const r = await fetch("spots.json?v=20260924");
   SPOTS = await r.json();
   document.getElementById("check").addEventListener("click", check);
