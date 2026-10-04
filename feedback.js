@@ -48,6 +48,7 @@
     return minutes >= slotStartMinutes(slot);
   }
 
+  // The slot that began most recently (before 7:00, yesterday evening).
   function latestStarted(now) {
     const { date: today, minutes } = jstNow(now);
     let slot = null;
@@ -313,7 +314,7 @@
   }
 
   return {
-    jstNow, shiftDay, dateRange, slotStarted, defaultSession, slotForTime, sessionFromPhoto,
+    jstNow, shiftDay, dateRange, slotStarted, latestStarted, defaultSession, slotForTime, sessionFromPhoto,
     initialObserved, buildRecord, validateRecord, readExif, distanceKm, suggestSpot,
   };
 });
