@@ -1,6 +1,9 @@
 name = "surf-check-feedback"
 main = "index.mjs"
 compatibility_date = "2026-09-01"
+# 版ごとの URL（Version URL）は出さない。出すと古い版がその版の設定のまま同じ D1・R2 に
+# つながって残り、緊急時の A・B（docs/r2-security.md）で deploy し直しても止まらない。
+preview_urls = false
 
 [vars]
 # 本番はサイトのオリジンだけ。ローカル開発は worker/.dev.vars で上書きする（README 参照）。

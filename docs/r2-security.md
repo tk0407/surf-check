@@ -102,6 +102,7 @@ Worker は D1 と R2 への呼び出しをやり直さない（リトライ0回�
 5. **自分のドメイン**：付けない。Worker は `workers.dev` のまま、R2 には付けない。
 6. **キャッシュ**：設定は要らない。写真を返す口が無いので、写真の配信のキャッシュは無い。`GET /calibration` はブラウザ向けに5分のキャッシュの指示を返す。Worker の中のキャッシュ（Cache API）は `workers.dev` では働かないので使っていない。
 7. **WAF**：`workers.dev` のままでは使えない（WAF は自分のドメインに付けるもの）。有料プランに移すときに、Worker を自分のドメインにつなぎ、`/feedback` と `/calibration` にレート制限を付けることを考える（そのときの Cloudflare のドキュメントで確かめる）。
+8. **版ごとの URL（Version URL / Preview URL）**：`wrangler.toml` の `preview_urls = false` で切っている。オンにすると、古い版がその版の設定のまま同じ D1・R2 につながって残り、緊急時の A・B で deploy し直しても止まらない。管理画面の Workers & Pages → surf-check-feedback → Settings → Domains & Routes でもオンにしない。
 
 ## 見張る
 
