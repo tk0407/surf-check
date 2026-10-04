@@ -15,7 +15,7 @@ R2_KILL_SWITCH = "false"
 [[d1_databases]]
 binding = "DB"
 database_name = "surf-check-feedback"
-# database_id: filled in at deploy
+database_id = "662fd8dd-7c57-4dd0-b7d5-35b0516e5b1d"
 
 [[r2_buckets]]
 binding = "PHOTOS"

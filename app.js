@@ -11,7 +11,7 @@ const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時�
 const WEEK_DAYS = 7;
 // 実況フィードバックの Worker の URL（末尾の / は付けない）。空のあいだは
 // 補正を取りに行かず、「行ってきた」ボタンも出さない。
-const FEEDBACK_API = "";
+const FEEDBACK_API = "https://surf-check-feedback.butandingtech-account.workers.dev";
 const CALIBRATION_TIMEOUT_MS = 2000;
 
 let SPOTS = [];
