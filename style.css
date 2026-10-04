@@ -844,3 +844,251 @@ footer {
   grid-column: 1 / -1;
   margin: 0;
 }
+
+/* 実況フィードバック */
+.chip.calib {
+  border-color: rgba(18, 69, 89, 0.18);
+  background: var(--soft);
+  color: var(--deep);
+  white-space: normal;
+}
+
+.feedback-open {
+  width: 100%;
+  min-height: 40px;
+  margin-top: 10px;
+  border: 1px solid var(--sea);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--sea);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-panel {
+  width: min(560px, 100%);
+  max-width: 100%;
+  max-height: 92vh;
+  margin: auto auto 0;
+  padding: 0;
+  border: 0;
+  border-radius: 14px 14px 0 0;
+  background: var(--panel);
+  color: var(--ink);
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+
+.fb-panel::backdrop {
+  background: rgba(18, 69, 89, 0.35);
+}
+
+.fb-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.fb-head,
+.fb-when,
+.fb-row {
+  display: grid;
+  grid-template-columns: 4.5em minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.fb-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fb-title {
+  color: var(--deep);
+  font-size: 1rem;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fb-close {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--deep);
+  font: inherit;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.fb-when {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.fb-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.fb-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.fb-choice {
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.fb-choice[aria-pressed="true"] {
+  border-color: var(--sea);
+  background: var(--sea);
+  color: #fff;
+}
+
+.fb-choice:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-date,
+.fb-name {
+  width: 100%;
+  min-width: 0;
+  height: 39px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+}
+
+.fb-photo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fb-photo-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 4px 12px;
+  border: 1px dashed var(--sea);
+  border-radius: 8px;
+  color: var(--sea);
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-photo-add input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fb-photo-add[hidden],
+.fb-preview[hidden],
+.fb-suggest[hidden] {
+  display: none;
+}
+
+.fb-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fb-preview img {
+  width: 56px;
+  height: 56px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.fb-photo-remove,
+.fb-switch {
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--deep);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.fb-hint {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.fb-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(244, 201, 107, 0.24);
+  font-size: 0.82rem;
+}
+
+.fb-status {
+  min-height: 1.2em;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.fb-status[data-tone="error"] {
+  color: #b84a3c;
+}
+
+.fb-status[data-tone="ok"] {
+  color: var(--good);
+  font-weight: 800;
+}
+
+.fb-send {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--sea);
+  color: #fff;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.fb-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

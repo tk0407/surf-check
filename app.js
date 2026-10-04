@@ -9,8 +9,16 @@ const FORECAST_PARAMS = ["windspeed_10m", "winddirection_10m"];
 const TIME_SLOTS = Forecast.TIME_SLOTS;
 const SLOT_LABELS = { morning: "朝（07-10時）", afternoon: "昼（12-15時）", evening: "夕（16-19時）" };
 const WEEK_DAYS = 7;
+// 実況フィードバックの Worker の URL（末尾の / は付けない）。空のあいだは
+// 補正を取りに行かず、「行ってきた」ボタンも出さない。
+const FEEDBACK_API = "https://surf-check-feedback.butandingtech-account.workers.dev";
+const CALIBRATION_TIMEOUT_MS = 2000;
 
 let SPOTS = [];
+// CALIBRATION は今の検索（とその入力パネル）が使う補正、loadedCalibration は Worker から届いた最新の補正。
+let CALIBRATION = null;
+let loadedCalibration = null;
+let calibrationReady = Promise.resolve();
 
 function fmtDate(d) {
   const y = d.getFullYear();
@@ -60,6 +68,28 @@ async function fetchSpotData(lat, lon, startDate, endDate) {
   return { marine: (await m.json()).hourly, forecast: (await f.json()).hourly };
 }
 
+// 補正は起動時に取りに行き、最初の検索は最大 2 秒だけ待つ。遅れて届いた補正は
+// loadedCalibration に置くだけにして、次の check() の最初で CALIBRATION に移す
+// (検索の途中で CALIBRATION が書き換わらないようにするため)。取れない・形が
+// 違うときは補正なし（今と同じ表示）のまま。
+function loadCalibration() {
+  if (!FEEDBACK_API) return Promise.resolve();
+  const load = fetch(`${FEEDBACK_API}/calibration`)
+    .then((res) => (res.ok ? res.json() : null))
+    .then((json) => { if (Calibration.validate(json)) loadedCalibration = json; })
+    .catch(() => {});
+  const timeout = new Promise((resolve) => setTimeout(resolve, CALIBRATION_TIMEOUT_MS));
+  return Promise.race([load, timeout]);
+}
+
+// 入力パネル用：その日・時間帯の補正前の予報値。
+async function fetchConditions(spot, date, slot) {
+  const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
+  const data = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!data) throw new Error("予報データなし");
+  return data;
+}
+
 function tideTrendLabel(marine, slot, date) {
   const levels = marine.sea_level_height_msl;
   if (!levels) return "";
@@ -99,13 +129,13 @@ function daySeries(marine, date) {
 
 async function rankSpot(spot, date, slot) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, date, date);
-  const data = Forecast.slotConditions(marine, forecast, slot, date);
-  if (!data) throw new Error("予報データなし");
-  const scores = Scoring.scoreSpot(data, spot.bearing);
+  const rawData = Forecast.slotConditions(marine, forecast, slot, date);
+  if (!rawData) throw new Error("予報データなし");
+  const { data, scores } = Calibration.apply(rawData, spot, CALIBRATION);
   const tide = Scoring.tideEvents(marine.time, marine.sea_level_height_msl || [], date);
   const tideTrend = tideTrendLabel(marine, slot, date);
   const tideSeries = daySeries(marine, date);
-  return { spot, scores, data, tide, tideTrend, tideSeries };
+  return { spot, scores, data, rawData, tide, tideTrend, tideSeries };
 }
 
 // HTML エスケープは共有カードと同じものを使う。
@@ -230,6 +260,21 @@ function reasonChips(result) {
   return chips.join("");
 }
 
+function calibrationChip(spot) {
+  const label = Calibration.summaryLabel(spot.name, CALIBRATION);
+  return label ? `<span class="chip calib">${escapeHtml(label)}</span>` : "";
+}
+
+// session はパネルが最初に開く日・時間帯（Feedback.defaultSession）。null ならボタンを出さない。
+function feedbackLabel(spot, session) {
+  return FeedbackPanel.hasSent(spot.name, session.date, session.slot) ? "送り直す" : "行ってきた";
+}
+
+function feedbackButton(result, index, session) {
+  if (!session) return "";
+  return `<button type="button" class="feedback-open" data-index="${index}">${feedbackLabel(result.spot, session)}</button>`;
+}
+
 // Compass icon: fixed circle with an N reference mark, only the arrow
 // rotates (pointing where the flow is heading).
 // Ring gauge around the compass: arc length = speed (capped at 12 m/s,
@@ -279,7 +324,7 @@ function conditionMetrics(data, bearing) {
     </div>`;
 }
 
-function resultCard(result, index) {
+function resultCard(result, index, session) {
   const rank = index + 1;
   const featured = index === 0 ? " featured" : "";
 
@@ -307,8 +352,8 @@ function resultCard(result, index) {
       </div>
     </div>
 
-    <div class="reason-row">${reasonChips(result)}</div>
-    ${Share.camRow(result.spot)}
+    <div class="reason-row">${reasonChips(result)}${calibrationChip(result.spot)}</div>
+    ${Share.camRow(result.spot)}${feedbackButton(result, index, session)}
   </article>`;
 }
 
@@ -317,6 +362,7 @@ let LAST_RESULTS = [];
 // redraw tide curves that were laid out at width 0 while #results was
 // display:none (see drawTideCurves), without re-fetching anything.
 let LAST_RANKING_RENDER = null;
+let LAST_FEEDBACK_SESSION = null;
 
 function drawTideCurves(el, results, date, slot) {
   const now = new Date();
@@ -419,6 +465,7 @@ function wireShareRow(root, payload) {
 function renderResults(el, region, date, slot, results, failed) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
+  LAST_FEEDBACK_SESSION = FEEDBACK_API ? Feedback.defaultSession({ date, slot }, new Date()) : null;
   if (results.length === 0) {
     el.innerHTML = `<p class="failed">データを取得できませんでした。</p>`;
     return;
@@ -431,13 +478,38 @@ function renderResults(el, region, date, slot, results, failed) {
     </div>
     ${shareRow()}
     <div class="ranking-cards">
-      ${results.map(resultCard).join("")}
+      ${results.map((r, i) => resultCard(r, i, LAST_FEEDBACK_SESSION)).join("")}
     </div>
     ${failedNote}`;
   const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
   wireShareRow(el, share);
   drawTideCurves(el, results, date, slot);
   history.replaceState(null, "", share.url);
+}
+
+function refreshFeedbackButtons() {
+  if (!LAST_RANKING_RENDER || !LAST_FEEDBACK_SESSION) return;
+  LAST_RANKING_RENDER.el.querySelectorAll(".feedback-open").forEach((btn) => {
+    const result = LAST_RESULTS[Number(btn.dataset.index)];
+    if (result) btn.textContent = feedbackLabel(result.spot, LAST_FEEDBACK_SESSION);
+  });
+}
+
+function onFeedbackClick(e) {
+  const btn = e.target.closest(".feedback-open");
+  if (!btn || !LAST_RANKING_RENDER) return;
+  const result = LAST_RESULTS[Number(btn.dataset.index)];
+  if (!result) return;
+  const { date, slot } = LAST_RANKING_RENDER;
+  FeedbackPanel.open({
+    api: FEEDBACK_API,
+    spot: result.spot,
+    spots: SPOTS,
+    card: { date, slot, rawData: result.rawData },
+    calibration: CALIBRATION,
+    fetchConditions,
+    onSent: refreshFeedbackButtons,
+  });
 }
 
 // Runs fn for every spot in parallel; spots whose promise rejects are
@@ -470,7 +542,8 @@ async function runRanking() {
 
 async function weeklySpot(spot, dates) {
   const { marine, forecast } = await fetchSpotData(spot.lat, spot.lon, dates[0], dates[dates.length - 1]);
-  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing);
+  const days = Forecast.weeklyForecast(marine, forecast, dates, spot.bearing,
+    (data) => Calibration.apply(data, spot, CALIBRATION));
   const best = Forecast.bestSlot(days);
   if (!best) throw new Error("予報データなし");
   return { spot, days, best };
@@ -546,7 +619,7 @@ function weeklyDetail(spot, day, slot) {
       <span class="tide-time"><b>満潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "high"))}</strong></span>
       <span class="tide-time"><b>干潮</b><strong>${escapeHtml(tideTimesLabel(day.tide, "low"))}</strong></span>
     </div>
-    <div class="reason-row">${reasonChips({ scores })}</div>
+    <div class="reason-row">${reasonChips({ scores })}${calibrationChip(spot)}</div>
   </div>`;
 }
 
@@ -605,6 +678,8 @@ async function check() {
   const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
+    await calibrationReady;
+    CALIBRATION = loadedCalibration;
     if (currentMode() === "weekly") await runWeekly();
     else await runRanking();
   } finally {
@@ -705,6 +780,7 @@ function onTideHover(e) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  calibrationReady = loadCalibration();
   initDate();
   tideTip = document.createElement("div");
   tideTip.className = "tide-tooltip";
@@ -714,6 +790,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const resultsEl = document.getElementById("results");
   resultsEl.addEventListener("pointermove", onTideHover);
   resultsEl.addEventListener("pointerleave", hideTideHover);
+  resultsEl.addEventListener("click", onFeedbackClick);
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });

@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const F = require("./forecast.js");
 const S = require("./scoring.js");
+const C = require("./calibration.js");
 
 // Open-Meteo-style hourly series: one sample per hour for each day,
 // value = fn(dayIndex, hour).
@@ -197,4 +198,43 @@ test("scoreBand boundaries (good >= 50, ok >= 30)", () => {
   assert.equal(F.scoreBand(30), "ok");
   assert.equal(F.scoreBand(29), "bad");
   assert.equal(F.scoreBand(0), "bad");
+});
+
+// --- weeklyForecast scorer ---
+
+test("weeklyForecast without a scorer matches the default scorer exactly", () => {
+  const marine = marineSeries();
+  const forecast = forecastSeries();
+  const plain = F.weeklyForecast(marine, forecast, WEEK, 90);
+  const explicit = F.weeklyForecast(marine, forecast, WEEK, 90, (data) => ({ data, scores: S.scoreSpot(data, 90) }));
+  assert.deepEqual(plain, explicit);
+});
+
+test("weeklyForecast uses the scorer's data and scores, and maxWaveHeight follows the scored data", () => {
+  const scorer = (data) => {
+    const scaled = { ...data, wave_height: data.wave_height * 2 };
+    return { data: scaled, scores: { ...S.scoreSpot(scaled, 90), total: 7 } };
+  };
+  const days = F.weeklyForecast(marineSeries(), forecastSeries(), WEEK, 90, scorer);
+  assert.equal(days[0].slots.morning.data.wave_height, 2.5);
+  assert.equal(days[0].slots.morning.scores.total, 7);
+  assert.equal(days[0].maxWaveHeight, 2.5);
+});
+
+test("weeklyForecast never calls the scorer for a missing slot", () => {
+  const calls = [];
+  const scorer = (data) => { calls.push(data); return { data, scores: S.scoreSpot(data, 90) }; };
+  const days = F.weeklyForecast(marineSeries(), forecastSeries(), ["2026-09-25", "2026-09-26"], 90, scorer);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(days[1].slots, { morning: null, afternoon: null, evening: null });
+});
+
+test("weeklyForecast with Calibration.apply and no calibration matches the plain weekly forecast", () => {
+  const marine = marineSeries({ swell_wave_height: (di, h) => 0.4 + di * 0.3 + h / 100 });
+  const forecast = forecastSeries({ windspeed_10m: (di, h) => di + h / 10 });
+  const spot = { name: "一宮", bearing: 90 };
+  assert.deepEqual(
+    F.weeklyForecast(marine, forecast, WEEK, 90, (data) => C.apply(data, spot, null)),
+    F.weeklyForecast(marine, forecast, WEEK, 90),
+  );
 });

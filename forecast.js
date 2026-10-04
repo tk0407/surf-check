@@ -48,14 +48,17 @@
     return Object.values(data).some((v) => v == null) ? null : data;
   }
 
-  function weeklyForecast(marine, forecast, dates, bearing) {
+  // scorer(data) returns the cell { data, scores }; the app passes one that
+  // applies feedback calibration. maxWaveHeight follows the returned data.
+  function weeklyForecast(marine, forecast, dates, bearing, scorer) {
+    const score = scorer || ((data) => ({ data, scores: Scoring.scoreSpot(data, bearing) }));
     return dates.map((date) => {
       const slots = {};
       const heights = [];
       for (const slot of SLOT_ORDER) {
         const data = slotConditions(marine, forecast, slot, date);
-        slots[slot] = data ? { data, scores: Scoring.scoreSpot(data, bearing) } : null;
-        if (data) heights.push(data.wave_height);
+        slots[slot] = data ? score(data) : null;
+        if (slots[slot]) heights.push(slots[slot].data.wave_height);
       }
       return {
         date,
