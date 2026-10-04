@@ -92,7 +92,8 @@
   }
 
   // Longest side MAX_SIDE, JPEG at 0.8 then 0.6; null when both stay over
-  // MAX_PHOTO_BYTES. Re-encoding through a canvas drops all EXIF, GPS included.
+  // MAX_PHOTO_BYTES. Re-encoding through a canvas drops the original's EXIF,
+  // GPS included; Safari still writes its own (colour space and pixel size).
   async function resizePhoto(file) {
     const img = await decodeImage(file);
     const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
