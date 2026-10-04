@@ -37,6 +37,28 @@ test("dateRange spans 30 days before today through today", () => {
   assert.deepEqual(Feedback.dateRange(NOW), { min: "2026-08-24", max: "2026-09-23" });
 });
 
+// --- latestStarted ---
+
+test("latestStarted switches slot at each start minute", () => {
+  const at = (hhmm) => Feedback.latestStarted(jst(`2026-09-23T${hhmm}`));
+  assert.deepEqual(at("07:00"), { date: "2026-09-23", slot: "morning" });
+  assert.deepEqual(at("11:59"), { date: "2026-09-23", slot: "morning" });
+  assert.deepEqual(at("12:00"), { date: "2026-09-23", slot: "afternoon" });
+  assert.deepEqual(at("15:59"), { date: "2026-09-23", slot: "afternoon" });
+  assert.deepEqual(at("16:00"), { date: "2026-09-23", slot: "evening" });
+  assert.deepEqual(at("23:59"), { date: "2026-09-23", slot: "evening" });
+});
+
+test("latestStarted before 7:00 is the previous evening, across a month end", () => {
+  assert.deepEqual(Feedback.latestStarted(jst("2026-09-23T06:59")), { date: "2026-09-22", slot: "evening" });
+  assert.deepEqual(Feedback.latestStarted(jst("2026-10-01T00:00")), { date: "2026-09-30", slot: "evening" });
+});
+
+test("latestStarted follows Japan time, not the UTC date", () => {
+  // 2026-09-23 23:30 UTC is already 08:30 on the 24th in Japan.
+  assert.deepEqual(Feedback.latestStarted(new Date("2026-09-23T23:30:00Z")), { date: "2026-09-24", slot: "morning" });
+});
+
 // --- defaultSession ---
 
 test("defaultSession keeps the card's slot at the exact start minute", () => {
