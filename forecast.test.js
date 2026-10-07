@@ -238,3 +238,36 @@ test("weeklyForecast with Calibration.apply and no calibration matches the plain
     F.weeklyForecast(marine, forecast, WEEK, 90),
   );
 });
+
+// --- upcomingSlot ---
+
+// Japan time → the UTC instant the browser sees.
+const jst = (s) => new Date(Date.parse(`${s}:00+09:00`));
+
+test("upcomingSlot moves to the next slot the minute the current one ends", () => {
+  const at = (hhmm) => F.upcomingSlot(jst(`2026-10-07T${hhmm}`));
+  assert.deepEqual(at("00:00"), { date: "2026-10-07", slot: "morning" });
+  assert.deepEqual(at("06:59"), { date: "2026-10-07", slot: "morning" });
+  assert.deepEqual(at("09:59"), { date: "2026-10-07", slot: "morning" });
+  assert.deepEqual(at("10:00"), { date: "2026-10-07", slot: "afternoon" });
+  assert.deepEqual(at("14:59"), { date: "2026-10-07", slot: "afternoon" });
+  assert.deepEqual(at("15:00"), { date: "2026-10-07", slot: "evening" });
+  assert.deepEqual(at("18:59"), { date: "2026-10-07", slot: "evening" });
+});
+
+test("upcomingSlot after the evening slot is tomorrow morning", () => {
+  assert.deepEqual(F.upcomingSlot(jst("2026-10-07T19:00")), { date: "2026-10-08", slot: "morning" });
+  assert.deepEqual(F.upcomingSlot(jst("2026-10-07T23:59")), { date: "2026-10-08", slot: "morning" });
+});
+
+test("upcomingSlot rolls over a month end and a year end", () => {
+  assert.deepEqual(F.upcomingSlot(jst("2026-09-30T19:00")), { date: "2026-10-01", slot: "morning" });
+  assert.deepEqual(F.upcomingSlot(jst("2026-12-31T20:00")), { date: "2027-01-01", slot: "morning" });
+});
+
+test("upcomingSlot follows Japan time, not the UTC date", () => {
+  // 2026-10-07 23:30 UTC is already 08:30 on the 8th in Japan.
+  assert.deepEqual(F.upcomingSlot(new Date("2026-10-07T23:30:00Z")), { date: "2026-10-08", slot: "morning" });
+  // 2026-10-07 10:30 UTC is 19:30 the same day in Japan, past the evening slot.
+  assert.deepEqual(F.upcomingSlot(new Date("2026-10-07T10:30:00Z")), { date: "2026-10-08", slot: "morning" });
+});

@@ -698,3 +698,58 @@ test("escapeHtml は文字列以外を文字列にしてから処理する", () 
   assert.equal(Sh.escapeHtml(0), "0");
   assert.equal(Sh.escapeHtml(null), "null");
 });
+
+// --- 波サイズを人の体で見せる絵（BEST のカード） ---
+
+// 0〜4m を 1cm 刻みで。
+const HEIGHTS = Array.from({ length: 401 }, (_, i) => i / 100);
+// waveSizeLabel の呼び方が変わる高さ（フラットの始まりの 0 も含む）。
+const BAND_STARTS = [0, 0.3, 0.5, 0.8, 1.1, 1.5, 2.0, 2.5];
+
+test("waveBodyLevel は waveSizeLabel が返すどの呼び方にも体の位置を返す", () => {
+  for (const h of HEIGHTS) {
+    assert.ok(Number.isFinite(Sh.waveBodyLevel(h)), `h=${h}`);
+  }
+});
+
+test("waveBodyLevel は呼び方が変わる高さで必ず上がり、高さが増えて下がることはない", () => {
+  const levels = BAND_STARTS.map((h) => Sh.waveBodyLevel(h));
+  for (let i = 1; i < levels.length; i++) {
+    assert.ok(levels[i] > levels[i - 1], `${BAND_STARTS[i - 1]}m → ${BAND_STARTS[i]}m`);
+  }
+  for (let i = 1; i < HEIGHTS.length; i++) {
+    assert.ok(Sh.waveBodyLevel(HEIGHTS[i]) >= Sh.waveBodyLevel(HEIGHTS[i - 1]), `h=${HEIGHTS[i]}`);
+  }
+});
+
+test("waveBodyLevel は呼び方の境目で waveSizeLabel と同じ所で切り替わる", () => {
+  for (const h of BAND_STARTS.slice(1)) {
+    const below = Math.round((h - 0.01) * 100) / 100;
+    assert.notEqual(Sh.waveBodyLevel(below), Sh.waveBodyLevel(h), `${below}m と ${h}m`);
+    assert.equal(Sh.waveBodyLevel(h), Sh.waveBodyLevel(Math.round((h + 0.09) * 100) / 100), `${h}m の帯の中`);
+  }
+});
+
+test("waveBodyLevel はヒザまでは腰より下、アタマ〜オーバーから頭の上（0＝足元、1＝頭のてっぺん）", () => {
+  assert.ok(Sh.waveBodyLevel(0) > 0 && Sh.waveBodyLevel(0) < 0.2, "フラットは足元");
+  assert.ok(Sh.waveBodyLevel(0.4) < 0.4, "ヒザ");
+  assert.ok(Sh.waveBodyLevel(1.3) < 1, "カタ〜アタマはまだ頭の下");
+  assert.ok(Sh.waveBodyLevel(1.7) > 1, "アタマ〜オーバー");
+  assert.ok(Sh.waveBodyLevel(2.2) > 1, "オーバーヘッド");
+});
+
+test("waveBodyLevel はダブル+ より上は伸ばさない（絵からはみ出さない）", () => {
+  assert.equal(Sh.waveBodyLevel(6), Sh.waveBodyLevel(2.5));
+  assert.ok(Sh.waveBodyLevel(6) <= 1.4);
+});
+
+test("waveScaleLabel は立った人のどこまでかと高さを出す", () => {
+  assert.equal(Sh.waveScaleLabel(0.7), "立った人の コシ〜ハラ くらい（0.7m）");
+  assert.equal(Sh.waveScaleLabel(1.2), "立った人の カタ〜アタマ くらい（1.2m）");
+  assert.equal(Sh.waveScaleLabel(3.1), "立った人の ダブル+ くらい（3.1m）");
+});
+
+test("waveScaleLabel はフラットなら体の位置ではなく、ほとんど波がないと出す", () => {
+  assert.equal(Sh.waveScaleLabel(0), "ほとんど波がない（0.0m）");
+  assert.equal(Sh.waveScaleLabel(0.2), "ほとんど波がない（0.2m）");
+});
