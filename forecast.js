@@ -7,6 +7,7 @@
   // Hours are [start, end): morning covers 07:00, 08:00 and 09:00.
   const TIME_SLOTS = { morning: [7, 10], afternoon: [12, 15], evening: [16, 19] };
   const SLOT_ORDER = ["morning", "afternoon", "evening"];
+  const JST_OFFSET_MS = 9 * 60 * 60 * 1000; // Japan has no daylight saving time
 
   // Per-key mean over the slot's hours on `date`; null when no sample falls
   // in the window at all.
@@ -83,6 +84,16 @@
     return best;
   }
 
+  // The slot to check when the page opens: the first one today (Japan time)
+  // that has not ended yet, or tomorrow morning once the evening is over.
+  function upcomingSlot(now) {
+    const jst = new Date(now.getTime() + JST_OFFSET_MS);
+    const minutes = jst.getUTCHours() * 60 + jst.getUTCMinutes();
+    const slot = SLOT_ORDER.find((s) => minutes < TIME_SLOTS[s][1] * 60);
+    if (!slot) jst.setUTCDate(jst.getUTCDate() + 1);
+    return { date: jst.toISOString().slice(0, 10), slot: slot || SLOT_ORDER[0] };
+  }
+
   function scoreBand(total) {
     if (total >= 50) return "good";
     if (total >= 30) return "ok";
@@ -91,6 +102,6 @@
 
   return {
     TIME_SLOTS, SLOT_ORDER, averageForWindow, slotConditions,
-    weeklyForecast, bestSlot, scoreBand,
+    weeklyForecast, bestSlot, upcomingSlot, scoreBand,
   };
 });

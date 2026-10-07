@@ -69,6 +69,30 @@
     return "オンショア";
   }
 
+  // BEST のカードの絵で、波の頂上を立った人のどの高さに描くか（0＝足元、
+  // 1＝頭のてっぺん）。実寸ではなく呼び方の目安なので、境目は
+  // Scoring.waveSizeLabel のまま、ダブル+ より上は伸ばさない。
+  const WAVE_BODY_LEVELS = {
+    "フラット": 0.1,
+    "ヒザ": 0.25,
+    "コシ〜ハラ": 0.55,
+    "ムネ〜カタ": 0.72,
+    "カタ〜アタマ": 0.88,
+    "アタマ〜オーバー": 1.06,
+    "オーバーヘッド": 1.2,
+    "ダブル+": 1.35,
+  };
+
+  function waveBodyLevel(heightM) {
+    return WAVE_BODY_LEVELS[Scoring.waveSizeLabel(heightM)];
+  }
+
+  function waveScaleLabel(heightM) {
+    const label = Scoring.waveSizeLabel(heightM);
+    const meters = `${heightM.toFixed(1)}m`;
+    return label === "フラット" ? `ほとんど波がない（${meters}）` : `立った人の ${label} くらい（${meters}）`;
+  }
+
   // 共有テキストと共有カードが参照する唯一の整形。results は
   // scores.total の降順に並んでいる前提。
   function cardRows(results) {
@@ -383,6 +407,7 @@
 
   return {
     SLOT_SHORT, dateParts, mdLabel, jpDirection, windConditionLabel, cardRows,
+    waveBodyLevel, waveScaleLabel,
     escapeHtml, camRow,
     shareLines, shareText, shareUrl, drawShareCard, parseParams,
     weeklyRows, weeklyShareLines, weeklyText, weeklyUrl,

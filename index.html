@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>サーフチェック</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20261005" />
-  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=20261005" />
-  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=20261005" />
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=20261007" />
+  <link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png?v=20261007" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=20261007" />
   <!-- ?v= は更新の取りこぼし防止。CSS / JS / アイコン を変更したら日付を上げる。
        これが無いと、新しい index.html と古いキャッシュの CSS / JS が
        混ざって画面が壊れる（GitHub Pages のキャッシュは 10 分）。 -->
-  <link rel="stylesheet" href="style.css?v=20261005" />
+  <link rel="stylesheet" href="style.css?v=20261007" />
 </head>
 <body>
   <main class="app-shell" data-mode="ranking">
@@ -22,9 +22,56 @@
           <p class="ranking-only">エリア・日付・時間帯から、入りやすいポイントをランキングします。</p>
           <p class="weekly-only">エリアを選ぶと、ポイントごとの7日分の予報を表示します。</p>
         </div>
-        <button type="button" id="checkTop" class="refresh" aria-label="チェックを実行">↻</button>
+        <div class="header-actions">
+          <button type="button" id="guideToggle" class="guide-toggle" aria-expanded="false" aria-controls="guide">使い方</button>
+          <button type="button" id="checkTop" class="refresh" aria-label="チェックを実行">↻</button>
+        </div>
       </div>
     </header>
+
+    <section id="guide" class="guide" aria-labelledby="guideTitle" hidden>
+      <div class="guide-head">
+        <div>
+          <h2 id="guideTitle">はじめての方へ</h2>
+          <p>3ステップで、今日入るポイントが決まります。</p>
+        </div>
+        <button type="button" id="guideClose" class="guide-close" aria-label="案内を閉じる">
+          <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <ol class="guide-steps">
+        <li>
+          <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+            <path d="M6 9 H26 M6 16 H26 M6 23 H26" fill="none" stroke="#c9d6dd" stroke-width="2" stroke-linecap="round"/>
+            <circle cx="12" cy="9" r="3" fill="#fff" stroke="#007f8f" stroke-width="2"/>
+            <circle cx="21" cy="16" r="3" fill="#fff" stroke="#007f8f" stroke-width="2"/>
+            <circle cx="15" cy="23" r="3" fill="#fff" stroke="#007f8f" stroke-width="2"/>
+          </svg>
+          <b>1 条件を選ぶ</b>
+          <span>エリア・日付・時間帯</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+            <rect x="5" y="6" width="22" height="5" rx="2.5" fill="#124559"/>
+            <rect x="5" y="14" width="17" height="5" rx="2.5" fill="#007f8f"/>
+            <rect x="5" y="22" width="12" height="5" rx="2.5" fill="#69c7c9"/>
+          </svg>
+          <b>2 チェック</b>
+          <span>点数の高い順に並ぶ</span>
+        </li>
+        <li>
+          <svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+            <path d="M3 22 C 8 17 12 17 16 21 C 20 25 24 25 29 20" fill="none" stroke="#007f8f" stroke-width="2.4" stroke-linecap="round"/>
+            <path d="M10 10 L14 14 L22 6" fill="none" stroke="#1d9a72" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <b>3 行ってきた</b>
+          <span>送るほど予報が合ってくる</span>
+        </li>
+      </ol>
+      <p class="guide-note">閉じると、次からは出ません。右上の「使い方」でまた開けます。</p>
+    </section>
+
+    <section id="bestNow" class="best-now ranking-only" aria-labelledby="bestNowTitle" hidden></section>
 
     <nav class="mode-tabs" role="tablist" aria-label="表示モード">
       <button type="button" id="tab-ranking" class="mode-tab" role="tab" data-mode="ranking" aria-controls="results" aria-selected="true">ランキング</button>
@@ -71,12 +118,13 @@
 
     <footer>データ提供: Open-Meteo（数値予報モデル）</footer>
   </main>
-  <script src="scoring.js?v=20261005"></script>
-  <script src="forecast.js?v=20261005"></script>
-  <script src="share.js?v=20261005"></script>
-  <script src="calibration.js?v=20261005"></script>
-  <script src="feedback.js?v=20261005"></script>
-  <script src="feedback-panel.js?v=20261005"></script>
-  <script src="app.js?v=20261005"></script>
+  <script src="scoring.js?v=20261007"></script>
+  <script src="forecast.js?v=20261007"></script>
+  <script src="share.js?v=20261007"></script>
+  <script src="calibration.js?v=20261007"></script>
+  <script src="feedback.js?v=20261007"></script>
+  <script src="feedback-panel.js?v=20261007"></script>
+  <script src="prefs.js?v=20261007"></script>
+  <script src="app.js?v=20261007"></script>
 </body>
 </html>

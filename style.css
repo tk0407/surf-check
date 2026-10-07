@@ -138,6 +138,26 @@ h1 {
   line-height: 1.2;
 }
 
+.header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.guide-toggle {
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid rgba(18, 69, 89, 0.2);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--deep);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
 #check {
   align-self: end;
   min-height: 39px;
@@ -1091,4 +1111,262 @@ footer {
 .fb-send:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* --- First-visit guide --- */
+
+.guide {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 14px;
+  border: 1px solid rgba(0, 127, 143, 0.24);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.guide[hidden],
+.best-now[hidden] {
+  display: none;
+}
+
+.guide-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.guide-head h2 {
+  margin: 0;
+  color: var(--deep);
+  font-size: 0.95rem;
+}
+
+.guide-head p,
+.guide-note {
+  margin: 3px 0 0;
+  color: #4f5c69;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.guide-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  margin: -10px -10px 0 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #4f5c69;
+  cursor: pointer;
+}
+
+.guide-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-steps li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 6px;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+}
+
+.guide-steps b {
+  color: var(--ink);
+  font-size: 0.76rem;
+}
+
+.guide-steps span {
+  color: #4f5c69;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.guide-note {
+  margin: 0;
+  font-size: 0.76rem;
+}
+
+/* --- Best spot from the check on open --- */
+
+.best-now {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 16px;
+  border-radius: 12px;
+  background: linear-gradient(160deg, var(--deep), var(--sea));
+  color: #fff;
+  box-shadow: 0 14px 30px rgba(18, 69, 89, 0.24);
+}
+
+.best-now-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.best-now-head h2 {
+  margin: 0;
+  font-size: 0.76rem;
+  font-weight: 800;
+  opacity: 0.9;
+  word-break: auto-phrase; /* 「…でい／ちばん」と語の途中で折らない（対応ブラウザのみ） */
+}
+
+.best-now-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 0.64rem;
+  font-weight: 800;
+}
+
+.best-now-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.best-now-main b {
+  min-width: 0;
+  font-size: 1.85rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.best-now-score {
+  flex: 0 0 auto;
+  font-size: 2.1rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.best-now-score span {
+  font-size: 0.8rem;
+  font-weight: 800;
+  opacity: 0.75;
+}
+
+.best-now-strip {
+  display: block;
+  width: 100%;
+  height: 46px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.best-now-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.best-now-chips span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.best-now-rest {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.best-now-rest li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.best-now-rest span {
+  font-size: 0.8rem;
+  font-weight: 900;
+  opacity: 0.8;
+}
+
+.best-now-rest b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.88rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.best-now-rest strong {
+  font-size: 0.94rem;
+  font-weight: 900;
+}
+
+.best-now-all {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--deep);
+  font: inherit;
+  font-size: 0.94rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+/* --- Wave size against a standing person (BEST card) ---
+   Wins over the ≤640px single-column .card-metrics rule (higher
+   specificity): the figure takes the full row, wind and swell share the next. */
+
+.card-metrics.has-figure {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mini-metric.wave-figure {
+  grid-column: 1 / -1;
+  grid-template-rows: auto auto auto;
+  min-height: 0;
+}
+
+.wave-figure-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.wave-figure-svg {
+  display: block;
+  width: 100%;
+  height: 128px;
+  border-radius: 8px;
+  background: #dff4f5;
+}
+
+.wave-figure strong {
+  font-size: 0.95rem;
+  white-space: normal;
 }
