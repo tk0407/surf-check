@@ -19,6 +19,7 @@ let SPOTS = [];
 let CALIBRATION = null;
 let loadedCalibration = null;
 let calibrationReady = Promise.resolve();
+const PREFS = Prefs.create();
 
 function fmtDate(d) {
   const y = d.getFullYear();
@@ -300,17 +301,57 @@ function metricIcon(directionDeg, windSpeedMs) {
   </span>`;
 }
 
-function conditionMetrics(data, bearing) {
+// BEST のカードの波サイズ：立った人の横に、呼び方の目安の高さ（Share.waveBodyLevel）
+// で波を描く。viewBox の外まで地面を伸ばしてあるので、横に広い画面でも途切れない。
+const FIGURE_GROUND = 108; // 足元の y
+const FIGURE_PERSON = 66; // 足元から頭のてっぺんまで
+const FIGURE_MARKS = [["アタマ", 0.96], ["ムネ", 0.67], ["コシ", 0.47], ["ヒザ", 0.24]];
+
+function waveFigureSvg(heightM) {
+  const h = Share.waveBodyLevel(heightM) * FIGURE_PERSON;
+  const crest = FIGURE_GROUND - h;
+  const y = (k) => (FIGURE_GROUND - k * h).toFixed(1);
+  const marks = FIGURE_MARKS.map(([label, level]) => {
+    const my = (FIGURE_GROUND - level * FIGURE_PERSON).toFixed(1);
+    return `<path d="M64 ${my} H330" stroke="#9fb4bf" stroke-dasharray="3 4"/><text x="68" y="${(my - 3).toFixed(1)}">${label}</text>`;
+  }).join("");
+  return `<svg class="wave-figure-svg" viewBox="0 0 330 120" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+    <rect x="64" y="${(crest - 5).toFixed(1)}" width="266" height="10" fill="#ef6f5e" opacity="0.14"/>
+    <g fill="#687481" font-size="9" font-weight="700">${marks}</g>
+    <path d="M120 ${FIGURE_GROUND} C 160 ${FIGURE_GROUND} 178 ${y(0.92)} 222 ${y(1)} C 256 ${y(1)} 276 ${y(0.68)} 296 ${y(0.32)} C 310 ${y(0.08)} 320 ${FIGURE_GROUND} 330 ${FIGURE_GROUND} Z" fill="#69c7c9"/>
+    <path d="M222 ${y(1)} C 246 ${y(0.99)} 262 ${y(0.84)} 276 ${y(0.6)}" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" opacity="0.8"/>
+    <path d="M150 ${FIGURE_GROUND} C 190 ${FIGURE_GROUND} 220 ${y(0.44)} 262 ${y(0.44)} C 290 ${y(0.44)} 310 ${y(0.16)} 330 ${y(0.08)} L330 ${FIGURE_GROUND} Z" fill="#007f8f"/>
+    <rect x="-2000" y="${FIGURE_GROUND}" width="4330" height="40" fill="#124559"/>
+    <g transform="translate(6 34.7) scale(0.7333)" fill="#124559">
+      <circle cx="46" cy="18" r="8"/>
+      <path d="M34 30 Q46 26 58 30 L61 60 L56 61 L54 100 L48 100 L46 66 L44 100 L38 100 L36 61 L31 60 Z"/>
+    </g>
+    <rect x="200" y="${Math.max(2, crest - 22).toFixed(1)}" width="44" height="16" rx="8" fill="#fff"/>
+    <text x="222" y="${(Math.max(2, crest - 22) + 12).toFixed(1)}" fill="#124559" font-size="10" font-weight="900" text-anchor="middle">${heightM.toFixed(1)}m</text>
+  </svg>`;
+}
+
+function waveFigureMetric(data) {
+  return `<span class="mini-metric wave-figure">
+        <span class="wave-figure-head"><b>波サイズ</b><span class="metric-sub">周期 ${data.swell_period.toFixed(1)}s</span></span>
+        ${waveFigureSvg(data.wave_height)}
+        <span><strong>${escapeHtml(Share.waveScaleLabel(data.wave_height))}</strong><span class="metric-sub">目安です。実際の見え方は地形や潮で変わります。</span></span>
+      </span>`;
+}
+
+// figure が true（BEST のカード）なら、波サイズを立った人の絵で見せる。
+function conditionMetrics(data, bearing, figure = false) {
   const waveSize = Scoring.waveSizeLabel(data.wave_height);
   const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
   const windFlowDeg = data.wind_dir + 180;
   const swellFlowDeg = data.swell_dir + 180;
-  return `<div class="card-metrics">
-      <span class="mini-metric">
+  const waveMetric = figure ? waveFigureMetric(data) : `<span class="mini-metric">
         <b>波サイズ</b>
         <span class="wave-icon ${waveIconClass(data.wave_height)}" aria-hidden="true"></span>
         <span><strong>${data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${data.swell_period.toFixed(1)}s</span></span>
-      </span>
+      </span>`;
+  return `<div class="card-metrics${figure ? " has-figure" : ""}">
+      ${waveMetric}
       <span class="mini-metric">
         <b>風向き</b>
         ${metricIcon(windFlowDeg, data.wind_speed)}
@@ -338,7 +379,7 @@ function resultCard(result, index, session) {
       <span class="ranking-score">${result.scores.total}<span>/85</span></span>
     </div>
 
-    ${conditionMetrics(result.data, result.spot.bearing)}
+    ${conditionMetrics(result.data, result.spot.bearing, index === 0)}
 
     <div class="tide-panel">
       <div class="tide-head">
@@ -462,7 +503,8 @@ function wireShareRow(root, payload) {
   }
 }
 
-function renderResults(el, region, date, slot, results, failed) {
+// replaceUrl が false（開いたときの自動チェック）なら URL を書き換えない。
+function renderResults(el, region, date, slot, results, failed, { replaceUrl = true } = {}) {
   LAST_RESULTS = results;
   LAST_RANKING_RENDER = { el, date, slot };
   LAST_FEEDBACK_SESSION = FEEDBACK_API ? Feedback.defaultSession({ date, slot }, new Date()) : null;
@@ -484,7 +526,7 @@ function renderResults(el, region, date, slot, results, failed) {
   const share = Share.rankingShare(location.origin + location.pathname, region, date, slot, results);
   wireShareRow(el, share);
   drawTideCurves(el, results, date, slot);
-  history.replaceState(null, "", share.url);
+  if (replaceUrl) history.replaceState(null, "", share.url);
 }
 
 function relabelFeedbackButtons(el, results, session) {
@@ -534,16 +576,62 @@ async function settleBySpot(spots, fn) {
   return { ok, failed };
 }
 
-async function runRanking() {
+// 「いちばん」のカードの飾りの波。
+const BEST_NOW_STRIP = `<svg class="best-now-strip" viewBox="0 0 330 46" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M0 28 C 40 16 80 16 120 26 C 160 36 200 36 240 24 C 280 14 310 16 330 22 L330 46 L0 46 Z" fill="#69c7c9" opacity="0.9"/>
+    <path d="M0 36 C 50 28 100 28 150 36 C 200 44 260 42 330 32 L330 46 L0 46 Z" fill="#fff" opacity="0.28"/>
+  </svg>`;
+
+// 開いたときの自動チェックの上位3つ。day は「今日」か「明日」。
+function bestNowHtml(day, region, slot, results) {
+  const [top, ...rest] = results.slice(0, 3);
+  const d = top.data;
+  const chips = [
+    Scoring.waveSizeLabel(d.wave_height),
+    Share.windConditionLabel(d.wind_dir, d.wind_speed, top.spot.bearing),
+    `周期 ${d.swell_period.toFixed(1)}s`,
+  ];
+  const restRows = rest.map((r, i) => `<li><span>${i + 2}</span><b>${escapeHtml(r.spot.name)}</b><strong>${r.scores.total}</strong></li>`).join("");
+  return `
+    <div class="best-now-head">
+      <h2 id="bestNowTitle">${escapeHtml(`${day} ${SLOT_LABELS[slot]}の${region}でいちばん`)}</h2>
+      <span class="best-now-badge">自動でチェックしました</span>
+    </div>
+    <div class="best-now-main">
+      <b>${escapeHtml(top.spot.name)}</b>
+      <span class="best-now-score">${top.scores.total}<span>/85</span></span>
+    </div>
+    ${BEST_NOW_STRIP}
+    <div class="best-now-chips">${chips.map((c) => `<span>${escapeHtml(c)}</span>`).join("")}</div>
+    ${restRows ? `<ol class="best-now-rest">${restRows}</ol>` : ""}
+    <button type="button" class="best-now-all">ランキングをすべて見る</button>`;
+}
+
+function onBestNowClick(e) {
+  if (!e.target.closest(".best-now-all")) return;
+  const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  document.getElementById("results").scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
+}
+
+// auto は開いたときの自動チェック（{ day: "今日" | "明日" }）。そのときだけ
+// 「いちばん」のカードを出し、URL は書き換えない。手でチェックしたらカードは消す。
+async function runRanking(auto = null) {
   const region = document.getElementById("region").value;
   const date = document.getElementById("date").value;
   const slot = document.getElementById("slot").value;
   const resultsEl = document.getElementById("results");
-  resultsEl.innerHTML = `<div class="loading"><b>取得中...</b><span>Open-Meteoから波・風・潮汐データを読み込んでいます。</span></div>`;
+  const bestEl = document.getElementById("bestNow");
+  bestEl.hidden = true;
+  const loadingTitle = auto ? `${auto.day} ${Share.SLOT_SHORT[slot]}の${region}をチェック中…` : "取得中...";
+  resultsEl.innerHTML = `<div class="loading"><b>${escapeHtml(loadingTitle)}</b><span>Open-Meteoから波・風・潮汐データを読み込んでいます。</span></div>`;
   try {
     const { ok, failed } = await settleBySpot(filterByRegion(region), (s) => rankSpot(s, date, slot));
     ok.sort((a, b) => b.scores.total - a.scores.total);
-    renderResults(resultsEl, region, date, slot, ok, failed);
+    renderResults(resultsEl, region, date, slot, ok, failed, { replaceUrl: !auto });
+    if (auto && ok.length) {
+      bestEl.innerHTML = bestNowHtml(auto.day, region, slot, ok);
+      bestEl.hidden = false;
+    }
   } catch (e) {
     resultsEl.innerHTML = `<p class="failed">エラー: ${escapeHtml(e.message)}</p>`;
   }
@@ -714,17 +802,64 @@ function setMode(mode) {
 }
 
 // Both check buttons run whichever view is active; disabled while loading.
-async function check() {
+// auto (the check on open) always runs the ranking; see runRanking.
+async function check(auto = null) {
   const buttons = [document.getElementById("check"), document.getElementById("checkTop")].filter(Boolean);
   buttons.forEach((btn) => { btn.disabled = true; });
   try {
     await calibrationReady;
     CALIBRATION = loadedCalibration;
-    if (currentMode() === "weekly") await runWeekly();
-    else await runRanking();
+    if (!auto && currentMode() === "weekly") await runWeekly();
+    else await runRanking(auto);
   } finally {
     buttons.forEach((btn) => { btn.disabled = false; });
   }
+}
+
+// ボタンで調べたエリアを、次に開いたときの自動チェックに使う（共有リンクのエリアは残さない）。
+function onCheckClick() {
+  PREFS.saveRegion(document.getElementById("region").value);
+  check();
+}
+
+function selectableRegions() {
+  return Array.from(document.getElementById("region").options).map((o) => o.value);
+}
+
+// 共有リンク以外で開いたら、これから入れる枠を前回のエリア（無ければ先頭の千葉北）で
+// 自動でチェックする。URL は書き換えないので、再読み込みするとその時点の枠を選び直す。
+function autoCheck() {
+  const now = new Date();
+  const { date, slot } = Forecast.upcomingSlot(now);
+  const region = PREFS.region(selectableRegions());
+  if (region) document.getElementById("region").value = region;
+  document.getElementById("date").value = date;
+  document.getElementById("slot").value = slot;
+  check({ day: date === Feedback.jstNow(now).date ? "今日" : "明日" });
+}
+
+// はじめての案内。×か「使い方」で閉じたら、次からは出さない（保存できない環境では毎回出る）。
+function showGuide(open) {
+  document.getElementById("guide").hidden = !open;
+  document.getElementById("guideToggle").setAttribute("aria-expanded", String(open));
+}
+
+function closeGuide() {
+  showGuide(false);
+  PREFS.closeGuide();
+}
+
+function initGuide() {
+  const toggle = document.getElementById("guideToggle");
+  showGuide(!PREFS.guideClosed());
+  toggle.addEventListener("click", () => {
+    if (document.getElementById("guide").hidden) showGuide(true);
+    else closeGuide();
+  });
+  document.getElementById("guideClose").addEventListener("click", () => {
+    closeGuide();
+    toggle.focus();
+  });
 }
 
 function initDate() {
@@ -746,7 +881,7 @@ function applyParams() {
   const dateEl = document.getElementById("date");
   const slotEl = document.getElementById("slot");
   const params = Share.parseParams(location.search, {
-    regions: Array.from(regionEl.options).map((o) => o.value),
+    regions: selectableRegions(),
     slots: Object.keys(TIME_SLOTS),
     modes: ["ranking", "weekly"],
   });
@@ -822,6 +957,7 @@ function onTideHover(e) {
 window.addEventListener("DOMContentLoaded", async () => {
   calibrationReady = loadCalibration();
   initDate();
+  initGuide();
   tideTip = document.createElement("div");
   tideTip.className = "tide-tooltip";
   tideTip.appendChild(document.createElement("b"));
@@ -831,6 +967,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   resultsEl.addEventListener("pointermove", onTideHover);
   resultsEl.addEventListener("pointerleave", hideTideHover);
   resultsEl.addEventListener("click", onFeedbackClick);
+  document.getElementById("bestNow").addEventListener("click", onBestNowClick);
   document.querySelectorAll(".mode-tab").forEach((tab) => {
     tab.addEventListener("click", () => setMode(tab.dataset.mode));
   });
@@ -839,7 +976,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   weeklyEl.addEventListener("click", onWeeklyFeedbackClick);
   const r = await fetch("spots.json?v=20260924");
   SPOTS = await r.json();
-  document.getElementById("check").addEventListener("click", check);
-  document.getElementById("checkTop").addEventListener("click", check);
+  document.getElementById("check").addEventListener("click", onCheckClick);
+  document.getElementById("checkTop").addEventListener("click", onCheckClick);
   if (applyParams()) check();
+  else autoCheck();
 });
