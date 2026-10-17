@@ -1370,3 +1370,35 @@ footer {
   font-size: 0.95rem;
   white-space: normal;
 }
+
+/* --- Wetsuit tile (when the water temperature is known) ---
+   The BEST card puts wind, swell and wetsuit in one row under the figure.
+   Other cards go 4 across, or 2×2 on phones instead of the single column;
+   these come after the ≤640px rules so they win at equal specificity. */
+
+.card-metrics.has-wetsuit {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.card-metrics.has-figure.has-wetsuit {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .card-metrics.has-wetsuit {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.suit-figure {
+  display: block;
+  justify-self: center;
+  align-self: center;
+  width: 23px;
+  height: 46px;
+}
+
+.suit-note {
+  word-break: auto-phrase; /* 「寒がりなら／5/3セミドライ」と語の切れ目で折る（対応ブラウザのみ） */
+  overflow-wrap: anywhere; /* 1語が列より長いときは語の途中でも折る */
+}
