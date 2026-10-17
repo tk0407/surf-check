@@ -286,6 +286,13 @@ test("apply returns the calibrated data with its score, and the plain scoreSpot 
   assert.deepEqual(C.apply(DATA, { name: "志田下", bearing: 90 }, CAL), { data: DATA, scores: S.scoreSpot(DATA, 90) });
 });
 
+test("apply passes the water temperature through uncalibrated", () => {
+  const out = C.apply({ ...DATA, water_temp: 23.4 }, { name: "一宮", bearing: 90 }, CAL);
+  assert.equal(out.data.wave_height, 1.2);
+  assert.equal(out.data.water_temp, 23.4);
+  assert.deepEqual(out.scores, C.apply(DATA, { name: "一宮", bearing: 90 }, CAL).scores);
+});
+
 // --- validate ---
 
 test("validate accepts compute's output and the documented shape", () => {

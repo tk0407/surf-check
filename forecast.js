@@ -34,7 +34,8 @@
   }
 
   // Scoring inputs for one slot. Swell components fall back to the combined
-  // wave when the model has no swell partition.
+  // wave when the model has no swell partition. water_temp only picks the
+  // wetsuit and is never scored, so a missing one leaves the slot usable.
   function slotConditions(marine, forecast, slot, date) {
     const m = averageForWindow(marine, slot, date);
     const f = averageForWindow(forecast, slot, date);
@@ -46,7 +47,8 @@
       swell_period: pick(m.swell_wave_period, m.wave_period),
       wave_height: pick(m.swell_wave_height, m.wave_height),
     };
-    return Object.values(data).some((v) => v == null) ? null : data;
+    if (Object.values(data).some((v) => v == null)) return null;
+    return { ...data, water_temp: pick(m.sea_surface_temperature, null) };
   }
 
   // scorer(data) returns the cell { data, scores }; the app passes one that
