@@ -339,18 +339,61 @@ function waveFigureMetric(data) {
       </span>`;
 }
 
+// ウェットのマスの人の絵。部位ごとの色を Wetsuit.recommend の key で引く。
+// 脚はすねの色で塗ってから太ももを重ねる（スプリングや海パンは膝から下が肌）。
+const SUIT_COLORS = { suit: "#124559", skin: "#e9c3a3", rash: "#69c7c9", gear: "#0b2d3a" };
+// parts：[上腕, 前腕, 胴, 太もも, すね]。gear は手袋とブーツ、hood はフード。
+const SUIT_FIGURES = {
+  dry: { parts: ["suit", "suit", "suit", "suit", "suit"], gear: true, hood: true },
+  semidry: { parts: ["suit", "suit", "suit", "suit", "suit"], gear: true },
+  full: { parts: ["suit", "suit", "suit", "suit", "suit"] },
+  seagull: { parts: ["suit", "skin", "suit", "suit", "suit"] },
+  spring: { parts: ["suit", "skin", "suit", "suit", "skin"] },
+  trunks: { parts: ["rash", "skin", "rash", "suit", "skin"] },
+};
+
+function suitFigureSvg(key) {
+  const { parts, gear, hood } = SUIT_FIGURES[key];
+  const [upperArm, forearm, torso, thigh, shin] = parts.map((p) => SUIT_COLORS[p]);
+  const { suit, skin } = SUIT_COLORS;
+  const pair = (xs, y, w, h, rx, fill) => xs.map((x) => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="${fill}"/>`).join("");
+  const arms = pair([7, 44], 25, 9, 22, 4.5, upperArm) + pair([6, 45], 45, 9, 25, 4.5, forearm);
+  const legs = pair([18, 31], 62, 11, 54, 5, shin) + pair([18, 31], 62, 11, 18, 5, thigh);
+  const gloves = gear ? pair([6, 45], 64, 9, 9, 4, SUIT_COLORS.gear) : "";
+  const boots = gear ? pair([18, 31], 104, 11, 14, 4, SUIT_COLORS.gear) : "";
+  const head = hood
+    ? `<circle cx="30" cy="12" r="11" fill="${suit}"/><circle cx="30" cy="13" r="6" fill="${skin}"/>`
+    : `<rect x="26" y="17" width="8" height="8" fill="${skin}"/><circle cx="30" cy="11" r="9" fill="${skin}"/>`;
+  return `<svg class="suit-figure" viewBox="0 0 60 120" aria-hidden="true">${arms}${gloves}${legs}${boots}<rect x="17" y="23" width="26" height="44" rx="7" fill="${torso}"/>${head}</svg>`;
+}
+
+// 水温が無い（取れなかった）ときは空文字で、マスごと出さない。
+function wetsuitMetric(waterTemp) {
+  const suit = Wetsuit.recommend(waterTemp);
+  if (!suit) return "";
+  const note = suit.note ? `<span class="metric-sub suit-note">${escapeHtml(suit.note)}</span>` : "";
+  return `
+      <span class="mini-metric">
+        <b>ウェット</b>
+        ${suitFigureSvg(suit.key)}
+        <span><strong>${escapeHtml(suit.name)}</strong><span class="metric-sub">水温 ${suit.temp}℃</span>${note}</span>
+      </span>`;
+}
+
 // figure が true（BEST のカード）なら、波サイズを立った人の絵で見せる。
+// 水温があれば、最後にウェットのマスを足す。
 function conditionMetrics(data, bearing, figure = false) {
   const waveSize = Scoring.waveSizeLabel(data.wave_height);
   const windCondition = Share.windConditionLabel(data.wind_dir, data.wind_speed, bearing);
   const windFlowDeg = data.wind_dir + 180;
   const swellFlowDeg = data.swell_dir + 180;
+  const wetsuit = wetsuitMetric(data.water_temp);
   const waveMetric = figure ? waveFigureMetric(data) : `<span class="mini-metric">
         <b>波サイズ</b>
         <span class="wave-icon ${waveIconClass(data.wave_height)}" aria-hidden="true"></span>
         <span><strong>${data.wave_height.toFixed(1)}m ${escapeHtml(waveSize)}</strong><span class="metric-sub">周期 ${data.swell_period.toFixed(1)}s</span></span>
       </span>`;
-  return `<div class="card-metrics${figure ? " has-figure" : ""}">
+  return `<div class="card-metrics${figure ? " has-figure" : ""}${wetsuit ? " has-wetsuit" : ""}">
       ${waveMetric}
       <span class="mini-metric">
         <b>風向き</b>
@@ -361,7 +404,7 @@ function conditionMetrics(data, bearing, figure = false) {
         <b>うねりの向き</b>
         ${metricIcon(swellFlowDeg)}
         <span><strong>${escapeHtml(Share.jpDirection(data.swell_dir))}うねり</strong></span>
-      </span>
+      </span>${wetsuit}
     </div>`;
 }
 

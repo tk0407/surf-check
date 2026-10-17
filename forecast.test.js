@@ -34,6 +34,7 @@ function marineSeries(overrides = {}) {
     swell_wave_period: () => 11,
     swell_wave_direction: () => 90,
     sea_level_height_msl: m2,
+    sea_surface_temperature: () => 22.8,
     ...overrides,
   });
 }
@@ -46,7 +47,7 @@ function forecastSeries(overrides = {}) {
   });
 }
 
-const BASE_DATA = { wind_dir: 270, wind_speed: 3, swell_dir: 90, swell_period: 11, wave_height: 1.25 };
+const BASE_DATA = { wind_dir: 270, wind_speed: 3, swell_dir: 90, swell_period: 11, wave_height: 1.25, water_temp: 22.8 };
 
 // --- averageForWindow ---
 
@@ -84,7 +85,7 @@ test("slotConditions falls back to combined-wave values when swell is missing", 
     swell_wave_direction: () => null,
   });
   assert.deepEqual(F.slotConditions(marine, forecastSeries(), "afternoon", "2026-09-19"), {
-    wind_dir: 270, wind_speed: 3, swell_dir: 100, swell_period: 7, wave_height: 1.0,
+    wind_dir: 270, wind_speed: 3, swell_dir: 100, swell_period: 7, wave_height: 1.0, water_temp: 22.8,
   });
 });
 
@@ -96,6 +97,21 @@ test("slotConditions returns null when wind is missing", () => {
 test("slotConditions returns null when the forecast has no samples for the date", () => {
   // marine covers 09-26 but the forecast series stops at 09-25
   assert.equal(F.slotConditions(marineSeries(), forecastSeries(), "morning", "2026-09-26"), null);
+});
+
+test("slotConditions averages the sea temperature over the slot hours into water_temp", () => {
+  // morning 07,08,09 -> 22,23,24; evening 16,17,18 -> 31,32,33
+  const marine = marineSeries({ sea_surface_temperature: (di, h) => h + 15 });
+  assert.equal(F.slotConditions(marine, forecastSeries(), "morning", "2026-09-19").water_temp, 23);
+  assert.equal(F.slotConditions(marine, forecastSeries(), "evening", "2026-09-19").water_temp, 32);
+});
+
+test("slotConditions keeps the slot with a null water_temp when the sea temperature is missing", () => {
+  const allNull = marineSeries({ sea_surface_temperature: () => null });
+  assert.deepEqual(F.slotConditions(allNull, forecastSeries(), "morning", "2026-09-19"), { ...BASE_DATA, water_temp: null });
+  const noKey = marineSeries();
+  delete noKey.sea_surface_temperature;
+  assert.deepEqual(F.slotConditions(noKey, forecastSeries(), "morning", "2026-09-19"), { ...BASE_DATA, water_temp: null });
 });
 
 // --- weeklyForecast ---
@@ -198,6 +214,14 @@ test("scoreBand boundaries (good >= 50, ok >= 30)", () => {
   assert.equal(F.scoreBand(30), "ok");
   assert.equal(F.scoreBand(29), "bad");
   assert.equal(F.scoreBand(0), "bad");
+});
+
+test("weeklyForecast carries each day's sea temperature on its slots", () => {
+  // MARINE_DAYS starts the day before WEEK, so WEEK[i] is di = i + 1.
+  const marine = marineSeries({ sea_surface_temperature: (di, h) => 20 + di + (h >= 12 ? 0.5 : 0) });
+  const days = F.weeklyForecast(marine, forecastSeries(), WEEK, 90);
+  assert.deepEqual(days.map((d) => d.slots.morning.data.water_temp), [21, 22, 23, 24, 25, 26, 27]);
+  assert.deepEqual(days.map((d) => d.slots.evening.data.water_temp), [21.5, 22.5, 23.5, 24.5, 25.5, 26.5, 27.5]);
 });
 
 // --- weeklyForecast scorer ---
